@@ -1,13 +1,18 @@
 //! Browser extensions through WebKit's `WKWebExtension` API (macOS 15.4+).
 //!
-//! One `WKWebExtensionController` serves every normal tab; incognito tabs get
-//! none, as in Safari. Workspaces are the extension "windows" and the active
-//! one is focused. WebKit asks about tabs and windows through the objects in
-//! `extension_objc`, answered from a [`Model`] that [`sync`] reconciles with
-//! the live `WorkspaceManager` once per event-loop pass — so no open, close
-//! or switch path in main.rs has to remember to tell extensions. Requests
-//! that change app state go back to main.rs as [`Action`]s through the event
-//! loop, never re-entrantly from inside a WebKit callback.
+//! Workspaces are isolated, and so are their extensions: every workspace gets
+//! a [`Space`] — its own `WKWebExtensionController`, so its own extension
+//! storage, holding only the extensions whose [`Scope`] includes it. To an
+//! extension, its workspace is the one browser window there is. Incognito
+//! tabs get no controller, as in Safari.
+//!
+//! WebKit asks about tabs and windows through the objects in
+//! `extension_objc`, answered from each space's model, which [`sync`]
+//! reconciles with the live `WorkspaceManager` once per event-loop pass — so
+//! no open, close or switch path in main.rs has to remember to tell
+//! extensions. Requests that change app state go back to main.rs as
+//! [`Action`]s through the event loop, never re-entrantly from inside a
+//! WebKit callback.
 //!
 //! Every WebKit object here is main-thread-only, and so is `STATE`. WebKit
 //! calls straight back into `extension_objc`, which reads `STATE`, so nothing
@@ -15,7 +20,7 @@
 //! release, then call.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -43,8 +48,8 @@ use objc2_web_kit::{
 };
 
 use crate::extension_objc::{ExtDelegate, ExtTab, ExtWindow};
-use crate::extension_store::{self, Record};
-use crate::workspace::WorkspaceManager;
+use crate::extension_store::{self, Record, Scope};
+use crate::workspace::{Workspace, WorkspaceManager};
 use wry::WebViewExtMacOS;
 
 /// Toolbar buttons draw icons at 16 px; render twice that for Retina.
@@ -59,11 +64,11 @@ pub enum Action {
     Activate(usize),
     Close(usize),
     Load(usize, String),
-    /// Open a tab in `workspace` (`None` = the active one). When `reply` is
-    /// set, report the new tab id with [`tab_opened`].
+    /// Open a tab in `workspace`. When `reply` is set, report the new tab id
+    /// with [`tab_opened`].
     OpenTab {
         url: Option<String>,
-        workspace: Option<String>,
+        workspace: String,
         active: bool,
         reply: Option<u64>,
     },
@@ -82,6 +87,7 @@ pub enum Event {
     /// Choose a folder or archive with an open panel, then install it.
     PickAndInstall,
     SetEnabled(String, bool),
+    SetScope(String, Scope),
     Remove(String),
     OpenOptions(String),
     /// Toolbar button clicked; `anchor` is its x, y, width, height in the
@@ -115,12 +121,14 @@ thread_local! {
 }
 
 struct State {
-    controller: Retained<WKWebExtensionController>,
-    /// The controller holds its delegate weakly.
-    _delegate: Retained<ExtDelegate>,
+    /// Serves every controller; they hold it weakly.
+    delegate: Retained<ExtDelegate>,
     installed: Vec<Installed>,
-    controller_id: [u8; 16],
-    model: Model,
+    /// Workspace id → its controller's storage identifier, created on first use.
+    controller_ids: BTreeMap<String, [u8; 16]>,
+    spaces: Vec<Space>,
+    /// Id and name of the workspace on screen, as of the last [`sync`].
+    active: Option<(String, String)>,
     replies: Vec<Reply>,
     next_reply: u64,
     /// Address bar WebView — popups point at its buttons.
@@ -132,8 +140,6 @@ struct Installed {
     record: Record,
     /// Parsed manifest and resources; `None` until parsed, or if parsing failed.
     extension: Option<Retained<WKWebExtension>>,
-    /// Set while loaded into the controller.
-    context: Option<Retained<WKWebExtensionContext>>,
     error: Option<String>,
 }
 
@@ -146,18 +152,29 @@ impl State {
         self.installed.iter_mut().find(|i| i.record.id == id)
     }
 
-    fn contexts(&self) -> Vec<Retained<WKWebExtensionContext>> {
-        self.installed
+    fn space(&self, workspace: &str) -> Option<&Space> {
+        self.spaces.iter().find(|s| s.workspace == workspace)
+    }
+
+    fn space_mut(&mut self, workspace: &str) -> Option<&mut Space> {
+        self.spaces.iter_mut().find(|s| s.workspace == workspace)
+    }
+
+    fn space_of(&self, controller: &WKWebExtensionController) -> Option<&Space> {
+        self.spaces
             .iter()
-            .filter_map(|i| i.context.clone())
-            .collect()
+            .find(|s| std::ptr::eq(&*s.controller, controller))
+    }
+
+    fn active_space(&self) -> Option<&Space> {
+        self.space(&self.active.as_ref()?.0)
     }
 
     fn save(&self) {
-        extension_store::save(&extension_store::Store {
-            controller_id: self.controller_id,
-            extensions: self.installed.iter().map(|i| i.record.clone()).collect(),
-        });
+        extension_store::save(&extension_store::Store::new(
+            self.controller_ids.clone(),
+            self.installed.iter().map(|i| i.record.clone()).collect(),
+        ));
     }
 }
 
@@ -172,6 +189,7 @@ fn with_mut<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
 type TabReplyBlock = RcBlock<dyn Fn(*mut ProtocolObject<dyn WKWebExtensionTab>, *mut NSError)>;
 type WindowReplyBlock =
     RcBlock<dyn Fn(*mut ProtocolObject<dyn WKWebExtensionWindow>, *mut NSError)>;
+type GrantReply<T> = RcBlock<dyn Fn(NonNull<NSSet<T>>, *mut NSDate)>;
 
 /// An extension waiting for the tab (or window) it asked for.
 struct Reply {
@@ -185,11 +203,10 @@ enum ReplyTo {
     Window(WindowReplyBlock),
 }
 
-// ── Model: tabs and windows as extensions last heard of them ────────────────
+// ── Spaces: one workspace's extensions, and its tabs as they last heard ─────
 
 struct TabEntry {
     obj: Retained<ExtTab>,
-    window: String,
     title: String,
     url: String,
     loading: bool,
@@ -197,199 +214,130 @@ struct TabEntry {
     webview: Option<Retained<WKWebView>>,
 }
 
-struct WindowEntry {
-    id: String,
-    obj: Retained<ExtWindow>,
-    tabs: Vec<usize>,
-    active: Option<usize>,
-}
-
-#[derive(Default)]
-struct Model {
-    /// In workspace order.
-    windows: Vec<WindowEntry>,
+struct Space {
+    workspace: String,
+    controller: Retained<WKWebExtensionController>,
+    /// Extension id → its context, loaded into `controller`.
+    contexts: HashMap<String, Retained<WKWebExtensionContext>>,
+    /// Suffix of this space's `webkit-extension://` hosts. Copies of one
+    /// extension in two controllers must not share a base URL — WebKit routes
+    /// their messages by it. Derived from the controller id, so stable.
+    host_tag: String,
+    window: Retained<ExtWindow>,
+    /// `didOpenWindow` sent.
+    announced: bool,
     tabs: HashMap<usize, TabEntry>,
-    focused: Option<String>,
+    /// Tab ids in tab-strip order.
+    order: Vec<usize>,
+    active: Option<usize>,
+    focused: bool,
 }
 
 enum Change {
-    CloseTab(Retained<ExtTab>, bool),
-    CloseWindow(Retained<ExtWindow>),
     OpenWindow(Retained<ExtWindow>),
+    CloseTab(Retained<ExtTab>),
     OpenTab(Retained<ExtTab>),
-    Move(Retained<ExtTab>, usize, Retained<ExtWindow>),
     Props(Retained<ExtTab>, WKWebExtensionTabChangedProperties),
     Activate(Retained<ExtTab>, Option<Retained<ExtTab>>),
     Focus(Option<Retained<ExtWindow>>),
 }
 
-impl Model {
-    fn window(&self, id: &str) -> Option<&WindowEntry> {
-        self.windows.iter().find(|w| w.id == id)
-    }
-
-    fn focused_window(&self) -> Option<&WindowEntry> {
-        self.focused.as_deref().and_then(|id| self.window(id))
-    }
-
+impl Space {
     fn active_tab(&self) -> Option<Retained<ExtTab>> {
-        let id = self.focused_window()?.active?;
-        self.tabs.get(&id).map(|t| t.obj.clone())
+        self.tabs.get(&self.active?).map(|t| t.obj.clone())
     }
 
-    fn tab_by_webview(&self, webview: usize) -> Option<Retained<ExtTab>> {
-        self.tabs
-            .values()
-            .find(|t| {
-                t.webview
-                    .as_ref()
-                    .is_some_and(|w| Retained::as_ptr(w) as usize == webview)
-            })
-            .map(|t| t.obj.clone())
+    fn window_object(&self) -> Retained<ProtocolObject<dyn WKWebExtensionWindow>> {
+        ProtocolObject::from_retained(self.window.clone())
     }
 
-    /// Bring the model in line with the live tabs and list what changed, in
-    /// the order WebKit must hear it: closes first (while the old lists still
-    /// say where things were), then opens, moves, property changes,
-    /// activations and focus.
-    fn reconcile(&mut self, wm: &WorkspaceManager, mtm: MainThreadMarker) -> Vec<Change> {
-        let guards: Vec<_> = wm.list().iter().map(|ws| ws.tabs.lock().unwrap()).collect();
-        let live_tabs: HashSet<usize> = guards
+    /// Bring the model in line with the workspace's live tabs and list what
+    /// changed, in the order WebKit must hear it.
+    fn reconcile(&mut self, ws: &Workspace, focused: bool, mtm: MainThreadMarker) -> Vec<Change> {
+        let tm = ws.tabs.lock().unwrap();
+        let mut changes = Vec::new();
+        if !self.announced {
+            self.announced = true;
+            changes.push(Change::OpenWindow(self.window.clone()));
+        }
+        let live: HashSet<usize> = tm
+            .tabs()
             .iter()
-            .flat_map(|tm| tm.tabs().iter().filter(|t| !t.incognito).map(|t| t.id))
+            .filter(|t| !t.incognito)
+            .map(|t| t.id)
             .collect();
-        let live_windows: HashSet<&str> = wm.list().iter().map(|ws| ws.id.as_str()).collect();
-
-        let mut closes = Vec::new();
         let gone: Vec<usize> = self
             .tabs
             .keys()
-            .filter(|id| !live_tabs.contains(id))
+            .filter(|id| !live.contains(id))
             .copied()
             .collect();
         for id in gone {
             let entry = self.tabs.remove(&id).expect("id came from the map");
-            let window_closing = !live_windows.contains(entry.window.as_str());
-            closes.push(Change::CloseTab(entry.obj, window_closing));
+            changes.push(Change::CloseTab(entry.obj));
         }
-
-        let mut opens = Vec::new();
-        let mut moves = Vec::new();
-        let mut props = Vec::new();
-        for (ws, tm) in wm.list().iter().zip(&guards) {
-            for tab in tm.tabs().iter().filter(|t| !t.incognito) {
-                let webview = ws
-                    .webviews
-                    .get(&tab.id)
-                    .map(|wv| Retained::into_super(wv.webview()));
-                let loading = webview.as_ref().is_some_and(|wv| unsafe { wv.isLoading() });
-                let Some(entry) = self.tabs.get_mut(&tab.id) else {
-                    let obj = ExtTab::new(mtm, tab.id);
-                    opens.push(Change::OpenTab(obj.clone()));
-                    self.tabs.insert(
-                        tab.id,
-                        TabEntry {
-                            obj,
-                            window: ws.id.clone(),
-                            title: tab.title.clone(),
-                            url: tab.url.clone(),
-                            loading,
-                            audio: tab.is_playing_audio,
-                            webview,
-                        },
-                    );
-                    continue;
-                };
-                if entry.window != ws.id {
-                    let from = self
-                        .windows
-                        .iter()
-                        .find(|w| w.id == entry.window)
-                        .and_then(|w| {
-                            let index = w.tabs.iter().position(|&id| id == tab.id)?;
-                            Some((index, w.obj.clone()))
-                        });
-                    if let Some((index, old_window)) = from {
-                        moves.push(Change::Move(entry.obj.clone(), index, old_window));
-                    }
-                    entry.window.clone_from(&ws.id);
-                }
-                let mut changed = WKWebExtensionTabChangedProperties::None;
-                if entry.title != tab.title {
-                    entry.title.clone_from(&tab.title);
-                    changed |= WKWebExtensionTabChangedProperties::Title;
-                }
-                if entry.url != tab.url {
-                    entry.url.clone_from(&tab.url);
-                    changed |= WKWebExtensionTabChangedProperties::URL;
-                }
-                if entry.loading != loading {
-                    entry.loading = loading;
-                    changed |= WKWebExtensionTabChangedProperties::Loading;
-                }
-                if entry.audio != tab.is_playing_audio {
-                    entry.audio = tab.is_playing_audio;
-                    changed |= WKWebExtensionTabChangedProperties::PlayingAudio;
-                }
-                entry.webview = webview;
-                if !changed.is_empty() {
-                    props.push(Change::Props(entry.obj.clone(), changed));
-                }
-            }
-        }
-
-        let mut windows = Vec::with_capacity(wm.list().len());
-        let mut window_opens = Vec::new();
-        let mut activations = Vec::new();
-        for (ws, tm) in wm.list().iter().zip(&guards) {
-            let mut window = match self.windows.iter().position(|w| w.id == ws.id) {
-                Some(i) => self.windows.remove(i),
-                None => {
-                    let obj = ExtWindow::new(mtm, ws.id.clone());
-                    window_opens.push(Change::OpenWindow(obj.clone()));
-                    WindowEntry {
-                        id: ws.id.clone(),
+        self.order.clear();
+        for tab in tm.tabs().iter().filter(|t| !t.incognito) {
+            self.order.push(tab.id);
+            let webview = ws
+                .webviews
+                .get(&tab.id)
+                .map(|wv| Retained::into_super(wv.webview()));
+            let loading = webview.as_ref().is_some_and(|wv| unsafe { wv.isLoading() });
+            let Some(entry) = self.tabs.get_mut(&tab.id) else {
+                let obj = ExtTab::new(mtm, tab.id);
+                changes.push(Change::OpenTab(obj.clone()));
+                self.tabs.insert(
+                    tab.id,
+                    TabEntry {
                         obj,
-                        tabs: Vec::new(),
-                        active: None,
-                    }
-                }
+                        title: tab.title.clone(),
+                        url: tab.url.clone(),
+                        loading,
+                        audio: tab.is_playing_audio,
+                        webview,
+                    },
+                );
+                continue;
             };
-            window.tabs.clear();
-            window
-                .tabs
-                .extend(tm.tabs().iter().filter(|t| !t.incognito).map(|t| t.id));
-            let active = tm.active_id().filter(|id| self.tabs.contains_key(id));
-            if active != window.active {
-                if let Some(tab) = active.and_then(|id| self.tabs.get(&id)) {
-                    let previous = window
-                        .active
-                        .and_then(|id| self.tabs.get(&id))
-                        .map(|t| t.obj.clone());
-                    activations.push(Change::Activate(tab.obj.clone(), previous));
-                }
-                window.active = active;
+            let mut changed = WKWebExtensionTabChangedProperties::None;
+            if entry.title != tab.title {
+                entry.title.clone_from(&tab.title);
+                changed |= WKWebExtensionTabChangedProperties::Title;
             }
-            windows.push(window);
+            if entry.url != tab.url {
+                entry.url.clone_from(&tab.url);
+                changed |= WKWebExtensionTabChangedProperties::URL;
+            }
+            if entry.loading != loading {
+                entry.loading = loading;
+                changed |= WKWebExtensionTabChangedProperties::Loading;
+            }
+            if entry.audio != tab.is_playing_audio {
+                entry.audio = tab.is_playing_audio;
+                changed |= WKWebExtensionTabChangedProperties::PlayingAudio;
+            }
+            entry.webview = webview;
+            if !changed.is_empty() {
+                changes.push(Change::Props(entry.obj.clone(), changed));
+            }
         }
-        for closed in self.windows.drain(..) {
-            closes.push(Change::CloseWindow(closed.obj));
+        let active = tm.active_id().filter(|id| self.tabs.contains_key(id));
+        if active != self.active {
+            if let Some(tab) = active.and_then(|id| self.tabs.get(&id)) {
+                let previous = self
+                    .active
+                    .and_then(|id| self.tabs.get(&id))
+                    .map(|t| t.obj.clone());
+                changes.push(Change::Activate(tab.obj.clone(), previous));
+            }
+            self.active = active;
         }
-        self.windows = windows;
-
-        let focused = Some(wm.active().id.clone());
         if focused != self.focused {
             self.focused = focused;
-            let window = self.focused_window().map(|w| w.obj.clone());
-            activations.push(Change::Focus(window));
+            changes.push(Change::Focus(focused.then(|| self.window.clone())));
         }
-
-        closes.extend(window_opens);
-        closes.extend(opens);
-        closes.extend(moves);
-        closes.extend(props);
-        closes.extend(activations);
-        closes
+        changes
     }
 }
 
@@ -403,9 +351,9 @@ pub fn supported() -> bool {
     })
 }
 
-/// Create the controller and start loading installed extensions. `sender`
-/// delivers [`Event`]s back to the event loop (from any thread). Must run on
-/// the main thread before the first tab WebView is built.
+/// Load the installed list and start parsing it. `sender` delivers [`Event`]s
+/// back to the event loop (from any thread). Must run on the main thread
+/// before the first tab WebView is built.
 pub fn init(sender: impl Fn(Event) + Send + Sync + 'static) {
     let _ = SENDER.set(Box::new(sender));
     if !supported() {
@@ -420,35 +368,22 @@ pub fn init(sender: impl Fn(Event) + Send + Sync + 'static) {
         }
     };
     let mtm = MainThreadMarker::new().expect("extensions::init runs on the main thread");
-    let controller = unsafe {
-        let config = WKWebExtensionControllerConfiguration::configurationWithIdentifier(
-            &NSUUID::from_bytes(store.controller_id),
-            mtm,
-        );
-        WKWebExtensionController::initWithConfiguration(
-            WKWebExtensionController::alloc(mtm),
-            &config,
-        )
-    };
-    let delegate = ExtDelegate::new(mtm);
-    unsafe { controller.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
     let records = store.extensions.clone();
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
-            controller,
-            _delegate: delegate,
+            delegate: ExtDelegate::new(mtm),
             installed: store
                 .extensions
                 .into_iter()
                 .map(|record| Installed {
                     record,
                     extension: None,
-                    context: None,
                     error: None,
                 })
                 .collect(),
-            controller_id: store.controller_id,
-            model: Model::default(),
+            controller_ids: store.controllers,
+            spaces: Vec::new(),
+            active: None,
             replies: Vec::new(),
             next_reply: 1,
             toolbar: None,
@@ -457,7 +392,6 @@ pub fn init(sender: impl Fn(Event) + Send + Sync + 'static) {
     });
     for record in records {
         parse(&record.path.clone(), move |result| {
-            let ok = result.is_ok();
             with_mut(|s| {
                 if let Some(installed) = s.find_mut(&record.id) {
                     match result {
@@ -469,9 +403,7 @@ pub fn init(sender: impl Fn(Event) + Send + Sync + 'static) {
                     }
                 }
             });
-            if ok && record.enabled {
-                start(&record.id);
-            }
+            apply();
             send_app(Action::Installed);
         });
     }
@@ -501,48 +433,169 @@ fn parse(path: &Path, done: impl Fn(Result<Retained<WKWebExtension>, String>) + 
     unsafe { WKWebExtension::extensionWithResourceBaseURL_completionHandler(&url, &block, mtm) };
 }
 
-/// Load an installed, parsed extension into the controller.
-fn start(id: &str) {
-    let Some((controller, extension, record)) = with(|s| {
-        let installed = s.find(id)?;
-        Some((
-            s.controller.clone(),
-            installed.extension.clone()?,
-            installed.record.clone(),
-        ))
-    })
-    .flatten() else {
-        return;
+fn new_controller(id: [u8; 16], mtm: MainThreadMarker) -> Retained<WKWebExtensionController> {
+    unsafe {
+        let config = WKWebExtensionControllerConfiguration::configurationWithIdentifier(
+            &NSUUID::from_bytes(id),
+            mtm,
+        );
+        WKWebExtensionController::initWithConfiguration(
+            WKWebExtensionController::alloc(mtm),
+            &config,
+        )
+    }
+}
+
+/// The controller of `workspace`, creating its space — and loading the
+/// extensions that run there — on first use.
+fn ensure_space(workspace: &str) -> Option<Retained<WKWebExtensionController>> {
+    enum Found {
+        Running(Retained<WKWebExtensionController>),
+        New([u8; 16], Retained<ExtDelegate>),
+    }
+    let mtm = MainThreadMarker::new()?;
+    let found = with_mut(|s| {
+        if let Some(space) = s.space(workspace) {
+            return Found::Running(space.controller.clone());
+        }
+        let id = match s.controller_ids.get(workspace) {
+            Some(id) => *id,
+            None => {
+                let id = crate::workspace::random_bytes16();
+                s.controller_ids.insert(workspace.to_string(), id);
+                s.save();
+                id
+            }
+        };
+        Found::New(id, s.delegate.clone())
+    })?;
+    let (id, delegate) = match found {
+        Found::Running(controller) => return Some(controller),
+        Found::New(id, delegate) => (id, delegate),
     };
-    let context = unsafe { WKWebExtensionContext::contextForExtension(&extension) };
-    let result = unsafe {
+    let controller = new_controller(id, mtm);
+    unsafe { controller.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+    let window = ExtWindow::new(mtm, workspace.to_string());
+    with_mut(|s| {
+        s.spaces.push(Space {
+            workspace: workspace.to_string(),
+            controller: controller.clone(),
+            host_tag: id[..8].iter().map(|b| format!("{b:02x}")).collect(),
+            contexts: HashMap::new(),
+            window,
+            announced: false,
+            tabs: HashMap::new(),
+            order: Vec::new(),
+            active: None,
+            focused: false,
+        })
+    });
+    apply();
+    Some(controller)
+}
+
+/// Load and unload contexts so every space runs exactly the enabled, parsed
+/// extensions whose scope includes it.
+fn apply() {
+    type Start = (
+        String,
+        Retained<WKWebExtensionController>,
+        String,
+        Retained<WKWebExtension>,
+        Record,
+    );
+    type Stop = (
+        String,
+        Retained<WKWebExtensionController>,
+        String,
+        Retained<WKWebExtensionContext>,
+    );
+    let (stops, starts): (Vec<Stop>, Vec<Start>) = with(|s| {
+        let mut stops = Vec::new();
+        let mut starts = Vec::new();
+        for space in &s.spaces {
+            for installed in &s.installed {
+                let record = &installed.record;
+                let wanted = record.enabled && record.scope.includes(&space.workspace);
+                match (wanted, space.contexts.get(&record.id), &installed.extension) {
+                    (true, None, Some(extension)) => starts.push((
+                        space.workspace.clone(),
+                        space.controller.clone(),
+                        space.host_tag.clone(),
+                        extension.clone(),
+                        record.clone(),
+                    )),
+                    (false, Some(context), _) => stops.push((
+                        space.workspace.clone(),
+                        space.controller.clone(),
+                        record.id.clone(),
+                        context.clone(),
+                    )),
+                    _ => {}
+                }
+            }
+            for (id, context) in &space.contexts {
+                if s.find(id).is_none() {
+                    stops.push((
+                        space.workspace.clone(),
+                        space.controller.clone(),
+                        id.clone(),
+                        context.clone(),
+                    ));
+                }
+            }
+        }
+        (stops, starts)
+    })
+    .unwrap_or_default();
+    for (workspace, controller, id, context) in stops {
+        if let Err(e) = unsafe { controller.unloadExtensionContext_error(&context) } {
+            tracing::warn!(%id, %workspace, error = %e.localizedDescription(), "failed to unload extension");
+        }
+        with_mut(|s| s.space_mut(&workspace).map(|sp| sp.contexts.remove(&id)));
+    }
+    for (workspace, controller, host_tag, extension, record) in starts {
+        let result = load(&controller, &host_tag, &extension, &record);
+        with_mut(|s| match result {
+            Ok(context) => {
+                tracing::info!(id = %record.id, %workspace, "extension loaded");
+                if let Some(space) = s.space_mut(&workspace) {
+                    space.contexts.insert(record.id.clone(), context);
+                }
+                if let Some(installed) = s.find_mut(&record.id) {
+                    installed.error = None;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(id = %record.id, %workspace, %error, "extension failed to load");
+                if let Some(installed) = s.find_mut(&record.id) {
+                    installed.error = Some(error);
+                }
+            }
+        });
+    }
+}
+
+fn load(
+    controller: &WKWebExtensionController,
+    host_tag: &str,
+    extension: &WKWebExtension,
+    record: &Record,
+) -> Result<Retained<WKWebExtensionContext>, String> {
+    let context = unsafe { WKWebExtensionContext::contextForExtension(extension) };
+    unsafe {
         context.setUniqueIdentifier(&NSString::from_str(&record.id));
-        if let Some(base) = NSURL::URLWithString(&NSString::from_str(&format!(
-            "webkit-extension://{}/",
-            record.id
-        ))) {
+        let base = format!("webkit-extension://{}-{host_tag}/", record.id);
+        if let Some(base) = NSURL::URLWithString(&NSString::from_str(&base)) {
             context.setBaseURL(&base);
         }
         context.setInspectable(true);
         grant(&context, &record.permissions, &record.patterns);
-        controller.loadExtensionContext_error(&context)
-    };
-    with_mut(|s| {
-        if let Some(installed) = s.find_mut(id) {
-            match result {
-                Ok(()) => {
-                    tracing::info!(id, path = %record.path.display(), "extension loaded");
-                    installed.context = Some(context);
-                    installed.error = None;
-                }
-                Err(e) => {
-                    let error = e.localizedDescription().to_string();
-                    tracing::warn!(id, %error, "extension failed to load");
-                    installed.error = Some(error);
-                }
-            }
-        }
-    });
+        controller
+            .loadExtensionContext_error(&context)
+            .map_err(|e| e.localizedDescription().to_string())?;
+    }
+    Ok(context)
 }
 
 fn grant(context: &WKWebExtensionContext, permissions: &[String], patterns: &[String]) {
@@ -570,61 +623,149 @@ fn grant(context: &WKWebExtensionContext, permissions: &[String], patterns: &[St
     }
 }
 
-fn stop(context: &WKWebExtensionContext) {
-    let Some(controller) = with(|s| s.controller.clone()) else {
+/// Delete what extensions stored in a controller: everything, or one
+/// extension's data when `context` names it.
+fn erase(
+    controller: Retained<WKWebExtensionController>,
+    context: Option<Retained<WKWebExtensionContext>>,
+) {
+    let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    if let Err(e) = unsafe { controller.unloadExtensionContext_error(context) } {
-        tracing::warn!(error = %e.localizedDescription(), "failed to unload extension");
+    let types = unsafe { WKWebExtensionController::allExtensionDataTypes(mtm) };
+    let remove = {
+        let (controller, types) = (controller.clone(), types.clone());
+        move |records: &NSArray<WKWebExtensionDataRecord>| unsafe {
+            controller.removeDataOfTypes_fromDataRecords_completionHandler(
+                &types,
+                records,
+                &RcBlock::new(|| {}),
+            );
+        }
+    };
+    unsafe {
+        match context {
+            Some(context) => {
+                let block = RcBlock::new(move |record: *mut WKWebExtensionDataRecord| {
+                    if let Some(record) = Retained::retain(record) {
+                        remove(&NSArray::from_retained_slice(&[record]));
+                    }
+                });
+                controller.fetchDataRecordOfTypes_forExtensionContext_completionHandler(
+                    &types, &context, &block,
+                );
+            }
+            None => {
+                let block =
+                    RcBlock::new(move |records: NonNull<NSArray<WKWebExtensionDataRecord>>| {
+                        remove(records.as_ref());
+                    });
+                controller.fetchDataRecordsOfTypes_completionHandler(&types, &block);
+            }
+        }
     }
 }
 
-/// Reconcile what extensions know with the live tabs. Called once per
-/// event-loop pass; cheap when nothing changed, free with nothing installed.
+/// Reconcile what extensions know with the live workspaces and tabs. Called
+/// once per event-loop pass; cheap when nothing changed, nearly free with
+/// nothing installed.
 pub fn sync(wm: &WorkspaceManager) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    let Some((controller, changes)) = with_mut(|s| {
-        if s.installed.is_empty() {
-            return None;
+    let Some((dropped, orphaned, changes)) = with_mut(|s| {
+        let active = wm.active();
+        if s.active
+            .as_ref()
+            .is_none_or(|(id, name)| *id != active.id || *name != active.name)
+        {
+            s.active = Some((active.id.clone(), active.name.clone()));
         }
-        Some((s.controller.clone(), s.model.reconcile(wm, mtm)))
+        // Deleted workspaces take their extension data with them.
+        let mut dropped = Vec::new();
+        let mut orphaned = Vec::new();
+        if s.controller_ids.keys().any(|id| wm.index_of(id).is_none()) {
+            let (gone, kept): (Vec<Space>, Vec<Space>) = s
+                .spaces
+                .drain(..)
+                .partition(|sp| wm.index_of(&sp.workspace).is_none());
+            s.spaces = kept;
+            let gone_ids: Vec<String> = s
+                .controller_ids
+                .keys()
+                .filter(|id| wm.index_of(id).is_none())
+                .cloned()
+                .collect();
+            for id in &gone_ids {
+                let controller_id = s.controller_ids.remove(id).expect("id came from the map");
+                if !gone.iter().any(|sp| &sp.workspace == id) {
+                    orphaned.push(controller_id);
+                }
+            }
+            for installed in &mut s.installed {
+                if let Scope::Only(ids) = &mut installed.record.scope {
+                    ids.retain(|id| !gone_ids.contains(id));
+                }
+            }
+            s.save();
+            dropped = gone;
+        }
+        let mut changes = Vec::new();
+        if !s.installed.is_empty() {
+            for space in &mut s.spaces {
+                let Some(i) = wm.index_of(&space.workspace) else {
+                    continue;
+                };
+                let space_changes = space.reconcile(wm.at(i), i == wm.active_index(), mtm);
+                if !space_changes.is_empty() {
+                    changes.push((space.controller.clone(), space_changes));
+                }
+            }
+        }
+        Some((dropped, orphaned, changes))
     })
     .flatten() else {
         return;
     };
+    for space in dropped {
+        for (id, context) in &space.contexts {
+            if let Err(e) = unsafe { space.controller.unloadExtensionContext_error(context) } {
+                tracing::warn!(%id, error = %e.localizedDescription(), "failed to unload extension");
+            }
+        }
+        tracing::info!(workspace = %space.workspace, "deleting the extension data of a removed workspace");
+        erase(space.controller, None);
+    }
+    for id in orphaned {
+        erase(new_controller(id, mtm), None);
+    }
     if changes.is_empty() {
         return;
     }
-    let toolbar = changes
-        .iter()
-        .any(|c| matches!(c, Change::Activate(..) | Change::Focus(_)));
-    for change in changes {
-        unsafe {
-            match change {
-                Change::CloseTab(tab, window_closing) => controller
-                    .didCloseTab_windowIsClosing(ProtocolObject::from_ref(&*tab), window_closing),
-                Change::CloseWindow(window) => {
-                    controller.didCloseWindow(ProtocolObject::from_ref(&*window))
-                }
-                Change::OpenWindow(window) => {
-                    controller.didOpenWindow(ProtocolObject::from_ref(&*window))
-                }
-                Change::OpenTab(tab) => controller.didOpenTab(ProtocolObject::from_ref(&*tab)),
-                Change::Move(tab, index, from) => controller.didMoveTab_fromIndex_inWindow(
-                    ProtocolObject::from_ref(&*tab),
-                    index,
-                    Some(ProtocolObject::from_ref(&*from)),
-                ),
-                Change::Props(tab, changed) => controller
-                    .didChangeTabProperties_forTab(changed, ProtocolObject::from_ref(&*tab)),
-                Change::Activate(tab, previous) => controller.didActivateTab_previousActiveTab(
-                    ProtocolObject::from_ref(&*tab),
-                    previous.as_deref().map(ProtocolObject::from_ref),
-                ),
-                Change::Focus(window) => {
-                    controller.didFocusWindow(window.as_deref().map(ProtocolObject::from_ref))
+    let mut toolbar = false;
+    for (controller, space_changes) in changes {
+        for change in space_changes {
+            unsafe {
+                match change {
+                    Change::OpenWindow(window) => {
+                        controller.didOpenWindow(ProtocolObject::from_ref(&*window))
+                    }
+                    Change::CloseTab(tab) => controller
+                        .didCloseTab_windowIsClosing(ProtocolObject::from_ref(&*tab), false),
+                    Change::OpenTab(tab) => controller.didOpenTab(ProtocolObject::from_ref(&*tab)),
+                    Change::Props(tab, changed) => controller
+                        .didChangeTabProperties_forTab(changed, ProtocolObject::from_ref(&*tab)),
+                    Change::Activate(tab, previous) => {
+                        toolbar = true;
+                        controller.didActivateTab_previousActiveTab(
+                            ProtocolObject::from_ref(&*tab),
+                            previous.as_deref().map(ProtocolObject::from_ref),
+                        )
+                    }
+                    Change::Focus(window) => {
+                        toolbar = true;
+                        controller.didFocusWindow(window.as_deref().map(ProtocolObject::from_ref))
+                    }
                 }
             }
         }
@@ -644,19 +785,19 @@ pub fn tab_opened(reply: u64, tab: usize) {
     });
 }
 
-/// Answer extensions whose tabs have reached the model.
+/// Answer extensions whose tabs have reached a space's model.
 fn resolve_replies() {
-    let ready: Vec<(ReplyTo, Retained<ExtTab>, Option<Retained<ExtWindow>>)> = with_mut(|s| {
+    let ready: Vec<(ReplyTo, Retained<ExtTab>, Retained<ExtWindow>)> = with_mut(|s| {
         let mut ready = Vec::new();
         let mut i = 0;
         while i < s.replies.len() {
-            let tab = s.replies[i].tab.and_then(|id| s.model.tabs.get(&id));
-            match tab {
-                Some(tab) => {
-                    let window = s.model.window(&tab.window).map(|w| w.obj.clone());
-                    let obj = tab.obj.clone();
-                    ready.push((s.replies.remove(i).to, obj, window));
-                }
+            let found = s.replies[i].tab.and_then(|id| {
+                s.spaces
+                    .iter()
+                    .find_map(|sp| sp.tabs.get(&id).map(|t| (t.obj.clone(), sp.window.clone())))
+            });
+            match found {
+                Some((tab, window)) => ready.push((s.replies.remove(i).to, tab, window)),
                 None => i += 1,
             }
         }
@@ -670,13 +811,8 @@ fn resolve_replies() {
                 block.call((tab as *const _ as *mut _, null_mut()));
             }
             ReplyTo::Window(block) => {
-                let window = window
-                    .as_deref()
-                    .map(ProtocolObject::<dyn WKWebExtensionWindow>::from_ref);
-                block.call((
-                    window.map_or(null_mut(), |w| w as *const _ as *mut _),
-                    null_mut(),
-                ));
+                let window = ProtocolObject::<dyn WKWebExtensionWindow>::from_ref(&*window);
+                block.call((window as *const _ as *mut _, null_mut()));
             }
         }
     }
@@ -693,55 +829,46 @@ fn add_reply(to: ReplyTo) -> Option<u64> {
 
 // ── Answers for extension_objc ───────────────────────────────────────────────
 
-fn tab_entry<R>(id: usize, f: impl FnOnce(&TabEntry) -> R) -> Option<R> {
-    with(|s| s.model.tabs.get(&id).map(f)).flatten()
+fn tab_in<R>(id: usize, f: impl FnOnce(&Space, &TabEntry) -> R) -> Option<R> {
+    with(|s| {
+        s.spaces
+            .iter()
+            .find_map(|sp| sp.tabs.get(&id).map(|t| (sp, t)))
+            .map(|(sp, t)| f(sp, t))
+    })
+    .flatten()
 }
 
 pub fn tab_window(id: usize) -> Option<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> {
-    with(|s| {
-        let window = &s.model.tabs.get(&id)?.window;
-        s.model
-            .window(window)
-            .map(|w| ProtocolObject::from_retained(w.obj.clone()))
-    })
-    .flatten()
+    tab_in(id, |sp, _| sp.window_object())
 }
 
 pub fn tab_index(id: usize) -> Option<usize> {
-    with(|s| {
-        let window = &s.model.tabs.get(&id)?.window;
-        s.model.window(window)?.tabs.iter().position(|&t| t == id)
-    })
-    .flatten()
+    tab_in(id, |sp, _| sp.order.iter().position(|&t| t == id)).flatten()
 }
 
 pub fn tab_webview(id: usize) -> Option<Retained<WKWebView>> {
-    tab_entry(id, |t| t.webview.clone()).flatten()
+    tab_in(id, |_, t| t.webview.clone()).flatten()
 }
 
 pub fn tab_title(id: usize) -> Option<String> {
-    tab_entry(id, |t| t.title.clone())
+    tab_in(id, |_, t| t.title.clone())
 }
 
 pub fn tab_url(id: usize) -> Option<String> {
-    tab_entry(id, |t| t.url.clone()).filter(|u| !u.is_empty())
+    tab_in(id, |_, t| t.url.clone()).filter(|u| !u.is_empty())
 }
 
 pub fn tab_loading(id: usize) -> bool {
-    tab_entry(id, |t| t.loading).unwrap_or(false)
+    tab_in(id, |_, t| t.loading).unwrap_or(false)
 }
 
 pub fn tab_playing_audio(id: usize) -> bool {
-    tab_entry(id, |t| t.audio).unwrap_or(false)
+    tab_in(id, |_, t| t.audio).unwrap_or(false)
 }
 
 pub fn tab_selected(id: usize) -> bool {
-    with(|s| {
-        let window = &s.model.tabs.get(&id)?.window;
-        Some(s.model.window(window)?.active == Some(id))
-    })
-    .flatten()
-    .unwrap_or(false)
+    tab_in(id, |sp, _| sp.active == Some(id)).unwrap_or(false)
 }
 
 pub fn activate_tab(id: usize) {
@@ -757,7 +884,11 @@ pub fn load_tab(id: usize, url: String) {
 }
 
 pub fn duplicate_tab(id: usize, active: bool, reply: TabReplyBlock) {
-    let workspace = tab_entry(id, |t| t.window.clone());
+    let Some(workspace) = tab_in(id, |sp, _| sp.workspace.clone()) else {
+        let err = error("The tab is gone");
+        reply.call((null_mut(), Retained::as_ptr(&err).cast_mut()));
+        return;
+    };
     send_app(Action::OpenTab {
         url: tab_url(id),
         workspace,
@@ -766,12 +897,12 @@ pub fn duplicate_tab(id: usize, active: bool, reply: TabReplyBlock) {
     });
 }
 
-pub fn window_tabs(id: &str) -> Retained<NSArray<ProtocolObject<dyn WKWebExtensionTab>>> {
+pub fn window_tabs(workspace: &str) -> Retained<NSArray<ProtocolObject<dyn WKWebExtensionTab>>> {
     let tabs: Vec<Retained<ProtocolObject<dyn WKWebExtensionTab>>> = with(|s| {
-        s.model.window(id).map_or_else(Vec::new, |w| {
-            w.tabs
+        s.space(workspace).map_or_else(Vec::new, |sp| {
+            sp.order
                 .iter()
-                .filter_map(|t| s.model.tabs.get(t))
+                .filter_map(|t| sp.tabs.get(t))
                 .map(|t| ProtocolObject::from_retained(t.obj.clone()))
                 .collect()
         })
@@ -780,88 +911,89 @@ pub fn window_tabs(id: &str) -> Retained<NSArray<ProtocolObject<dyn WKWebExtensi
     NSArray::from_retained_slice(&tabs)
 }
 
-pub fn window_active_tab(id: &str) -> Option<Retained<ProtocolObject<dyn WKWebExtensionTab>>> {
+pub fn window_active_tab(
+    workspace: &str,
+) -> Option<Retained<ProtocolObject<dyn WKWebExtensionTab>>> {
     with(|s| {
-        let active = s.model.window(id)?.active?;
-        s.model
-            .tabs
-            .get(&active)
-            .map(|t| ProtocolObject::from_retained(t.obj.clone()))
+        s.space(workspace)?
+            .active_tab()
+            .map(ProtocolObject::from_retained)
     })
     .flatten()
 }
 
-pub fn focus_window(id: &str) {
-    send_app(Action::FocusWindow(id.to_string()));
+pub fn focus_window(workspace: &str) {
+    send_app(Action::FocusWindow(workspace.to_string()));
 }
 
-/// Windows with the focused one first, as WebKit requires.
-pub fn open_windows() -> Retained<NSArray<ProtocolObject<dyn WKWebExtensionWindow>>> {
-    let windows: Vec<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> = with(|s| {
-        let focused = s.model.focused_window();
-        focused
-            .into_iter()
-            .chain(
-                s.model
-                    .windows
-                    .iter()
-                    .filter(|w| Some(w.id.as_str()) != s.model.focused.as_deref()),
-            )
-            .map(|w| ProtocolObject::from_retained(w.obj.clone()))
-            .collect()
-    })
-    .unwrap_or_default();
-    NSArray::from_retained_slice(&windows)
+/// An extension's only window is its own workspace.
+pub fn open_windows(
+    controller: &WKWebExtensionController,
+) -> Retained<NSArray<ProtocolObject<dyn WKWebExtensionWindow>>> {
+    let window = with(|s| s.space_of(controller).map(Space::window_object)).flatten();
+    NSArray::from_retained_slice(window.as_slice())
 }
 
-pub fn focused_window() -> Option<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> {
+/// Focused while its workspace is the one on screen.
+pub fn focused_window(
+    controller: &WKWebExtensionController,
+) -> Option<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> {
     with(|s| {
-        s.model
-            .focused_window()
-            .map(|w| ProtocolObject::from_retained(w.obj.clone()))
+        s.space_of(controller)
+            .filter(|sp| sp.focused)
+            .map(Space::window_object)
     })
     .flatten()
 }
 
-fn window_id(window: &ProtocolObject<dyn WKWebExtensionWindow>) -> Option<String> {
-    let ptr = window as *const ProtocolObject<dyn WKWebExtensionWindow> as usize;
-    with(|s| {
-        s.model
-            .windows
-            .iter()
-            .find(|w| Retained::as_ptr(&w.obj) as usize == ptr)
-            .map(|w| w.id.clone())
-    })
-    .flatten()
+fn workspace_of(controller: &WKWebExtensionController) -> Option<String> {
+    with(|s| s.space_of(controller).map(|sp| sp.workspace.clone())).flatten()
 }
 
 fn url_string(url: Option<Retained<NSURL>>) -> Option<String> {
     url.and_then(|u| u.absoluteString()).map(|s| s.to_string())
 }
 
-pub fn open_tab(configuration: &WKWebExtensionTabConfiguration, reply: TabReplyBlock) {
-    let (url, window, active) = unsafe {
+pub fn open_tab(
+    controller: &WKWebExtensionController,
+    configuration: &WKWebExtensionTabConfiguration,
+    reply: TabReplyBlock,
+) {
+    let Some(workspace) = workspace_of(controller) else {
+        let err = error("The extension's workspace is gone");
+        reply.call((null_mut(), Retained::as_ptr(&err).cast_mut()));
+        return;
+    };
+    let (url, active) = unsafe {
         (
             url_string(configuration.url()),
-            configuration.window(),
             configuration.shouldBeActive(),
         )
     };
     send_app(Action::OpenTab {
         url,
-        workspace: window.as_deref().and_then(window_id),
+        workspace,
         active,
         reply: add_reply(ReplyTo::Tab(reply)),
     });
 }
 
-/// Octoweb has one browser window, so a new extension window opens its tabs
-/// in the focused workspace and answers with that workspace's window.
-pub fn open_window(configuration: &WKWebExtensionWindowConfiguration, reply: WindowReplyBlock) {
+/// A workspace is the only window an extension has, so a "new window" opens
+/// its tabs there and answers with that window.
+pub fn open_window(
+    controller: &WKWebExtensionController,
+    configuration: &WKWebExtensionWindowConfiguration,
+    reply: WindowReplyBlock,
+) {
+    let Some(workspace) = workspace_of(controller) else {
+        let err = error("The extension's workspace is gone");
+        reply.call((null_mut(), Retained::as_ptr(&err).cast_mut()));
+        return;
+    };
     let (urls, focus) = unsafe { (configuration.tabURLs(), configuration.shouldBeFocused()) };
     let urls: Vec<String> = urls.iter().filter_map(|u| url_string(Some(u))).collect();
     if urls.is_empty() {
-        let window = focused_window();
+        let window = with(|s| s.space(&workspace).map(Space::window_object)).flatten();
         reply.call((
             window
                 .as_deref()
@@ -874,7 +1006,7 @@ pub fn open_window(configuration: &WKWebExtensionWindowConfiguration, reply: Win
     for (i, url) in urls.into_iter().enumerate() {
         send_app(Action::OpenTab {
             url: Some(url),
-            workspace: None,
+            workspace: workspace.clone(),
             active: focus && i == 0,
             reply: reply.take().and_then(add_reply),
         });
@@ -885,8 +1017,6 @@ fn display_name(extension: &WKWebExtension) -> String {
     unsafe { extension.displayName() }
         .map_or_else(|| "This extension".to_string(), |n| n.to_string())
 }
-
-type GrantReply<T> = RcBlock<dyn Fn(NonNull<NSSet<T>>, *mut NSDate)>;
 
 fn alert(
     title: &str,
@@ -947,6 +1077,38 @@ fn ask(
     alert.beginSheetModalForWindow_completionHandler(&window, Some(&handler));
 }
 
+/// Grant to every loaded copy of the extension — the grant is the user's,
+/// not one workspace's — and persist it for the next launch.
+fn grant_everywhere(context: &WKWebExtensionContext, permissions: &[String], patterns: &[String]) {
+    let id = unsafe { context.uniqueIdentifier() }.to_string();
+    let contexts: Vec<Retained<WKWebExtensionContext>> = with(|s| {
+        s.spaces
+            .iter()
+            .filter_map(|sp| sp.contexts.get(&id).cloned())
+            .collect()
+    })
+    .unwrap_or_default();
+    for context in &contexts {
+        grant(context, permissions, patterns);
+    }
+    with_mut(|s| {
+        if let Some(installed) = s.find_mut(&id) {
+            let record = &mut installed.record;
+            for p in permissions {
+                if !record.permissions.contains(p) {
+                    record.permissions.push(p.clone());
+                }
+            }
+            for p in patterns {
+                if !record.patterns.contains(p) {
+                    record.patterns.push(p.clone());
+                }
+            }
+        }
+        s.save();
+    });
+}
+
 /// `permissions.request()` for API permissions.
 pub fn prompt_permissions(
     context: &WKWebExtensionContext,
@@ -954,15 +1116,14 @@ pub fn prompt_permissions(
     reply: GrantReply<WKWebExtensionPermission>,
 ) {
     let names: Vec<String> = permissions.iter().map(|p| p.to_string()).collect();
-    let (context, permissions) = (context.retain(), permissions.copy());
+    let (requester, permissions) = (context.retain(), permissions.copy());
     ask(
-        &context.clone(),
+        context,
         "use more of the browser",
         &names.clone(),
         move |allowed| {
             let granted = if allowed {
-                grant(&context, &names, &[]);
-                save_grants(&context);
+                grant_everywhere(&requester, &names, &[]);
                 permissions
             } else {
                 NSSet::new()
@@ -982,15 +1143,14 @@ pub fn prompt_patterns(
         .iter()
         .map(|p| unsafe { p.string() }.to_string())
         .collect();
-    let (context, patterns) = (context.retain(), patterns.copy());
+    let (requester, patterns) = (context.retain(), patterns.copy());
     ask(
-        &context.clone(),
+        context,
         "read and change these sites",
         &names.clone(),
         move |allowed| {
             let granted = if allowed {
-                grant(&context, &[], &names);
-                save_grants(&context);
+                grant_everywhere(&requester, &[], &names);
                 patterns
             } else {
                 NSSet::new()
@@ -998,34 +1158,6 @@ pub fn prompt_patterns(
             reply.call((NonNull::from(&*granted), null_mut()));
         },
     );
-}
-
-/// Persist what `context` has been granted, so the next launch restores it.
-fn save_grants(context: &WKWebExtensionContext) {
-    let (id, permissions, patterns) = unsafe {
-        (
-            context.uniqueIdentifier().to_string(),
-            context
-                .grantedPermissions()
-                .allKeys()
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>(),
-            context
-                .grantedPermissionMatchPatterns()
-                .allKeys()
-                .iter()
-                .map(|p| p.string().to_string())
-                .collect::<Vec<_>>(),
-        )
-    };
-    with_mut(|s| {
-        if let Some(installed) = s.find_mut(&id) {
-            installed.record.permissions = permissions;
-            installed.record.patterns = patterns;
-        }
-        s.save();
-    });
 }
 
 pub fn toolbar_changed() {
@@ -1084,16 +1216,18 @@ fn describe(error: *mut NSError) -> String {
 
 // ── Tab WebViews ─────────────────────────────────────────────────────────────
 
-/// Configuration for a normal tab's WKWebView. Extension pages need their own
-/// context's configuration; every other page gets the shared controller on
-/// the workspace's data store (wry leaves the store alone when handed a
-/// configuration). `None` when extensions are unavailable.
+/// Configuration for a normal tab's WKWebView in `workspace`. Extension pages
+/// need their own context's configuration; every other page gets the
+/// workspace's controller on the workspace's data store (wry leaves the
+/// store alone when handed a configuration). `None` when extensions are
+/// unavailable.
 pub fn tab_configuration(
     url: &str,
+    workspace: &str,
     data_store_id: Option<[u8; 16]>,
 ) -> Option<Retained<WKWebViewConfiguration>> {
     let mtm = MainThreadMarker::new()?;
-    let controller = with(|s| s.controller.clone())?;
+    let controller = ensure_space(workspace)?;
     unsafe {
         if url.starts_with("webkit-extension:") {
             let context = NSURL::URLWithString(&NSString::from_str(url))
@@ -1113,14 +1247,22 @@ pub fn tab_configuration(
     }
 }
 
-/// Run a key-down `NSEvent` past extension keyboard commands; `true` when
-/// one handled it.
+fn active_contexts() -> Vec<Retained<WKWebExtensionContext>> {
+    with(|s| {
+        s.active_space()
+            .map(|sp| sp.contexts.values().cloned().collect())
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// Run a key-down `NSEvent` past the keyboard commands of the extensions in
+/// the workspace on screen; `true` when one handled it.
 pub fn perform_command(event: *mut AnyObject) -> bool {
     let Some(event) = (unsafe { (event as *const NSEvent).as_ref() }) else {
         return false;
     };
-    let contexts = with(State::contexts).unwrap_or_default();
-    contexts
+    active_contexts()
         .iter()
         .any(|c| unsafe { c.performCommandForEvent(event) })
 }
@@ -1174,9 +1316,21 @@ extern "C-unwind" fn will_open_menu(
     let Some(menu) = (unsafe { menu.as_ref() }) else {
         return;
     };
-    let Some((tab, contexts)) =
-        with(|s| Some((s.model.tab_by_webview(this as usize)?, s.contexts()))).flatten()
-    else {
+    let webview = this as usize;
+    let Some((tab, contexts)) = with(|s| {
+        s.spaces.iter().find_map(|sp| {
+            let tab = sp.tabs.values().find(|t| {
+                t.webview
+                    .as_ref()
+                    .is_some_and(|w| Retained::as_ptr(w) as usize == webview)
+            })?;
+            Some((
+                tab.obj.clone(),
+                sp.contexts.values().cloned().collect::<Vec<_>>(),
+            ))
+        })
+    })
+    .flatten() else {
         return;
     };
     let Some(mtm) = MainThreadMarker::new() else {
@@ -1210,22 +1364,30 @@ pub fn handle(event: Event) -> Vec<Action> {
             Err(e) => vec![Action::Notify(e)],
         },
         Event::SetEnabled(id, enabled) => {
-            set_enabled(&id, enabled);
+            with_mut(|s| {
+                if let Some(installed) = s.find_mut(&id) {
+                    installed.record.enabled = enabled;
+                }
+                s.save();
+            });
+            apply();
+            vec![Action::Installed]
+        }
+        Event::SetScope(id, scope) => {
+            with_mut(|s| {
+                if let Some(installed) = s.find_mut(&id) {
+                    installed.record.scope = scope;
+                }
+                s.save();
+            });
+            apply();
             vec![Action::Installed]
         }
         Event::Remove(id) => {
             remove(&id);
             vec![Action::Installed]
         }
-        Event::OpenOptions(id) => options_url(&id)
-            .map(|url| Action::OpenTab {
-                url: Some(url),
-                workspace: None,
-                active: true,
-                reply: None,
-            })
-            .into_iter()
-            .collect(),
+        Event::OpenOptions(id) => options(&id).into_iter().collect(),
         Event::Click { id, anchor } => {
             click(&id, anchor);
             Vec::new()
@@ -1294,8 +1456,9 @@ fn install_path(path: &Path) -> Vec<Action> {
     }
 }
 
-/// Parse what was imported, show what it asks for, and install on yes. An
-/// installed extension with the same id is replaced, keeping its data.
+/// Parse what was imported, show what it asks for, and install on yes — in
+/// the workspace on screen. An installed extension with the same id is
+/// replaced, keeping its data and its workspaces.
 fn confirm_install(id: String, path: PathBuf) {
     parse(&path.clone(), move |result| {
         let extension = match result {
@@ -1321,6 +1484,15 @@ fn confirm_install(id: String, path: PathBuf) {
                     .collect::<Vec<_>>(),
             )
         };
+        let (previous, (active_id, active_name)) = with(|s| {
+            (
+                s.find(&id).map(|i| i.record.clone()),
+                s.active.clone().expect(
+                    "sync records the workspace on screen before anything can be installed",
+                ),
+            )
+        })
+        .expect("installs only start while extensions are running");
         let mut detail = Vec::new();
         if !permissions.is_empty() {
             let mut sorted = permissions.clone();
@@ -1332,6 +1504,11 @@ fn confirm_install(id: String, path: PathBuf) {
             sorted.sort();
             detail.push(format!("It can read and change:\n{}", sorted.join("\n")));
         }
+        if previous.is_none() {
+            detail.push(format!(
+                "It will run in the “{active_name}” workspace. Add it to more in Settings → Extensions."
+            ));
+        }
         let icon = unsafe { extension.iconForSize(CGSize::new(ALERT_ICON_PT, ALERT_ICON_PT)) };
         if !confirm(
             &format!("Add “{name}”?"),
@@ -1342,106 +1519,87 @@ fn confirm_install(id: String, path: PathBuf) {
             extension_store::discard(&path);
             return;
         }
-        let replaced = with_mut(|s| {
-            let i = s.installed.iter().position(|i| i.record.id == id)?;
-            Some(s.installed.remove(i))
-        })
-        .flatten();
-        if let Some(old) = replaced {
-            if let Some(context) = &old.context {
-                stop(context);
-            }
-            if old.record.path != path {
-                extension_store::discard(&old.record.path);
-            }
-        }
         let record = Record {
             id: id.clone(),
             path: path.clone(),
             enabled: true,
             permissions,
             patterns,
+            scope: previous
+                .as_ref()
+                .map_or_else(|| Scope::Only(vec![active_id]), |p| p.scope.clone()),
         };
+        // A reinstall replaces the old version: unload it everywhere first.
+        with_mut(|s| s.installed.retain(|i| i.record.id != id));
+        apply();
+        if let Some(previous) = previous.filter(|p| p.path != path) {
+            extension_store::discard(&previous.path);
+        }
         with_mut(|s| {
             s.installed.push(Installed {
                 record,
                 extension: Some(extension.clone()),
-                context: None,
                 error: None,
             });
             s.save();
         });
-        start(&id);
+        apply();
         send_app(Action::Installed);
         send_app(Action::Notify(format!("Added {name}")));
     });
 }
 
-fn set_enabled(id: &str, enabled: bool) {
-    let context = with_mut(|s| {
-        let installed = s.find_mut(id)?;
-        installed.record.enabled = enabled;
-        let context = if enabled {
-            None
-        } else {
-            installed.context.take()
-        };
-        s.save();
-        context
-    })
-    .flatten();
-    match context {
-        Some(context) => stop(&context),
-        None if enabled => start(id),
-        None => {}
-    }
-}
-
-/// Uninstall: unload, delete its stored data and archive, forget it.
+/// Uninstall: unload it everywhere, delete its data from every workspace,
+/// delete its archive, forget it.
 fn remove(id: &str) {
-    let Some((removed, controller)) = with_mut(|s| {
+    let Some(removed) = with_mut(|s| {
         let i = s.installed.iter().position(|i| i.record.id == id)?;
         let removed = s.installed.remove(i);
         s.save();
-        Some((removed, s.controller.clone()))
+        Some(removed)
     })
     .flatten() else {
         return;
     };
-    if let Some(context) = &removed.context {
-        stop(context);
-    }
-    let context = removed.context.clone().or_else(|| {
-        let extension = removed.extension.as_ref()?;
+    apply();
+    if let (Some(extension), Some(mtm)) = (&removed.extension, MainThreadMarker::new()) {
+        let (live, dormant): (Vec<_>, Vec<_>) = with(|s| {
+            let live: Vec<_> = s.spaces.iter().map(|sp| sp.controller.clone()).collect();
+            let dormant: Vec<_> = s
+                .controller_ids
+                .iter()
+                .filter(|(ws, _)| s.space(ws).is_none())
+                .map(|(_, id)| *id)
+                .collect();
+            (live, dormant)
+        })
+        .unwrap_or_default();
         let context = unsafe { WKWebExtensionContext::contextForExtension(extension) };
         unsafe { context.setUniqueIdentifier(&NSString::from_str(id)) };
-        Some(context)
-    });
-    if let (Some(context), Some(mtm)) = (context, MainThreadMarker::new()) {
-        unsafe {
-            let types = WKWebExtensionController::allExtensionDataTypes(mtm);
-            let remover = controller.clone();
-            let types_for_removal = types.clone();
-            let block = RcBlock::new(move |record: *mut WKWebExtensionDataRecord| {
-                if let Some(record) = Retained::retain(record) {
-                    remover.removeDataOfTypes_fromDataRecords_completionHandler(
-                        &types_for_removal,
-                        &NSArray::from_retained_slice(&[record]),
-                        &RcBlock::new(|| {}),
-                    );
-                }
-            });
-            controller.fetchDataRecordOfTypes_forExtensionContext_completionHandler(
-                &types, &context, &block,
-            );
+        for controller in live
+            .into_iter()
+            .chain(dormant.into_iter().map(|cid| new_controller(cid, mtm)))
+        {
+            erase(controller, Some(context.clone()));
         }
     }
     extension_store::discard(&removed.record.path);
 }
 
-fn options_url(id: &str) -> Option<String> {
-    let context = with(|s| s.find(id)?.context.clone()).flatten()?;
-    url_string(unsafe { context.optionsPageURL() })
+/// Open the options page in the workspace on screen — the extension must
+/// run there for its page to load.
+fn options(id: &str) -> Option<Action> {
+    let (context, workspace) = with(|s| {
+        let space = s.active_space()?;
+        Some((space.contexts.get(id)?.clone(), space.workspace.clone()))
+    })
+    .flatten()?;
+    Some(Action::OpenTab {
+        url: Some(url_string(unsafe { context.optionsPageURL() })?),
+        workspace,
+        active: true,
+        reply: None,
+    })
 }
 
 fn click(id: &str, anchor: [f64; 4]) {
@@ -1451,7 +1609,8 @@ fn click(id: &str, anchor: [f64; 4]) {
     );
     let Some((context, tab)) = with_mut(|s| {
         s.anchors.insert(id.to_string(), rect);
-        Some((s.find(id)?.context.clone()?, s.model.active_tab()))
+        let space = s.active_space()?;
+        Some((space.contexts.get(id)?.clone(), space.active_tab()))
     })
     .flatten() else {
         return;
@@ -1472,16 +1631,25 @@ fn png_data_uri(image: &NSImage) -> Option<String> {
     ))
 }
 
-/// Script pushing the toolbar buttons — one per loaded extension with an
-/// action, as it stands for the focused tab — into the address bar.
+/// Script pushing the toolbar buttons — one per extension running in the
+/// workspace on screen, as its action stands for the focused tab — into the
+/// address bar.
 pub fn toolbar_script() -> String {
     let (contexts, tab) = with(|s| {
+        let Some(space) = s.active_space() else {
+            return (Vec::new(), None);
+        };
         let contexts: Vec<(String, Retained<WKWebExtensionContext>)> = s
             .installed
             .iter()
-            .filter_map(|i| Some((i.record.id.clone(), i.context.clone()?)))
+            .filter_map(|i| {
+                Some((
+                    i.record.id.clone(),
+                    space.contexts.get(&i.record.id)?.clone(),
+                ))
+            })
             .collect();
-        (contexts, s.model.active_tab())
+        (contexts, space.active_tab())
     })
     .unwrap_or_default();
     let buttons: Vec<serde_json::Value> = contexts
@@ -1506,21 +1674,25 @@ pub fn toolbar_script() -> String {
     )
 }
 
-/// Script pushing the installed list into the settings panel.
-pub fn settings_script() -> String {
+/// Script pushing the installed list, and the workspaces to scope it to,
+/// into the settings panel.
+pub fn settings_script(wm: &WorkspaceManager) -> String {
     struct Row {
         record: Record,
         extension: Option<Retained<WKWebExtension>>,
-        loaded: bool,
+        runs_here: bool,
         error: Option<String>,
     }
+    let active = &wm.active().id;
     let rows: Vec<Row> = with(|s| {
         s.installed
             .iter()
             .map(|i| Row {
                 record: i.record.clone(),
                 extension: i.extension.clone(),
-                loaded: i.context.is_some(),
+                runs_here: s
+                    .space(active)
+                    .is_some_and(|sp| sp.contexts.contains_key(&i.record.id)),
                 error: i.error.clone(),
             })
             .collect()
@@ -1539,7 +1711,11 @@ pub fn settings_script() -> String {
                 "version": text(WKWebExtension::displayVersion),
                 "description": text(WKWebExtension::displayDescription),
                 "enabled": row.record.enabled,
-                "options": row.loaded && ext.is_some_and(|e| unsafe { e.hasOptionsPage() }),
+                "scope": match &row.record.scope {
+                    Scope::All => serde_json::json!("all"),
+                    Scope::Only(ids) => serde_json::json!(ids),
+                },
+                "options": row.runs_here && ext.is_some_and(|e| unsafe { e.hasOptionsPage() }),
                 "error": row.error,
                 "path": row.record.path.display().to_string(),
                 "icon": ext
@@ -1549,8 +1725,18 @@ pub fn settings_script() -> String {
             })
         })
         .collect();
+    let workspaces: Vec<serde_json::Value> = wm
+        .list()
+        .iter()
+        .map(|w| serde_json::json!({ "id": w.id, "name": w.name, "color": w.color }))
+        .collect();
     format!(
         "window.__setExtensions && window.__setExtensions({})",
-        serde_json::json!({ "supported": with(|_| ()).is_some(), "items": items })
+        serde_json::json!({
+            "supported": with(|_| ()).is_some(),
+            "items": items,
+            "workspaces": workspaces,
+            "active": active,
+        })
     )
 }

@@ -439,6 +439,8 @@ pub fn html() -> String {
   .ext-version { margin-left: 5px; font-size: 11px; color: var(--label-2); }
   .ext-error { color: var(--err); white-space: normal; }
   #ext-pick { flex-shrink: 0; margin-left: 12px; }
+  .ext-scope .seg { flex-wrap: wrap; }
+  .ext-scope .ws-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 </style>
 </head>
 <body>
@@ -1102,6 +1104,22 @@ pub fn html() -> String {
   var extList = document.getElementById('ext-list');
   var extSource = document.getElementById('ext-source');
   var extRemoveArmed = null;
+  var extItems = {};
+  var extWorkspaces = [];
+
+  // "all" also covers workspaces created later; ticking every workspace by
+  // hand does not.
+  function extScope(x) {
+    var all = x.scope === 'all';
+    var chips = '<button data-scope-all aria-pressed="' + all + '">All workspaces</button>' +
+      extWorkspaces.map(function(w) {
+        var on = all || x.scope.indexOf(w.id) >= 0;
+        return '<button data-ws="' + esc(w.id) + '" aria-pressed="' + on + '">' +
+          '<span class="ws-dot" style="background:' + esc(w.color) + '"></span>' + esc(w.name) + '</button>';
+      }).join('');
+    return '<div class="row ext-scope"><span class="row-label" id="ext-scope-' + esc(x.id) + '">Runs in</span>' +
+      '<span class="seg" role="group" aria-labelledby="ext-scope-' + esc(x.id) + '">' + chips + '</span></div>';
+  }
 
   function extCard(x) {
     var icon = x.icon
@@ -1117,11 +1135,14 @@ pub fn html() -> String {
         '<button class="proxy-remove" data-remove>Remove</button>' +
         '<button class="toggle' + (x.enabled ? ' on' : '') + '" role="switch" aria-checked="' + x.enabled +
           '" aria-label="Turn on ' + esc(x.name) + '"></button>' +
-      '</div></div>';
+      '</div>' + extScope(x) + '</div>';
   }
 
   window.__setExtensions = function(data) {
     extRemoveArmed = null;
+    extWorkspaces = data.workspaces;
+    extItems = {};
+    data.items.forEach(function(x) { extItems[x.id] = x; });
     document.getElementById('ext-controls').style.display = data.supported ? '' : 'none';
     if (!data.supported) {
       extList.innerHTML = '<div class="section proxy-empty"><div class="row-label">Extensions need macOS 15.4 or later</div></div>';
@@ -1154,6 +1175,22 @@ pub fn html() -> String {
     }
     if (e.target.closest('[data-options]')) {
       ipc({ type: 'ext_options', id: id });
+      return;
+    }
+    if (e.target.closest('[data-scope-all]')) {
+      if (extItems[id].scope !== 'all') ipc({ type: 'ext_scope', id: id, scope: 'all' });
+      return;
+    }
+    var chip = e.target.closest('[data-ws]');
+    if (chip) {
+      var current = extItems[id].scope === 'all'
+        ? extWorkspaces.map(function(w) { return w.id; })
+        : extItems[id].scope.slice();
+      var at = current.indexOf(chip.dataset.ws);
+      if (at >= 0) current.splice(at, 1); else current.push(chip.dataset.ws);
+      // Off everywhere is what the switch is for.
+      if (!current.length) return;
+      ipc({ type: 'ext_scope', id: id, scope: current });
       return;
     }
     var toggle = e.target.closest('.toggle');

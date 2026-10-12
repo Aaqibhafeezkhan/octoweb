@@ -7,6 +7,7 @@
 //! loads a ZIP directly, so nothing is ever unpacked.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,33 +31,72 @@ pub struct Record {
     pub permissions: Vec<String>,
     #[serde(default)]
     pub patterns: Vec<String>,
+    #[serde(default)]
+    pub scope: Scope,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// The workspaces an extension runs in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    /// Every workspace, including ones created later. Also what a record
+    /// written before workspace scoping means: those ran everywhere.
+    #[default]
+    All,
+    /// These workspace ids only.
+    Only(Vec<String>),
+}
+
+impl Scope {
+    pub fn includes(&self, workspace: &str) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Only(ids) => ids.iter().any(|id| id == workspace),
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Store {
-    /// Names the WebKit storage of this profile's extension controller, so
-    /// side-by-side profiles (`OCTOWEB_CONFIG_DIR`) never share extension data.
-    pub controller_id: [u8; 16],
+    /// Workspace id → the identifier of that workspace's extension controller,
+    /// which names its WebKit storage. One per workspace keeps extension data
+    /// as isolated as cookies are; random per profile keeps side-by-side
+    /// profiles (`OCTOWEB_CONFIG_DIR`) apart.
+    #[serde(default)]
+    pub controllers: BTreeMap<String, [u8; 16]>,
+    /// The single, profile-wide controller of the first extensions build. Its
+    /// data stays reachable from the default workspace.
+    #[serde(default, rename = "controller_id", skip_serializing)]
+    shared_controller: Option<[u8; 16]>,
     pub extensions: Vec<Record>,
 }
 
-/// The installed list. A profile without one gets a fresh controller id,
-/// written at once: extension storage is keyed by it. An unreadable file is
-/// an error, not an empty list — overwriting it would lose every install.
+impl Store {
+    pub fn new(controllers: BTreeMap<String, [u8; 16]>, extensions: Vec<Record>) -> Self {
+        Self {
+            controllers,
+            shared_controller: None,
+            extensions,
+        }
+    }
+}
+
+/// The installed list. An unreadable file is an error, not an empty list —
+/// overwriting it would lose every install.
 pub fn load() -> Result<Store, String> {
     let path = records_path();
-    match fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let store = Store {
-                controller_id: crate::workspace::random_bytes16(),
-                extensions: Vec::new(),
-            };
-            save(&store);
-            Ok(store)
-        }
-        Err(e) => Err(format!("{}: {e}", path.display())),
+    let mut store: Store = match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Store::default(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if let Some(id) = store.shared_controller.take() {
+        store
+            .controllers
+            .entry(crate::workspace::DEFAULT_WORKSPACE_ID.to_string())
+            .or_insert(id);
     }
+    Ok(store)
 }
 
 pub fn save(store: &Store) {
@@ -213,6 +253,26 @@ mod tests {
         );
         assert_eq!(store_id("https://example.com/extension"), None);
         assert_eq!(store_id("nngceckbapebfimnlniiiahkandclblz"), None);
+    }
+
+    #[test]
+    fn scopes_round_trip_and_old_records_run_everywhere() {
+        let old = r#"{"controller_id":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],
+            "extensions":[{"id":"x","path":"/x","enabled":true}]}"#;
+        let store: Store = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            store.shared_controller,
+            Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+        );
+        assert_eq!(store.extensions[0].scope, Scope::All);
+
+        let mut record = store.extensions[0].clone();
+        record.scope = Scope::Only(vec!["work".into()]);
+        let saved = serde_json::to_string(&Store::new(BTreeMap::new(), vec![record])).unwrap();
+        assert!(!saved.contains("controller_id"));
+        let back: Store = serde_json::from_str(&saved).unwrap();
+        assert!(back.extensions[0].scope.includes("work"));
+        assert!(!back.extensions[0].scope.includes("home"));
     }
 
     #[test]

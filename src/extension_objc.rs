@@ -218,41 +218,41 @@ define_class!(
         #[unsafe(method_id(webExtensionController:openWindowsForExtensionContext:))]
         fn open_windows(
             &self,
-            _controller: &WKWebExtensionController,
+            controller: &WKWebExtensionController,
             _context: &WKWebExtensionContext,
         ) -> Retained<NSArray<ProtocolObject<dyn WKWebExtensionWindow>>> {
-            extensions::open_windows()
+            extensions::open_windows(controller)
         }
 
         #[unsafe(method_id(webExtensionController:focusedWindowForExtensionContext:))]
         fn focused_window(
             &self,
-            _controller: &WKWebExtensionController,
+            controller: &WKWebExtensionController,
             _context: &WKWebExtensionContext,
         ) -> Option<Retained<ProtocolObject<dyn WKWebExtensionWindow>>> {
-            extensions::focused_window()
+            extensions::focused_window(controller)
         }
 
         #[unsafe(method(webExtensionController:openNewTabUsingConfiguration:forExtensionContext:completionHandler:))]
         fn open_new_tab(
             &self,
-            _controller: &WKWebExtensionController,
+            controller: &WKWebExtensionController,
             configuration: &WKWebExtensionTabConfiguration,
             _context: &WKWebExtensionContext,
             completion: &TabReply,
         ) {
-            extensions::open_tab(configuration, completion.copy());
+            extensions::open_tab(controller, configuration, completion.copy());
         }
 
         #[unsafe(method(webExtensionController:openNewWindowUsingConfiguration:forExtensionContext:completionHandler:))]
         fn open_new_window(
             &self,
-            _controller: &WKWebExtensionController,
+            controller: &WKWebExtensionController,
             configuration: &WKWebExtensionWindowConfiguration,
             _context: &WKWebExtensionContext,
             completion: &WindowReply,
         ) {
-            extensions::open_window(configuration, completion.copy());
+            extensions::open_window(controller, configuration, completion.copy());
         }
 
         #[unsafe(method(webExtensionController:promptForPermissions:inTab:forExtensionContext:completionHandler:))]

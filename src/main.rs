@@ -887,6 +887,7 @@ fn main() {
         // value, defeating per-workspace cookie/localStorage isolation).
         move |tab_id: usize,
               url: &str,
+              workspace_id: &str,
               data_store_id: Option<[u8; 16]>,
               incognito: bool,
               proxy_rule: Option<config::ProxyRule>|
@@ -1201,7 +1202,7 @@ fn main() {
             } else {
                 // With extensions available the configuration carries the
                 // controller and this store; wry skips its own store setup.
-                match extensions::tab_configuration(url, store_id) {
+                match extensions::tab_configuration(url, workspace_id, store_id) {
                     Some(config) => wv.with_webview_configuration(config),
                     None => match store_id {
                         Some(id) => wv.with_data_store_identifier(id),
@@ -1434,6 +1435,7 @@ fn main() {
                 let wv = make_webview(
                     tab_id,
                     &st.url,
+                    &ws.id,
                     ws.data_store_id,
                     false,
                     site_proxy::rule_for(&st.url),
@@ -1710,6 +1712,25 @@ fn main() {
                             if let Some(id) = v["id"].as_str() {
                                 let _ = p.send_event(AppEvent::Extension(
                                     extensions::Event::Remove(id.to_string()),
+                                ));
+                            }
+                        }
+                        Some("ext_scope") => {
+                            // "all", or the ids of the workspaces it runs in.
+                            let scope = match &v["scope"] {
+                                serde_json::Value::String(s) if s == "all" => {
+                                    Some(extension_store::Scope::All)
+                                }
+                                serde_json::Value::Array(ids) => ids
+                                    .iter()
+                                    .map(|id| id.as_str().map(str::to_string))
+                                    .collect::<Option<Vec<_>>>()
+                                    .map(extension_store::Scope::Only),
+                                _ => None,
+                            };
+                            if let (Some(id), Some(scope)) = (v["id"].as_str(), scope) {
+                                let _ = p.send_event(AppEvent::Extension(
+                                    extensions::Event::SetScope(id.to_string(), scope),
                                 ));
                             }
                         }
@@ -3135,6 +3156,7 @@ fn main() {
             let wv = make_webview(
                 id,
                 load_url,
+                &workspace_manager.at(ws_i).id,
                 workspace_manager.at(ws_i).data_store_id,
                 incognito,
                 site_proxy::rule_for(load_url),
@@ -3184,7 +3206,7 @@ fn main() {
                     let has_snapshot = tab_snapshots.contains_key(&target);
                     let load_url = if has_snapshot { "about:blank" } else { url.as_str() };
                     let incognito = is_isolated_tab(&workspace_manager, target);
-                    let wv = make_webview(target, load_url, workspace_manager.at(ws_i).data_store_id, incognito, site_proxy::rule_for(&url));
+                    let wv = make_webview(target, load_url, &workspace_manager.at(ws_i).id, workspace_manager.at(ws_i).data_store_id, incognito, site_proxy::rule_for(&url));
                     if !has_snapshot && url == "about:blank" {
                         let html =
                             newtab_html::html(&quickslots::to_json(&workspace_manager.at(ws_i).quick_slots), &later::to_json(&workspace_manager.at(ws_i).later));
@@ -6609,7 +6631,7 @@ fn main() {
                             k.ui_json()
                         ));
                     }
-                    let _ = settings_wv.evaluate_script(&extensions::settings_script());
+                    let _ = settings_wv.evaluate_script(&extensions::settings_script(&workspace_manager));
                     settings_win.set_visible(true);
                     settings_win.set_focus();
                     settings_visible = true;
@@ -6654,9 +6676,9 @@ fn main() {
                             }
                         }
                         extensions::Action::OpenTab { url, workspace, active, reply } => {
-                            let ws_idx = workspace
-                                .and_then(|id| workspace_manager.index_of(&id))
-                                .unwrap_or(workspace_manager.active_index());
+                            let Some(ws_idx) = workspace_manager.index_of(&workspace) else {
+                                continue; // workspace deleted since the extension asked
+                            };
                             let url = url.unwrap_or_else(|| cfg.home_page.clone());
                             let new_id = workspace_manager.at(ws_idx).tabs.lock().unwrap().open_background(url.clone());
                             spawn_tab_webview_at!(ws_idx, new_id, &url);
@@ -6677,7 +6699,7 @@ fn main() {
                         extensions::Action::Installed => {
                             let _ = address_bar_wv.evaluate_script(&extensions::toolbar_script());
                             if settings_visible {
-                                let _ = settings_wv.evaluate_script(&extensions::settings_script());
+                                let _ = settings_wv.evaluate_script(&extensions::settings_script(&workspace_manager));
                             }
                         }
                         extensions::Action::Notify(msg) => toast!(msg, "\u{1F9E9}", "Extensions"),
