@@ -293,7 +293,7 @@ impl WorkspaceManager {
 /// macOS. No UUID/rand crate: this is the one primitive both the workspace
 /// id (formatted as a UUIDv4 string below) and the WKWebsiteDataStore
 /// identifier are built from.
-fn random_bytes16() -> [u8; 16] {
+pub(crate) fn random_bytes16() -> [u8; 16] {
     let mut buf = [0u8; 16];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))

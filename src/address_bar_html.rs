@@ -14,10 +14,12 @@
 ///   window.__setSidebarOpen(open)                             — 🐙 takes the brand color while open
 ///   window.__sysStats(cpuPct, memMb)                          — update CPU%/RSS (null = hide)
 ///   window.__setShortcuts(data)                               — update live shortcut titles
+///   window.__setExtensionButtons(buttons)                     — extension actions: [{id, label, badge, enabled, icon}]
 ///
 /// IPC messages sent to Rust:
 ///   { type: "toggle_sidebar" }       — 🐙 button clicked
 ///   { type: "copy_text", text: "…" } — copy title or URL to clipboard
+///   { type: "ext_action", id, x, y, w, h } — extension button clicked (its rect anchors the popup)
 pub fn html() -> String {
     let template = r#"<!DOCTYPE html>
 <html>
@@ -473,6 +475,28 @@ pub fn html() -> String {
     pointer-events: none;
   }
   .badge.show { opacity: 1; transform: scale(1); }
+
+  /* ── Extension action buttons ─────────────────────────────────────── */
+  #ext-bar { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  #ext-bar:empty { display: none; }
+  .ext-btn img { width: 16px; height: 16px; display: block; }
+  .ext-btn:disabled { opacity: 0.4; cursor: default; }
+  .ext-letter { font-size: var(--fs-caption); font-weight: 600; line-height: 1; }
+  .ext-badge {
+    position: absolute;
+    bottom: 0; right: -2px;
+    min-width: 12px; height: 12px;
+    padding: 0 3px;
+    box-sizing: border-box;
+    border-radius: var(--r-capsule);
+    background: var(--err);
+    color: var(--on-accent);
+    font-size: 8px;
+    font-weight: 600;
+    line-height: 12px;
+    text-align: center;
+    pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -510,6 +534,7 @@ pub fn html() -> String {
     <span class="stat hidden" id="cpu-chip" title="CPU usage of this tab's web process"><span class="sys-icon">@@ICON_ACTIVITY@@</span><span class="stat-val" id="cpu-stat"></span></span>
     <span class="stat hidden" id="mem-chip" title="Memory used by this tab's web process"><span class="sys-icon">@@ICON_CPU@@</span><span class="stat-val" id="mem-stat"></span></span>
   </div>
+  <div id="ext-bar" role="toolbar" aria-label="Extensions"></div>
   <button id="workspace-btn" class="bar-btn" type="button" title="Workspaces">
     <span class="ws-icon">@@ICON_LAYERS@@</span>
     <span class="ws-dot" id="ws-dot"></span>
@@ -1188,6 +1213,48 @@ pub fn html() -> String {
   // Close current tab
   document.getElementById('close-tab-btn').addEventListener('click', function() {
     window.ipc.postMessage(JSON.stringify({ type: 'close_tab' }));
+  });
+
+  // Extension action buttons — pushed by Rust when an action, or the tab it
+  // stands for, changes. Labels and badges come from extensions: text only.
+  var extBar = document.getElementById('ext-bar');
+  window.__setExtensionButtons = function(buttons) {
+    extBar.textContent = '';
+    buttons.forEach(function(b) {
+      var btn = document.createElement('button');
+      btn.className = 'bar-btn ext-btn';
+      btn.type = 'button';
+      btn.title = b.label;
+      btn.setAttribute('aria-label', b.label);
+      btn.disabled = !b.enabled;
+      btn.dataset.id = b.id;
+      if (b.icon) {
+        var img = document.createElement('img');
+        img.src = b.icon;
+        img.alt = '';
+        btn.appendChild(img);
+      } else {
+        var letter = document.createElement('span');
+        letter.className = 'ext-letter';
+        letter.textContent = (b.label || '?').charAt(0).toUpperCase();
+        btn.appendChild(letter);
+      }
+      if (b.badge) {
+        var badge = document.createElement('span');
+        badge.className = 'ext-badge';
+        badge.textContent = b.badge;
+        btn.appendChild(badge);
+      }
+      extBar.appendChild(btn);
+    });
+  };
+  extBar.addEventListener('click', function(e) {
+    var btn = e.target.closest('.ext-btn');
+    if (!btn || btn.disabled) return;
+    var r = btn.getBoundingClientRect();
+    window.ipc.postMessage(JSON.stringify({
+      type: 'ext_action', id: btn.dataset.id, x: r.left, y: r.top, w: r.width, h: r.height
+    }));
   });
 
   // Badge API

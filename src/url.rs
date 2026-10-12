@@ -119,7 +119,7 @@ pub fn is_external_scheme(url: &str) -> bool {
     // Schemes the browser handles natively — everything else is external.
     !matches!(
         scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "about" | "data" | "blob" | "javascript" | "file"
+        "http" | "https" | "about" | "data" | "blob" | "javascript" | "file" | "webkit-extension"
     )
 }
 
@@ -128,9 +128,10 @@ pub fn is_external_scheme(url: &str) -> bool {
 /// `javascript:` executes in the target tab's origin — for an in-place navigate
 /// that is arbitrary code in a page the user is already logged into. `data:` and
 /// `blob:` let a caller paint attacker-authored content under a URL the address
-/// bar then presents as the tab's real location, and `file:` reads local disk.
-/// A human typing these in the address bar is making their own choice; a tool
-/// call is not, because the URL usually came from a page the agent just read.
+/// bar then presents as the tab's real location, `file:` reads local disk, and
+/// `webkit-extension:` pages hold an extension's privileged APIs. A human
+/// typing these in the address bar is making their own choice; a tool call is
+/// not, because the URL usually came from a page the agent just read.
 pub fn is_agent_forbidden_scheme(url: &str) -> bool {
     // No colon means no scheme — a bare search term like "javascript" is not a
     // javascript: URL.
@@ -146,7 +147,10 @@ pub fn is_agent_forbidden_scheme(url: &str) -> bool {
         .filter(|c| !c.is_whitespace() && !c.is_control())
         .flat_map(char::to_lowercase)
         .collect();
-    matches!(scheme.as_str(), "javascript" | "data" | "blob" | "file")
+    matches!(
+        scheme.as_str(),
+        "javascript" | "data" | "blob" | "file" | "webkit-extension"
+    )
 }
 
 /// Percent-encode a query string for use in a URL (encodes everything except unreserved chars)
@@ -175,6 +179,9 @@ mod tests {
         assert!(is_agent_forbidden_scheme("data:text/html,<h1>x</h1>"));
         assert!(is_agent_forbidden_scheme("blob:https://x/y"));
         assert!(is_agent_forbidden_scheme("file:///etc/hosts"));
+        assert!(is_agent_forbidden_scheme(
+            "webkit-extension://abc/options.html"
+        ));
         // The URL parser strips these before reading the scheme, so we must too.
         assert!(is_agent_forbidden_scheme("java\tscript:alert(1)"));
         assert!(is_agent_forbidden_scheme("java\nscript:alert(1)"));
@@ -232,6 +239,12 @@ mod tests {
         ] {
             assert_eq!(resolve_url(url, SEARCH), url);
         }
+    }
+
+    #[test]
+    fn extension_pages_load_in_the_browser() {
+        assert!(!is_external_scheme("webkit-extension://abc/options.html"));
+        assert!(is_external_scheme("tg://resolve?domain=x"));
     }
 
     #[test]

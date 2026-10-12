@@ -434,6 +434,11 @@ pub fn html() -> String {
   .proxy-empty { padding: 20px 12px; text-align: center; }
   .proxy-empty .kb-note { display: block; margin-top: 4px; }
   #proxy-add { flex-shrink: 0; margin-left: 12px; }
+  .ext-icon { width: 24px; height: 24px; flex-shrink: 0; border-radius: 5px; object-fit: contain; }
+  .ext-icon.blank { background: var(--fill-press); }
+  .ext-version { margin-left: 5px; font-size: 11px; color: var(--label-2); }
+  .ext-error { color: var(--err); white-space: normal; }
+  #ext-pick { flex-shrink: 0; margin-left: 12px; }
 </style>
 </head>
 <body>
@@ -454,6 +459,7 @@ pub fn html() -> String {
       <button class="tab active" data-pane="tab-general">General</button>
       <button class="tab" data-pane="tab-keybindings">Keyboard shortcuts</button>
       <button class="tab" data-pane="tab-proxies">Proxies</button>
+      <button class="tab" data-pane="tab-extensions">Extensions</button>
     </div>
 
     <div id="tab-general" class="tab-pane active">
@@ -616,6 +622,28 @@ pub fn html() -> String {
       <div class="kb-footer">
         <span class="kb-note">Tabs opened on a proxy's sites send everything through it and keep their own cookies.</span>
         <button class="kb-reset-all" id="proxy-add">Add proxy</button>
+      </div>
+    </div>
+
+    <div id="tab-extensions" class="tab-pane">
+      <div id="ext-list"></div>
+      <div id="ext-controls">
+        <div class="section">
+          <div class="row with-hint">
+            <div class="row-label-stack">
+              <label class="row-label" for="ext-source">Add from Chrome Web Store</label>
+              <span class="row-hint">Paste the extension's store page address, or its id.</span>
+            </div>
+            <span class="proxy-inline">
+              <input type="text" id="ext-source" placeholder="chromewebstore.google.com/detail/…" spellcheck="false" autocomplete="off">
+              <button class="proxy-link" id="ext-add">Add</button>
+            </span>
+          </div>
+        </div>
+        <div class="kb-footer">
+          <span class="kb-note">Extensions run in normal tabs, not in private ones.</span>
+          <button class="kb-reset-all" id="ext-pick">Add from file…</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1068,6 +1096,87 @@ pub fn html() -> String {
     openProxy = proxies.length - 1;
     renderProxies('[data-proxy="' + openProxy + '"] [data-field="ssh"]');
     saveProxies();
+  });
+
+  // ── Extensions ─────────────────────────────────────────────────────────────
+  var extList = document.getElementById('ext-list');
+  var extSource = document.getElementById('ext-source');
+  var extRemoveArmed = null;
+
+  function extCard(x) {
+    var icon = x.icon
+      ? '<img class="ext-icon" src="' + esc(x.icon) + '" alt="">'
+      : '<span class="ext-icon blank"></span>';
+    var sub = x.error
+      ? '<span class="proxy-sub ext-error">' + esc(x.error) + '</span>'
+      : '<span class="proxy-sub" title="' + esc(x.path) + '">' + esc(x.description || x.path) + '</span>';
+    var version = x.version ? '<span class="ext-version">' + esc(x.version) + '</span>' : '';
+    return '<div class="section" data-ext="' + esc(x.id) + '"><div class="proxy-head">' + icon +
+        '<span class="proxy-text"><span class="proxy-name">' + esc(x.name) + version + '</span>' + sub + '</span>' +
+        (x.options ? '<button class="proxy-link" data-options>Options</button>' : '') +
+        '<button class="proxy-remove" data-remove>Remove</button>' +
+        '<button class="toggle' + (x.enabled ? ' on' : '') + '" role="switch" aria-checked="' + x.enabled +
+          '" aria-label="Turn on ' + esc(x.name) + '"></button>' +
+      '</div></div>';
+  }
+
+  window.__setExtensions = function(data) {
+    extRemoveArmed = null;
+    document.getElementById('ext-controls').style.display = data.supported ? '' : 'none';
+    if (!data.supported) {
+      extList.innerHTML = '<div class="section proxy-empty"><div class="row-label">Extensions need macOS 15.4 or later</div></div>';
+      return;
+    }
+    extList.innerHTML = data.items.length
+      ? data.items.map(extCard).join('')
+      : '<div class="section proxy-empty"><div class="row-label">No extensions yet</div>' +
+        '<span class="kb-note">Add one from the Chrome Web Store, or a folder, .zip, .xpi or .crx file.</span></div>';
+  };
+
+  extList.addEventListener('click', function(e) {
+    var card = e.target.closest('[data-ext]');
+    if (!card) return;
+    var id = card.dataset.ext;
+    var remove = e.target.closest('[data-remove]');
+    if (extRemoveArmed && remove !== extRemoveArmed) {
+      extRemoveArmed.textContent = 'Remove';
+      extRemoveArmed = null;
+    }
+    if (remove) {
+      // Two clicks, so a stray one can't uninstall an extension and its data.
+      if (!extRemoveArmed) {
+        extRemoveArmed = remove;
+        remove.textContent = 'Click again to remove';
+        return;
+      }
+      ipc({ type: 'ext_remove', id: id });
+      return;
+    }
+    if (e.target.closest('[data-options]')) {
+      ipc({ type: 'ext_options', id: id });
+      return;
+    }
+    var toggle = e.target.closest('.toggle');
+    if (toggle) {
+      var on = !toggle.classList.contains('on');
+      toggle.classList.toggle('on', on);
+      toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+      ipc({ type: 'ext_enable', id: id, enabled: on });
+    }
+  });
+
+  function installFromSource() {
+    var value = extSource.value.trim();
+    if (!value) return;
+    ipc({ type: 'ext_install', value: value });
+    extSource.value = '';
+  }
+  document.getElementById('ext-add').addEventListener('click', installFromSource);
+  extSource.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); installFromSource(); }
+  });
+  document.getElementById('ext-pick').addEventListener('click', function() {
+    ipc({ type: 'ext_pick' });
   });
 
   // ── Tabs ──────────────────────────────────────────────────────────────

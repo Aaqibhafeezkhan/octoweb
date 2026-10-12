@@ -1643,6 +1643,82 @@ def dismiss_overlay_never_accepts():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Browser extensions — need tests/fixtures/extension installed in the
+# browser under test (Settings → Extensions → Add from file…), so they
+# run only with --extensions.
+# ──────────────────────────────────────────────────────────────────────
+
+EXTENSION_TESTS = []
+
+
+def extension_test(fn):
+    EXTENSION_TESTS.append(fn)
+    return fn
+
+
+_ext_request_ids = iter(range(1, 1_000_000))
+
+
+def wait_for_content_script(tab_id):
+    marker = poll(lambda: exec_js(tab_id, "document.documentElement.dataset.octowebExtension || ''"),
+                  lambda r: "injected" in r, attempts=40, delay=0.25)
+    expect("injected" in marker,
+           f"fixture extension's content script never ran (is it installed and on?): {marker!r}")
+
+
+def ext_request(tab_id, request):
+    """Send a request through the fixture's content script to its background
+    worker; return the worker's JSON reply."""
+    rid = next(_ext_request_ids)
+    payload = json.dumps(dict(request, id=rid))
+    exec_js(tab_id, f"(window.postMessage({{octowebTest: {payload}}}, '*'), 'sent')")
+    read = (f"JSON.parse(document.documentElement.getAttribute('data-octoweb-result-{rid}') || 'null')")
+    text = poll(lambda: exec_js(tab_id, read), lambda r: "{" in r, attempts=40, delay=0.25)
+    reply = parse_json_text(text, f"extension reply to {request['type']}")
+    expect(isinstance(reply, dict) and "error" not in reply,
+           f"extension {request['type']} request failed: {reply!r}")
+    return reply
+
+
+@extension_test
+def extension_content_script_and_messaging():
+    """The content script runs, and a round trip through the background
+    worker sees this tab through the tabs API and round-trips storage."""
+    with fixture_tab("basic.html") as tab:
+        wait_for_content_script(tab)
+        reply = ext_request(tab, {"type": "hello"})
+        expect(reply.get("url") == fixture_url("basic.html"), f"tabs.get saw the wrong URL: {reply!r}")
+        expect(reply.get("title") == "OW Fixture: Basic", f"tabs.get saw the wrong title: {reply!r}")
+        expect(isinstance(reply.get("tabCount"), int) and reply["tabCount"] >= 1,
+               f"tabs.query found no tabs: {reply!r}")
+        expect(reply.get("storage") is True, f"storage.local round trip failed: {reply!r}")
+
+
+@extension_test
+def extension_creates_updates_and_closes_tabs():
+    """tabs.create, tabs.update and tabs.remove act on real browser tabs."""
+    with fixture_tab("basic.html") as tab:
+        wait_for_content_script(tab)
+        reply = ext_request(tab, {"type": "open", "url": fixture_url("basic.html?ext-opened")})
+        ext_tab = reply.get("tabId")
+        expect(isinstance(ext_tab, int), f"tabs.create returned no tab id: {reply!r}")
+        opened = poll(lambda: [t for t in get_tabs() if "ext-opened" in t.get("url", "")], bool, attempts=40)
+        expect(opened, "tab opened by the extension is not in browser_get_tabs")
+        ow_tab = opened[0]["id"]
+        try:
+            ext_request(tab, {"type": "update", "tabId": ext_tab, "url": fixture_url("basic.html?ext-updated")})
+            entry = poll(lambda: tab_entry(get_tabs(), ow_tab),
+                         lambda e: e is not None and "ext-updated" in e.get("url", ""), attempts=40)
+            expect(entry is not None and "ext-updated" in entry.get("url", ""),
+                   f"tabs.update did not navigate the tab: {entry!r}")
+            ext_request(tab, {"type": "close", "tabId": ext_tab})
+            gone = poll(lambda: tab_entry(get_tabs(), ow_tab), lambda e: e is None, attempts=40)
+            expect(gone is None, f"tabs.remove left the tab open: {gone!r}")
+        finally:
+            close_tab(ow_tab)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Runner
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1652,15 +1728,18 @@ def main():
     parser.add_argument("--filter", default="", help="run only tests whose name contains this substring")
     parser.add_argument("--mcp-url", default=MCP_URL, help=f"MCP endpoint (default {MCP_URL})")
     parser.add_argument("--list", action="store_true", help="list test names and exit")
+    parser.add_argument("--extensions", action="store_true",
+                        help="also run the browser-extension tests (needs tests/fixtures/extension installed)")
     args = parser.parse_args()
     MCP_URL = args.mcp_url
 
     if args.list:
-        for fn in TESTS:
+        for fn in TESTS + EXTENSION_TESTS:
             print(fn.__name__)
         return 0
 
-    selected = [fn for fn in TESTS if args.filter in fn.__name__]
+    pool = TESTS + (EXTENSION_TESTS if args.extensions else [])
+    selected = [fn for fn in pool if args.filter in fn.__name__]
     if not selected:
         print(f"no tests match filter {args.filter!r}")
         return 1

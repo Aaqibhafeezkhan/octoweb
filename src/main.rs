@@ -14,6 +14,9 @@ mod dialog_patch;
 mod dom_actions;
 mod download_patch;
 mod error_page_html;
+mod extension_objc;
+mod extension_store;
+mod extensions;
 mod find_bar_html;
 mod hibernation;
 mod hold_reorder_js;
@@ -67,7 +70,8 @@ use tao::{
 };
 use wry::http::Response;
 use wry::{
-    BackgroundThrottlingPolicy, WebView, WebViewBuilder, WebViewBuilderExtDarwin, WebViewExtMacOS,
+    BackgroundThrottlingPolicy, WebView, WebViewBuilder, WebViewBuilderExtDarwin,
+    WebViewBuilderExtMacos, WebViewExtMacOS,
 };
 
 use browser::TabManager;
@@ -225,6 +229,7 @@ enum AppEvent {
     TerminalScript(&'static str),  // keymap action run in the terminal page (new/close/cycle tab)
     Terminal(terminal::Request),   // message from the terminal panel page
     TerminalOutput(u32),           // (terminal_id) — shell output or exit: answer the panel's read
+    Extension(extensions::Event),  // extension UI command, download result, or WebKit request
     Quit,
 }
 
@@ -702,6 +707,14 @@ fn main() {
     }
     cold_open::install(); // hook application:openURLs: for warm launch
     let proxy = event_loop.create_proxy();
+    // Before the first tab WebView: a tab gets the extension controller in
+    // its configuration at creation and can never gain it afterwards.
+    extensions::init({
+        let p = proxy.clone();
+        move |ev| {
+            let _ = p.send_event(AppEvent::Extension(ev));
+        }
+    });
     let mut tunnels = ssh_tunnel::Tunnels::new(proxy.clone());
     tunnels.sync(&cfg.proxies);
     // Last reported state per SSH tunnel, shown in Settings → Proxies.
@@ -1186,9 +1199,14 @@ fn main() {
             let wv = if incognito {
                 wv.with_incognito(true)
             } else {
-                match store_id {
-                    Some(id) => wv.with_data_store_identifier(id),
-                    None => wv,
+                // With extensions available the configuration carries the
+                // controller and this store; wry skips its own store setup.
+                match extensions::tab_configuration(url, store_id) {
+                    Some(config) => wv.with_webview_configuration(config),
+                    None => match store_id {
+                        Some(id) => wv.with_data_store_identifier(id),
+                        None => wv,
+                    },
                 }
             };
             let wv = match &proxy_rule {
@@ -1206,6 +1224,7 @@ fn main() {
             webview_utils::remove_ipc_global(wv_ptr);
             webview_utils::expose_window_frame(wv_ptr);
             site_proxy::inject_from_webview(wv_ptr);
+            extensions::hook_context_menu(wv_ptr);
             site_proxy::register(wv_ptr, proxy_rule.map(|rule| rule.id), move |url| {
                 let _ = p7.send_event(AppEvent::OpenInNewTab(url, Some(tab_id)));
             });
@@ -1668,6 +1687,42 @@ fn main() {
                                 let _ = p.send_event(AppEvent::KeybindCapture(on));
                             }
                         }
+                        Some("ext_install") => {
+                            if let Some(value) = v["value"].as_str() {
+                                let _ = p.send_event(AppEvent::Extension(
+                                    extensions::Event::Install(value.to_string()),
+                                ));
+                            }
+                        }
+                        Some("ext_pick") => {
+                            let _ = p
+                                .send_event(AppEvent::Extension(extensions::Event::PickAndInstall));
+                        }
+                        Some("ext_enable") => {
+                            if let (Some(id), Some(on)) = (v["id"].as_str(), v["enabled"].as_bool())
+                            {
+                                let _ = p.send_event(AppEvent::Extension(
+                                    extensions::Event::SetEnabled(id.to_string(), on),
+                                ));
+                            }
+                        }
+                        Some("ext_remove") => {
+                            if let Some(id) = v["id"].as_str() {
+                                let _ = p.send_event(AppEvent::Extension(
+                                    extensions::Event::Remove(id.to_string()),
+                                ));
+                            }
+                        }
+                        Some("ext_options") => {
+                            if let Some(id) = v["id"].as_str() {
+                                // The options page opens in a tab behind this panel.
+                                sw.set_visible(false);
+                                let _ = p.send_event(AppEvent::HideSettings);
+                                let _ = p.send_event(AppEvent::Extension(
+                                    extensions::Event::OpenOptions(id.to_string()),
+                                ));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -2102,6 +2157,18 @@ fn main() {
                                 let _ = p.send_event(AppEvent::NavigateTo(url.to_string(), false));
                             }
                         }
+                        Some("ext_action") => {
+                            let rect = ["x", "y", "w", "h"].map(|k| v[k].as_f64());
+                            if let (Some(id), [Some(x), Some(y), Some(w), Some(h)]) =
+                                (v["id"].as_str(), rect)
+                            {
+                                let _ =
+                                    p.send_event(AppEvent::Extension(extensions::Event::Click {
+                                        id: id.to_string(),
+                                        anchor: [x, y, w, h],
+                                    }));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -2130,6 +2197,7 @@ fn main() {
         })
         .build_as_child(&*browser_win)
         .expect("Failed to create address bar WebView");
+    extensions::set_toolbar_view(objc2::rc::Retained::as_ptr(&address_bar_wv.webview()) as usize);
     // Initialize address bar with the active tab's URL, title, and favicon from session.
     // Yields the page part of the window title (see `sync_window_titles!`).
     let mut window_page_title = {
@@ -2859,6 +2927,11 @@ fn main() {
             // Esc closes the find bar when it owns focus (contextual, not remappable).
             if keycode == ESC_KEYCODE && find_bar_state.load(Ordering::Relaxed) {
                 let _ = p.send_event(AppEvent::HideFindBar);
+                return consume;
+            }
+
+            // Extension keyboard commands come after the browser's own shortcuts.
+            if extensions::perform_command(event) {
                 return consume;
             }
 
@@ -4165,6 +4238,9 @@ fn main() {
         for url in cold_open::take() {
             tracing::debug!(url = %url, "cold_open: draining URL");
             let _ = proxy.send_event(AppEvent::NavigateTo(url, false));
+        }
+        if matches!(event, Event::MainEventsCleared) {
+            extensions::sync(&workspace_manager);
         }
         let mut next_wake = if let Some(hide_at) = progress_hide_at {
             sys_stats_next_at.min(hide_at)
@@ -6533,6 +6609,7 @@ fn main() {
                             k.ui_json()
                         ));
                     }
+                    let _ = settings_wv.evaluate_script(&extensions::settings_script());
                     settings_win.set_visible(true);
                     settings_win.set_focus();
                     settings_visible = true;
@@ -6543,6 +6620,69 @@ fn main() {
                 settings_visible = false;
                 keybind_capturing.store(false, Ordering::Relaxed);
                 restore_panel_focus!(settings_focus_target);
+            }
+
+            // ── Browser extensions: settings/toolbar commands and WebKit requests ─
+            Event::UserEvent(AppEvent::Extension(ev)) => {
+                for action in extensions::handle(ev) {
+                    match action {
+                        extensions::Action::Activate(tab_id) => {
+                            let _ = proxy.send_event(AppEvent::JumpToTab(tab_id));
+                        }
+                        extensions::Action::Close(tab_id) => {
+                            let Some(ws_idx) = workspace_manager.index_of_tab(tab_id) else {
+                                continue;
+                            };
+                            if ws_idx == workspace_manager.active_index() {
+                                let _ = proxy.send_event(AppEvent::CloseTab(tab_id));
+                            } else {
+                                // CloseTab only reaches the active workspace (see MCP close_tab).
+                                workspace_manager.at(ws_idx).tabs.lock().unwrap().close(tab_id);
+                                tab_nav::forget(tab_id);
+                                workspace_manager.at_mut(ws_idx).webviews.remove(&tab_id);
+                                pending_tabs.remove(&tab_id);
+                                workspace_manager.at_mut(ws_idx).mru.retain(|&t| t != tab_id);
+                            }
+                        }
+                        extensions::Action::Load(tab_id, url) => {
+                            let Some(ws_idx) = workspace_manager.index_of_tab(tab_id) else {
+                                continue;
+                            };
+                            ensure_webview_at!(ws_idx, tab_id);
+                            if let Some(wv) = workspace_manager.at(ws_idx).webviews.get(&tab_id) {
+                                let _ = wv.load_url(&url);
+                            }
+                        }
+                        extensions::Action::OpenTab { url, workspace, active, reply } => {
+                            let ws_idx = workspace
+                                .and_then(|id| workspace_manager.index_of(&id))
+                                .unwrap_or(workspace_manager.active_index());
+                            let url = url.unwrap_or_else(|| cfg.home_page.clone());
+                            let new_id = workspace_manager.at(ws_idx).tabs.lock().unwrap().open_background(url.clone());
+                            spawn_tab_webview_at!(ws_idx, new_id, &url);
+                            if active {
+                                let _ = proxy.send_event(AppEvent::JumpToTab(new_id));
+                            }
+                            if let Some(reply) = reply {
+                                extensions::tab_opened(reply, new_id);
+                            }
+                        }
+                        extensions::Action::FocusWindow(ws_id) => {
+                            let _ = proxy.send_event(AppEvent::SwitchWorkspace(ws_id));
+                            browser_win.set_focus();
+                        }
+                        extensions::Action::Toolbar => {
+                            let _ = address_bar_wv.evaluate_script(&extensions::toolbar_script());
+                        }
+                        extensions::Action::Installed => {
+                            let _ = address_bar_wv.evaluate_script(&extensions::toolbar_script());
+                            if settings_visible {
+                                let _ = settings_wv.evaluate_script(&extensions::settings_script());
+                            }
+                        }
+                        extensions::Action::Notify(msg) => toast!(msg, "\u{1F9E9}", "Extensions"),
+                    }
+                }
             }
 
             // ── Workspace switcher popover (⌘⇧O) ─────────────────────────
