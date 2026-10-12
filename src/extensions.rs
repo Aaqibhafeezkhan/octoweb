@@ -20,7 +20,7 @@
 //! release, then call.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -606,7 +606,8 @@ fn grant(context: &WKWebExtensionContext, permissions: &[String], patterns: &[St
                 &NSString::from_str(permission),
             );
         }
-        for pattern in patterns {
+        let sites: BTreeSet<String> = patterns.iter().map(|p| site_pattern(p)).collect();
+        for pattern in &sites {
             match WKWebExtensionMatchPattern::initWithString_error(
                 WKWebExtensionMatchPattern::alloc(context.mtm()),
                 &NSString::from_str(pattern),
@@ -620,6 +621,22 @@ fn grant(context: &WKWebExtensionContext, permissions: &[String], patterns: &[St
                 }
             }
         }
+    }
+}
+
+/// A granted match pattern widened to its whole site, `scheme://host/*`.
+/// Chrome ignores the path of host permissions, but WebKit registers an
+/// extension's content scripts once per granted pattern whose host matches:
+/// granting `github.com/*` and `github.com/login/*` side by side runs every
+/// GitHub content script twice. One pattern per site keeps it to one.
+fn site_pattern(pattern: &str) -> String {
+    match pattern.split_once("://") {
+        Some((scheme, rest)) => {
+            let host = rest.split('/').next().unwrap_or(rest);
+            format!("{scheme}://{host}/*")
+        }
+        // `<all_urls>` names no site.
+        None => pattern.to_string(),
     }
 }
 
@@ -1739,4 +1756,21 @@ pub fn settings_script(wm: &WorkspaceManager) -> String {
             "active": active,
         })
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::site_pattern;
+
+    #[test]
+    fn granted_patterns_widen_to_their_site() {
+        assert_eq!(site_pattern("https://github.com/login/*"), "https://github.com/*");
+        assert_eq!(site_pattern("https://github.com/*"), "https://github.com/*");
+        assert_eq!(
+            site_pattern("https://app.clockify.me/reports/detailed*"),
+            "https://app.clockify.me/*"
+        );
+        assert_eq!(site_pattern("*://*.example.com/*"), "*://*.example.com/*");
+        assert_eq!(site_pattern("<all_urls>"), "<all_urls>");
+    }
 }
