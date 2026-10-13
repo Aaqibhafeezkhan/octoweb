@@ -13416,13 +13416,17 @@ mod keybinding_dispatch_tests {
             pane_keybind_to_event(A::SidebarFullscreen, PaneTab::Notes),
             Some(AppEvent::TogglePaneFullscreen)
         ));
-        // In mail, single letters and ⌃ keys triage; ⌘W closes the mail tab.
+        // In mail, single letters and ⌃ keys triage, and Apple Mail's chords
+        // (⌘R, ⇧⌘R, ⇧⌘F, ⌘N) reply and compose; ⌘W closes the mail tab.
         for action in [
             A::ScrollDown,
             A::PrevTab,
             A::NextTab,
             A::Fullscreen,
             A::Reload,
+            A::HardReload,
+            A::FollowLink,
+            A::NewTab,
         ] {
             assert!(pane_keybind_to_event(action, PaneTab::Mail).is_none());
         }

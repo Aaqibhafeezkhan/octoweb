@@ -1161,7 +1161,8 @@ pub fn html(keybindings_json: &str) -> String {
       return;
     }
     if (help.classList.contains('open') && (e.key === 'Escape' || e.key === '?')) { e.preventDefault(); help.classList.remove('open'); return; }
-    if (e.metaKey && e.key === 'Enter' && S.composer) { e.preventDefault(); send(null); return; }
+    // ⌘↩ sends, and ⇧⌘D as in Apple Mail.
+    if (e.metaKey && S.composer && (e.key === 'Enter' || (e.shiftKey && e.key.toLowerCase() === 'd'))) { e.preventDefault(); send(null); return; }
     if (e.metaKey && (e.key === 'z' || e.key === 'Z') && !typing(e) && S.undo) { e.preventDefault(); undo(); return; }
     if (typing(e)) {
       if (e.key === 'Escape') {
@@ -1178,6 +1179,15 @@ pub fn html(keybindings_json: &str) -> String {
     if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && (e.key === 'a' || e.key === 'A') &&
         e.target.ownerDocument === document && !detail.contains(e.target) && (!panel.classList.contains('detail') || S.fullscreen)) {
       e.preventDefault(); selectAll(); return;
+    }
+    // Apple Mail's chords work beside the single letters.
+    if (e.metaKey && !e.altKey) {
+      const chord = (e.ctrlKey ? '⌃' : '') + (e.shiftKey ? '⇧' : '') + e.key.toLowerCase();
+      const run = {
+        'r': function() { replyTo('reply'); }, '⇧r': function() { replyTo('all'); }, '⇧f': function() { replyTo('forward'); },
+        'n': function() { compose(); }, '⌃a': function() { act('done', targets()); }, '⇧u': function() { act('mark_unread', targets()); },
+      }[chord];
+      if (run) { e.preventDefault(); run(); return; }
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const inThread = S.thread && panel.classList.contains('detail');
@@ -1210,12 +1220,9 @@ pub fn html(keybindings_json: &str) -> String {
       case 't': act('to_notes', targets()); break;
       case 'u': act('mark_unread', targets()); break;
       case 'x': toggleSelect(); break;
-      case 'r': case 'a': case 'f': {
-        const mode = { r: 'reply', a: 'all', f: 'forward' }[k];
-        if (inThread) reply(mode);
-        else { const r = S.rows[S.focus]; if (r && r.thread) { S._pendingReply = mode; openThread(r.thread.account, r.thread.thread, false); } }
-        break;
-      }
+      case 'r': replyTo('reply'); break;
+      case 'a': replyTo('all'); break;
+      case 'f': replyTo('forward'); break;
       case 'c': compose(); break;
       case 's': if (S.ai && S.thread) threadAction('summarise'); else handled = false; break;
       case '/': search.focus(); search.select(); break;
@@ -1234,12 +1241,19 @@ pub fn html(keybindings_json: &str) -> String {
     S.focus = j;
     openThread(S.rows[j].thread.account, S.rows[j].thread.thread, false);
   }
+  // Reply in the open thread, or open the focused one and reply there.
+  function replyTo(mode) {
+    if (S.thread && panel.classList.contains('detail')) { reply(mode); return; }
+    const r = S.rows[S.focus];
+    if (r && r.thread) { S._pendingReply = mode; openThread(r.thread.account, r.thread.thread, false); }
+  }
 
   function renderHelp() {
     const keys = [
       ['j / k', 'Next / previous'], ['↩', 'Open'], ['Esc', 'Back'], ['e', 'Done'], ['h', 'Snooze'], ['p', 'Pin'],
       ['m', 'Mute'], ['b', 'Block sender'], ['t', 'To notes'], ['u', 'Mark unread'], ['r', 'Reply'], ['a', 'Reply all'],
       ['f', 'Forward'], ['c', 'Compose'], ['/', 'Search'], ['x', 'Select'], ['⌘Z', 'Undo'], ['⌘↩', 'Send'],
+      ['⌘R ⇧⌘R', 'Reply / all'], ['⇧⌘F', 'Forward'], ['⌘N', 'Compose'], ['⌃⌘A', 'Done'], ['⇧⌘U', 'Mark unread'], ['⇧⌘D', 'Send'],
     ];
     if (S.ai) keys.push(['s', 'Summarise (AI)']);
     help.innerHTML = keys.map(function(k) { return '<div><kbd>' + esc(k[0]) + '</kbd>' + esc(k[1]) + '</div>'; }).join('');
