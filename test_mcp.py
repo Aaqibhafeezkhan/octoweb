@@ -352,6 +352,8 @@ EXPECTED_TOOLS = {
     "browser_console_messages", "browser_network_requests", "browser_handle_dialog",
     "browser_upload_file", "browser_get_history", "browser_search_history_content",
     "browser_get_later", "browser_get_playing_tabs", "render_ui",
+    "mail_list_inbox", "mail_search", "mail_read_thread", "mail_create_draft",
+    "mail_show", "mail_set_summaries", "mail_add_tasks",
 }
 
 # Tools a host must be able to auto-approve. If any of these loses
@@ -363,6 +365,7 @@ READ_ONLY_TOOLS = {
     "browser_search_history_content", "browser_get_later",
     "browser_get_playing_tabs", "browser_screenshot", "browser_console_messages",
     "browser_network_requests", "browser_wait",
+    "mail_list_inbox", "mail_search", "mail_read_thread",
 }
 
 
