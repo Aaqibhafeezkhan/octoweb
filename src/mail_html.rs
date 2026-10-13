@@ -82,7 +82,9 @@ pub fn html(keybindings_json: &str) -> String {
   #panel.fullscreen #list-pane { display: flex; flex: 0 0 380px; box-shadow: 0.5px 0 0 var(--hairline); }
   #panel.fullscreen #detail-pane { display: block; }
 
-  #searchbox { flex: 0 0 auto; padding: 10px 10px 6px; display: flex; gap: 6px; align-items: center; }
+  #searchbox { flex: 0 0 auto; position: relative; padding: 10px 10px 6px; display: flex; gap: 6px; align-items: center; }
+  #search-key { position: absolute; right: 18px; top: 50%; margin-top: 2px; transform: translateY(-50%); pointer-events: none; font-size: 10.5px; }
+  #search:focus ~ #search-key, #search:not(:placeholder-shown) ~ #search-key { display: none; }
   #search {
     flex: 1; min-width: 0; height: 30px; padding: 0 12px 0 30px; border-radius: var(--r-capsule);
     border: none; outline: none; color: var(--label); font: inherit;
@@ -96,29 +98,44 @@ pub fn html(keybindings_json: &str) -> String {
   .section { padding: 14px 18px 5px; font-size: 12px; font-weight: 600; color: var(--label-2); display: flex; gap: 6px; align-items: center; }
   .section .more { margin-left: auto; font-weight: 400; }
   .row {
-    position: relative; display: flex; gap: 9px; padding: 9px 12px 9px 12px; cursor: default;
-    border-radius: 12px; margin: 1px 8px; transition: background var(--t-fast);
+    position: relative; display: flex; gap: 8px; padding: 8px 12px 9px 9px; cursor: default; color: var(--label);
+    border-radius: 10px; margin: 0 8px; transition: background var(--t-fast);
   }
-  .row:hover { background: var(--fill-hover); }
-  .row.focused { background: var(--fill-press); }
-  .row.selected { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-  .row.selected.focused { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 26px; right: 10px; height: 0.5px; background: var(--hairline); }
+  .row:hover::before, .row:hover + .row::before, .row.focused::before, .row.focused + .row::before,
+  .row.selected::before, .row.selected + .row::before, .row.open::before, .row.open + .row::before { opacity: 0; }
+  .row:hover { background: var(--fill); }
+  .row.focused { background: var(--fill-hover); }
+  .row.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   #panel.fullscreen .row.open { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-  .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
-  .row.selected .dot { box-shadow: 0 0 0 2px var(--canvas), 0 0 0 3.5px var(--accent); }
+  /* The focused list highlights like an AppKit table: accent fill, white text. */
+  #list:focus .row.focused, #list:focus .row.selected {
+    background: var(--accent); color: var(--on-accent);
+    --label: var(--on-accent); --label-2: rgba(255, 255, 255, 0.82); --label-3: rgba(255, 255, 255, 0.66);
+    --fill: rgba(255, 255, 255, 0.2); --fill-hover: rgba(255, 255, 255, 0.28);
+  }
+  #list:focus .row.selected.focused { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.55); }
+  #list:focus .row.focused .dot, #list:focus .row.selected .dot { background: var(--on-accent) !important; }
+  #list:focus .row.focused .ai, #list:focus .row.selected .ai, #list:focus .row.focused .mark.accent, #list:focus .row.selected .mark.accent { color: var(--on-accent); }
+  #list:focus .row.focused .pill.primary { background: var(--on-accent); color: var(--accent); }
+  .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; }
+  .row:not(.unread) .dot { visibility: hidden; }
+  /* With several accounts a read row keeps a faint dot in its account's color. */
+  #panel.multi .row:not(.unread) .dot { visibility: visible; transform: scale(0.55); opacity: 0.6; }
   .row .main { flex: 1; min-width: 0; }
-  .line1 { display: flex; gap: 6px; align-items: baseline; }
-  .from { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--label-2); }
-  .row.unread .from { color: var(--label); font-weight: 600; }
+  .line1 { display: flex; gap: 5px; align-items: center; }
+  .from { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+  .row.unread .from { font-weight: 650; }
   .row.unread .subject { font-weight: 600; }
-  .row.unread .dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent) 30%, transparent); }
-  .count { color: var(--label-3); font-size: 11px; }
-  .time { flex-shrink: 0; color: var(--label-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .count { flex-shrink: 0; color: var(--label-2); font-size: 10.5px; font-weight: 600; padding: 0 5px; border-radius: var(--r-capsule); background: var(--fill); line-height: 15px; font-variant-numeric: tabular-nums; }
+  .clip { flex-shrink: 0; display: flex; color: var(--label-2); }
+  .clip svg { width: 11px; height: 11px; }
+  .time { flex-shrink: 0; color: var(--label-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
   .subject { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 1px; }
-  .preview { color: var(--label-3); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.38; margin-top: 2px; }
+  .preview { color: var(--label-2); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.38; margin-top: 2px; }
   .preview .ai { color: var(--accent); }
-  .marks { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
-  .mark { font-size: 10.5px; padding: 0 7px; border-radius: var(--r-capsule); background: var(--fill); color: var(--label-2); line-height: 17px; }
+  .marks { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+  .mark { font-size: 10.5px; font-weight: 500; padding: 0 7px; border-radius: var(--r-capsule); background: var(--fill); color: var(--label-2); line-height: 17px; }
   .mark.accent { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
   .row .gate { display: flex; gap: 4px; align-self: center; }
   .pill { border: none; border-radius: var(--r-capsule); padding: 3px 11px; background: var(--fill); cursor: pointer; font-size: 11.5px; transition: background var(--t-fast); }
@@ -140,8 +157,7 @@ pub fn html(keybindings_json: &str) -> String {
   /* Thread */
   .thread-head {
     position: sticky; top: 0; z-index: 2; padding: 10px 12px 8px; box-shadow: 0 0.5px 0 var(--hairline);
-    background: color-mix(in srgb, var(--canvas) 78%, transparent);
-    -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+    background: var(--canvas);
   }
   .thread-title { display: flex; gap: 6px; align-items: flex-start; }
   .thread-title .subject { white-space: normal; font-family: var(--font-display); font-size: var(--fs-sheet); font-weight: 700; line-height: 1.25; flex: 1; padding-top: 3px; margin: 0; }
@@ -154,7 +170,9 @@ pub fn html(keybindings_json: &str) -> String {
   .msg.collapsed:hover { background: color-mix(in srgb, var(--card) 70%, var(--fill-hover)); }
   .msg-head { display: flex; gap: 10px; padding: 11px 14px 4px; align-items: center; }
   .msg.collapsed .msg-head { padding-bottom: 11px; }
-  .avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+  /* Contacts-style monogram. */
+  .avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; letter-spacing: .02em; background: linear-gradient(180deg, #a6abb6, #858a94); box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.06); }
+  @media (prefers-color-scheme: dark) { .avatar { background: linear-gradient(180deg, #7a7e87, #5a5d64); } }
   .msg-head .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .msg-head .who b { font-weight: 600; }
   .msg-head .addr { color: var(--label-3); font-size: 12px; }
@@ -182,7 +200,7 @@ pub fn html(keybindings_json: &str) -> String {
   .ft.sheet { background: #30a46c; }
   .ft.slide { background: #ff9500; }
   .ft.txt { background: #636366; }
-  .quote-toggle { margin: 0 14px 12px; }
+  .quote-toggle { margin: 0 14px 12px; font-size: 11.5px; color: var(--label-2); }
   .summary { margin: 10px 12px 0; padding: 9px 12px; border-radius: var(--r-card); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 12.5px; line-height: 1.45; }
 
   /* Composer */
@@ -192,10 +210,14 @@ pub fn html(keybindings_json: &str) -> String {
   .composer .title .draft { color: var(--accent); font-weight: 400; }
   .field { display: flex; align-items: center; gap: 8px; padding: 0 14px; box-shadow: 0 0.5px 0 var(--hairline); min-height: 34px; }
   .field label { width: 52px; color: var(--label-3); font-size: 12px; flex-shrink: 0; }
-  .field input, .field select { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: var(--label); font: inherit; height: 32px; }
+  .field input, .field select { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: var(--label); font: inherit; height: 32px; padding: 0; margin: 0; }
+  .field select {
+    -webkit-appearance: none; appearance: none; padding-right: 18px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='12' fill='none' stroke='%238e8e93' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 4.5L4 2l2.5 2.5M1.5 7.5L4 10l2.5-2.5'/%3E%3C/svg%3E") no-repeat right center;
+  }
   .field .toggle-cc { color: var(--label-3); font-size: 12px; cursor: pointer; background: none; border: none; }
   .composer textarea {
-    display: block; width: 100%; box-sizing: border-box; min-height: 160px; resize: vertical;
+    display: block; width: 100%; box-sizing: border-box; min-height: 160px; resize: none; overflow: hidden;
     border: none; outline: none; background: transparent; color: var(--label);
     font: 13px/1.55 var(--font-text); padding: 12px 14px;
   }
@@ -206,7 +228,7 @@ pub fn html(keybindings_json: &str) -> String {
   .file button { border: none; background: none; cursor: pointer; color: var(--label-3); padding: 0; }
   .ai-row { display: flex; gap: 6px; padding: 8px 14px; box-shadow: 0 -0.5px 0 var(--hairline); }
   .ai-row input { flex: 1; min-width: 0; border: none; outline: none; background: var(--fill); border-radius: var(--r-capsule); height: 28px; padding: 0 12px; font: inherit; color: var(--label); }
-  .actions { display: flex; gap: 6px; padding: 10px 14px; align-items: center; box-shadow: 0 -0.5px 0 var(--hairline); flex-wrap: wrap; }
+  .actions { display: flex; gap: 6px; padding: 10px 10px 10px 14px; align-items: center; box-shadow: 0 -0.5px 0 var(--hairline); flex-wrap: wrap; }
   .actions .spacer { flex: 1; }
   .btn { border: none; border-radius: var(--r-capsule); padding: 5px 13px; background: var(--fill); cursor: pointer; font-size: 12.5px; transition: background var(--t-fast); }
   .btn:hover { background: var(--fill-hover); }
@@ -215,8 +237,8 @@ pub fn html(keybindings_json: &str) -> String {
   .btn.set { color: var(--accent); }
   .error { color: var(--err); padding: 6px 14px; font-size: 12px; }
   .error:empty { display: none; }
-  .kbd { color: var(--label-3); font-size: 11px; margin-left: 4px; }
-  .btn.primary .kbd { color: var(--on-accent); opacity: .75; }
+  .btn .kbd { min-width: 0; min-height: 0; padding: 0; margin-left: 5px; background: none; box-shadow: none; color: var(--label-3); }
+  .btn.primary .kbd { color: var(--on-accent); opacity: .7; }
 
   /* Popover, undo bar, help */
   #popover { position: fixed; z-index: 50; min-width: 220px; background: var(--glass-thick); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border-radius: var(--r-card); box-shadow: var(--shadow-float), var(--glass-shine); padding: 5px; display: none; }
@@ -269,14 +291,14 @@ pub fn html(keybindings_json: &str) -> String {
       <svg viewBox="0 0 14 14" fill="none"><path d="M7 1.5l1.3 3.2 3.2 1.3-3.2 1.3L7 10.5 5.7 7.3 2.5 6l3.2-1.3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
     </button>
     <button class="icon-btn" id="compose-btn" type="button" title="Compose (c)" aria-label="Compose">
-      <svg viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L5 11H3V9z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+      <svg viewBox="0 0 14 14" fill="none"><path d="M11.5 7.5V11a1.5 1.5 0 01-1.5 1.5H3A1.5 1.5 0 011.5 11V4A1.5 1.5 0 013 2.5h3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M10.6 1.6l1.8 1.8L7.2 8.6 5 9.1l.5-2.2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
     </button>
     <button class="icon-btn" id="help-btn" type="button" title="Keyboard (?)" aria-label="Keyboard shortcuts">
       <svg viewBox="0 0 14 14" fill="none"><rect x="1.5" y="3.5" width="11" height="7" rx="1.5" stroke="currentColor" stroke-width="1.1"/><path d="M4 6h.01M6 6h.01M8 6h.01M10 6h.01M4.5 8.2h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
     </button>
     <button class="icon-btn" id="fullscreen-btn" type="button" title="Toggle fullscreen" aria-label="Toggle mail fullscreen">
-      <svg class="ic-enter" viewBox="0 0 10 10" fill="none"><path d="M1 4V1h3M9 4V1H6M1 6v3h3M9 6v3H6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <svg class="ic-exit" viewBox="0 0 10 10" fill="none" style="display:none"><path d="M4 1v3H1M6 1v3h3M4 9V6H1M6 9V6h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg class="ic-enter" viewBox="0 0 14 14" fill="none"><path d="M2 5.5V2h3.5M12 5.5V2H8.5M2 8.5V12h3.5M12 8.5V12H8.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg class="ic-exit" viewBox="0 0 14 14" fill="none" style="display:none"><path d="M5.5 2v3.5H2M8.5 2v3.5H12M5.5 12V8.5H2M8.5 12V8.5H12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <button class="icon-btn" id="close-btn" type="button" title="Hide" aria-label="Hide mail">
       <svg viewBox="0 0 8 8" fill="none" style="width:8px;height:8px"><path d="M1 1L7 7M7 1L1 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -285,7 +307,7 @@ pub fn html(keybindings_json: &str) -> String {
   <div id="banner"></div>
   <div id="body">
     <div id="list-pane">
-      <div id="searchbox"><input id="search" type="search" placeholder="Search mail  ( / )" spellcheck="false" autocomplete="off"></div>
+      <div id="searchbox"><input id="search" type="search" placeholder="Search" spellcheck="false" autocomplete="off"><span class="kbd" id="search-key">/</span></div>
       <div id="list" tabindex="0" role="listbox" aria-label="Conversations" aria-multiselectable="true"></div>
       <div id="selbar" role="toolbar" aria-label="Selected conversations"></div>
     </div>
@@ -340,7 +362,7 @@ pub fn html(keybindings_json: &str) -> String {
 
   function fmtTime(ts, long) {
     const d = new Date(ts * 1000), n = new Date();
-    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     if (d.toDateString() === n.toDateString()) return long ? 'Today ' + time : time;
     const y = new Date(n); y.setDate(n.getDate() - 1);
     if (d.toDateString() === y.toDateString()) return long ? 'Yesterday ' + time : 'Yesterday';
@@ -492,7 +514,6 @@ pub fn html(keybindings_json: &str) -> String {
     if (t.returned === 'snooze') marks.push('<span class="mark accent">Back from snooze</span>');
     if (t.returned === 'reminder') marks.push('<span class="mark accent">No reply yet</span>');
     if (t.remind_at) marks.push('<span class="mark">Reminder ' + esc(fmtTime(t.remind_at)) + '</span>');
-    if (t.attachment) marks.push('<span class="mark">Attachment</span>');
     const preview = t.summary ? '<span class="ai">✦</span> ' + esc(t.summary) : esc(t.preview);
     const open = S.thread && S.thread.account === t.account && S.thread.thread === t.thread;
     const cls = 'row' + (t.unread ? ' unread' : '') + (S.selected.has(key(t)) ? ' selected' : '') + (i === S.focus ? ' focused' : '') + (open ? ' open' : '');
@@ -500,6 +521,7 @@ pub fn html(keybindings_json: &str) -> String {
       '<span class="dot" style="background:' + esc(color(t.account)) + '"></span>' +
       '<div class="main"><div class="line1"><span class="from">' + esc(t.from_name || t.from_addr) + '</span>' +
       (t.count > 1 ? '<span class="count">' + t.count + '</span>' : '') +
+      (t.attachment ? '<span class="clip" title="Attachment">' + I.clip + '</span>' : '') +
       '<span class="time">' + esc(fmtTime(t.key || t.date)) + '</span></div>' +
       '<div class="subject">' + esc(t.subject || '(no subject)') + '</div>' +
       (preview ? '<div class="preview">' + preview + '</div>' : '') +
@@ -700,9 +722,7 @@ pub fn html(keybindings_json: &str) -> String {
     return (Array.from(first)[0] + (last ? Array.from(last)[0] : '')).toUpperCase();
   }
   function avatar(a) {
-    let h = 0;
-    for (const c of a.addr || '') h = (h * 31 + c.charCodeAt(0)) >>> 0;
-    return '<span class="avatar" aria-hidden="true" style="background:' + DOT_COLORS[h % DOT_COLORS.length] + '">' + esc(initials(a)) + '</span>';
+    return '<span class="avatar" aria-hidden="true">' + esc(initials(a)) + '</span>';
   }
 
   const I = {
@@ -719,6 +739,8 @@ pub fn html(keybindings_json: &str) -> String {
     forward: '<svg viewBox="0 0 14 14" fill="none"><path d="M8.5 4l3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M11 7H6a3.5 3.5 0 00-3.5 3.5V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
     spark: '<svg viewBox="0 0 14 14" fill="none"><path d="M7 1.5l1.3 3.2 3.2 1.3-3.2 1.3L7 10.5 5.7 7.3 2.5 6l3.2-1.3z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
     tasks: '<svg viewBox="0 0 14 14" fill="none"><path d="M2.5 4l1 1 2-2M2.5 9l1 1 2-2M7.5 4.5h4M7.5 9.5h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    clip: '<svg viewBox="0 0 14 14" fill="none"><path d="M11.2 6.6L7 10.8a2.6 2.6 0 01-3.7-3.7l4.6-4.6a1.7 1.7 0 012.4 2.4L5.8 9.4a.8.8 0 01-1.2-1.2l4-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    trash: '<svg viewBox="0 0 14 14" fill="none"><path d="M2.5 4h9M5.5 4V2.8a.8.8 0 01.8-.8h1.4a.8.8 0 01.8.8V4M3.7 4l.6 7.3a1 1 0 001 .9h3.4a1 1 0 001-.9L10.3 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     read: '<svg viewBox="0 0 14 14" fill="none"><path d="M2 6.2L7 3l5 3.2V11a.8.8 0 01-.8.8H2.8A.8.8 0 012 11z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M2.4 6.5L7 9.3l4.6-2.8" stroke="currentColor" stroke-width="1.1"/></svg>',
     close: '<svg viewBox="0 0 14 14" fill="none"><path d="M4 4l6 6M10 4l-6 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   };
@@ -751,7 +773,7 @@ pub fn html(keybindings_json: &str) -> String {
       const who = m.from.name ? '<b>' + esc(m.from.name) + '</b> <span class="addr">' + esc(m.from.addr) + '</span>' : '<b>' + esc(m.from.addr) + '</b>';
       if (!open) {
         const snip = (m.text || '').replace(/\s+/g, ' ').slice(0, 120);
-        html += '<div class="msg collapsed" data-open="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who">' + who +
+        html += '<div class="msg collapsed" data-open="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who"><b>' + esc(m.from.name || m.from.addr) + '</b>' +
           ' <span class="snip">— ' + esc(snip) + '</span></span><span class="time">' + esc(fmtTime(m.date)) + '</span></div></div>';
         return;
       }
@@ -1046,13 +1068,15 @@ pub fn html(keybindings_json: &str) -> String {
       '<div class="actions"><button class="btn primary" type="button" id="c-send">Send<span class="kbd">⌘↩</span></button>' +
       '<button class="btn" type="button" id="c-later">Send later</button>' +
       '<button class="btn' + (d._remind ? ' set' : '') + '" type="button" id="c-remind">' + (d._remind ? 'Remind: ' + esc(d._remindLabel) : 'Remind me') + '</button>' +
-      '<button class="btn" type="button" id="c-attach">Attach</button><span class="spacer"></span>' +
-      '<button class="btn" type="button" id="c-discard">Discard</button></div></div>';
+      '<span class="spacer"></span>' +
+      '<button class="icon-btn" type="button" id="c-attach" title="Attach files" aria-label="Attach files">' + I.clip + '</button>' +
+      '<button class="icon-btn" type="button" id="c-discard" title="Discard draft" aria-label="Discard draft">' + I.trash + '</button></div></div>';
     const fields = ['to', 'cc', 'bcc', 'subject', 'body'];
     fields.forEach(function(f) {
       const el = $('c-' + f);
-      if (el) el.addEventListener('input', function() { d[f] = el.value; scheduleDraftSave(); });
+      if (el) el.addEventListener('input', function() { d[f] = el.value; scheduleDraftSave(); if (f === 'body') grow(el); });
     });
+    grow($('c-body'));
     $('c-from').addEventListener('change', function() { d.account = $('c-from').value; scheduleDraftSave(); });
     const cc = $('c-show-cc');
     if (cc) cc.addEventListener('click', function() { d._cc = true; renderComposer(); $('c-cc').focus(); });
@@ -1098,6 +1122,9 @@ pub fn html(keybindings_json: &str) -> String {
     setTimeout(function() { const el = $(focusField); if (el && document.activeElement.tagName !== 'INPUT') el.focus(); }, 0);
     if (d.thread) box.scrollIntoView({ block: 'nearest' });
   }
+
+  // The body grows with its text; the thread scrolls, not the textarea.
+  function grow(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 
   let draftTimer = 0;
   function cleanDraft(d) {
@@ -1357,6 +1384,7 @@ pub fn html(keybindings_json: &str) -> String {
       const images = S.blockImages !== !!data.block_images;
       S.blockImages = !!data.block_images;
       $('brief-btn').hidden = !S.ai || !S.accounts.length;
+      panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
         S.view = null; S.thread = null; S.composer = null; S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
