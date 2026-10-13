@@ -38,7 +38,7 @@ pub fn html() -> String {
     border-radius: var(--r-panel);
     box-shadow: var(--shadow-float), var(--glass-shine);
     padding: 16px 20px;
-    width: 420px;
+    width: min(680px, calc(100vw - 32px));
     max-height: 80vh;
     overflow-y: auto;
     animation: scaleIn var(--t-pop) var(--spring);
@@ -480,24 +480,6 @@ pub fn html() -> String {
       </div>
       <div class="row with-hint">
         <div class="row-label-stack">
-          <span class="row-label" id="terminal-appearance-label">Terminal</span>
-          <span class="row-hint">General follows Appearance. Light or Dark keeps the terminal in that mode.</span>
-        </div>
-        <span class="seg" id="terminal-appearance-seg" role="group" aria-labelledby="terminal-appearance-label">
-          <button type="button" data-appearance="general" aria-pressed="true">General</button>
-          <button type="button" data-appearance="light" aria-pressed="false">Light</button>
-          <button type="button" data-appearance="dark" aria-pressed="false">Dark</button>
-        </span>
-      </div>
-      <div class="row with-hint">
-        <div class="row-label-stack">
-          <label class="row-label" id="terminal_option_as_meta_label" for="terminal_option_as_meta">Option as Meta in terminal</label>
-          <span class="row-hint">⌥F, ⌥B, ⌥D and ⌥⌫ reach the shell as word keys. Off, ⌥ types characters such as ƒ.</span>
-        </div>
-        <button class="toggle" id="terminal_option_as_meta" data-key="terminal_option_as_meta" role="switch" aria-checked="false" aria-labelledby="terminal_option_as_meta_label"></button>
-      </div>
-      <div class="row with-hint">
-        <div class="row-label-stack">
           <label class="row-label" for="home_page">Home page</label>
           <span class="row-hint">Loads on launch when there's no previous session to restore.</span>
         </div>
@@ -537,6 +519,28 @@ pub fn html() -> String {
           <span class="row-hint"><span id="follow-link-key">⌘⇧F</span> hints stay through clicks, scrolling and page loads until you press it again.</span>
         </div>
         <button class="toggle" id="link_hints_sticky" data-key="link_hints_sticky" role="switch" aria-checked="false" aria-labelledby="link_hints_sticky_label"></button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Terminal</div>
+      <div class="row with-hint">
+        <div class="row-label-stack">
+          <span class="row-label" id="terminal-appearance-label">Appearance</span>
+          <span class="row-hint">General follows Appearance. Light or Dark keeps the terminal in that mode.</span>
+        </div>
+        <span class="seg" id="terminal-appearance-seg" role="group" aria-labelledby="terminal-appearance-label">
+          <button type="button" data-appearance="general" aria-pressed="true">General</button>
+          <button type="button" data-appearance="light" aria-pressed="false">Light</button>
+          <button type="button" data-appearance="dark" aria-pressed="false">Dark</button>
+        </span>
+      </div>
+      <div class="row with-hint">
+        <div class="row-label-stack">
+          <label class="row-label" id="terminal_option_as_meta_label" for="terminal_option_as_meta">Option as Meta</label>
+          <span class="row-hint">⌥F, ⌥B, ⌥D and ⌥⌫ reach the shell as word keys. Off, ⌥ types characters such as ƒ.</span>
+        </div>
+        <button class="toggle" id="terminal_option_as_meta" data-key="terminal_option_as_meta" role="switch" aria-checked="false" aria-labelledby="terminal_option_as_meta_label"></button>
       </div>
     </div>
 
