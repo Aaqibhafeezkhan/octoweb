@@ -2958,6 +2958,7 @@ fn main() {
         // Built hidden: it must not take the keyboard until it is shown.
         .with_focused(false)
         .with_accept_first_mouse(true)
+        .with_navigation_handler(webview_utils::pane_navigation_policy())
         .with_ipc_handler({
             let p = proxy.clone();
             move |msg| {
@@ -2985,6 +2986,7 @@ fn main() {
         // Built hidden: it must not take the keyboard until it is shown.
         .with_focused(false)
         .with_accept_first_mouse(true)
+        .with_navigation_handler(webview_utils::pane_navigation_policy())
         .with_ipc_handler({
             let p = proxy.clone();
             move |msg| match serde_json::from_str::<mail::Message>(msg.body()) {

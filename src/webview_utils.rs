@@ -31,6 +31,27 @@ pub fn reveal_file_in_finder(path: &str) {
     NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
 }
 
+/// Navigation policy for the right-hand pane pages (notes, mail): each loads
+/// its HTML once and never navigates again; its only frames are `about:srcdoc`
+/// mail bodies and `blob:` attachment previews. A main-frame back/forward would
+/// swap the page for an empty `about:blank`, and the transparent view would
+/// then draw nothing yet still cover the page beneath it. The first
+/// `about:blank` is the page's own HTML (`loadHTMLString` reports it so).
+pub fn pane_navigation_policy() -> impl Fn(String) -> bool {
+    let loaded = std::cell::Cell::new(false);
+    move |url: String| {
+        let allowed = match url.as_str() {
+            "about:blank" => !loaded.replace(true),
+            "about:srcdoc" => true,
+            _ => url.starts_with("blob:"),
+        };
+        // Debug, not warn: every new iframe asks for its own `about:blank`
+        // first, and refusing it is harmless — its srcdoc or blob follows.
+        tracing::debug!(url, allowed, "pane navigation");
+        allowed
+    }
+}
+
 /// Source prefix of the `window.ipc` user script wry adds to every WebView
 /// (wry `src/wkwebview/mod.rs`, first `w.init` after construction).
 const WRY_IPC_SCRIPT_PREFIX: &[u8] = b"Object.defineProperty(window, 'ipc'";
@@ -1054,4 +1075,17 @@ pub fn extract_domain(url: &str) -> Option<&str> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     after_scheme.split('/').next().filter(|h| !h.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pane_pages_load_once_and_keep_their_frames() {
+        let allow = super::pane_navigation_policy();
+        assert!(allow("about:blank".into()), "the page's own HTML");
+        assert!(allow("about:srcdoc".into()), "a mail body");
+        assert!(allow("blob:null/0b1c".into()), "an attachment preview");
+        assert!(!allow("about:blank".into()), "back to the blank page");
+        assert!(!allow("https://example.com/".into()));
+    }
 }
