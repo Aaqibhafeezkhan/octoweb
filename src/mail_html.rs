@@ -142,7 +142,7 @@ pub fn html(keybindings_json: &str) -> String {
   .pill:hover { background: var(--fill-hover); }
   .pill.primary { background: var(--accent); color: var(--on-accent); font-weight: 500; }
   .group .count { margin-left: 2px; }
-  .chev { color: var(--label-3); transition: transform var(--t-fast); width: 8px; text-align: center; }
+  .chev { flex: 0 0 auto; align-self: flex-start; width: 9px; height: 17px; line-height: 17px; text-align: center; color: var(--label-3); transition: transform var(--t-fast); }
   .group.open .chev { transform: rotate(90deg); }
   .empty { padding: 48px 24px; text-align: center; color: var(--label-3); line-height: 1.6; }
   .empty .big { font-size: var(--fs-title); font-weight: 600; color: var(--label-2); margin-bottom: 4px; }
