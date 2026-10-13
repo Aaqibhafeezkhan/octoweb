@@ -301,8 +301,8 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
   }
 
   // A pane inserted into `parent` before `before`, on shell `id` when a kept
-  // layout is rebuilt, else on a new shell.
-  function newPane(tab, parent, before, id) {
+  // layout is rebuilt, else on a new shell in the directory of pane `from`'s.
+  function newPane(tab, parent, before, id, from) {
     if (id === undefined) id = nextId++;
     const el = document.createElement('div');
     el.className = 'pane';
@@ -354,7 +354,7 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
 
     // Fit first, so the shell starts at the real size.
     fit.fit();
-    ipc({ type: 'open', id: id, cols: term.cols, rows: term.rows });
+    ipc({ type: 'open', id: id, cols: term.cols, rows: term.rows, from: from });
     term.onData(function(data) { ipc({ type: 'input', id: id, data: data }); });
     term.onResize(function(size) {
       ipc({ type: 'resize', id: id, cols: size.cols, rows: size.rows });
@@ -413,7 +413,7 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
       target.el.replaceWith(parent);
       parent.appendChild(target.el);
     }
-    const p = newPane(tab, parent, target.el.nextSibling);
+    const p = newPane(tab, parent, target.el.nextSibling, undefined, target.id);
     refit(tab);
     focusPane(p);
     p.term.focus();

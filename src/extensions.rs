@@ -1764,7 +1764,10 @@ mod tests {
 
     #[test]
     fn granted_patterns_widen_to_their_site() {
-        assert_eq!(site_pattern("https://github.com/login/*"), "https://github.com/*");
+        assert_eq!(
+            site_pattern("https://github.com/login/*"),
+            "https://github.com/*"
+        );
         assert_eq!(site_pattern("https://github.com/*"), "https://github.com/*");
         assert_eq!(
             site_pattern("https://app.clockify.me/reports/detailed*"),

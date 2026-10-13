@@ -9077,9 +9077,14 @@ fn main() {
                         );
                     }
                 }
-                terminal::Request::Open { id, cols, rows } => {
+                terminal::Request::Open {
+                    id,
+                    cols,
+                    rows,
+                    from,
+                } => {
                     let error = terminals
-                        .open(id, cols, rows)
+                        .open(id, cols, rows, from)
                         .err()
                         .map(|e| format!("Could not start the shell: {e}"));
                     let error = serde_json::to_string(&error).unwrap();

@@ -56,6 +56,8 @@ pub enum Request {
         id: u32,
         cols: u16,
         rows: u16,
+        /// The pane split to make this one: a new shell starts in its directory.
+        from: Option<u32>,
     },
     Input {
         id: u32,
@@ -179,8 +181,9 @@ impl Terminals {
 
     /// Attach terminal `id` at `cols`×`rows`. A shell still running for it (the
     /// panel reloaded) replays its output into the new pane; otherwise a login
-    /// shell starts, in the directory and under the output it was saved with.
-    pub fn open(&mut self, id: u32, cols: u16, rows: u16) -> io::Result<()> {
+    /// shell starts, in the directory and under the output it was saved with,
+    /// or in the directory of `from`'s shell.
+    pub fn open(&mut self, id: u32, cols: u16, rows: u16, from: Option<u32>) -> io::Result<()> {
         self.next_id = self.next_id.max(id + 1);
         if let Some(shell) = self.shells.get(&id) {
             let stale = {
@@ -200,7 +203,11 @@ impl Terminals {
         let (master, slave) = open_pty(cols, rows)?;
         // The Command, and with it the parent's copies of the slave, drops
         // here — otherwise the reader would never see the shell hang up.
-        let child = login_shell_command(slave, restored.cwd.as_deref())?.spawn()?;
+        let cwd = restored.cwd.clone().or_else(|| {
+            let shell = self.shells.get(&from?)?;
+            process_cwd(shell.child.lock().unwrap().id())
+        });
+        let child = login_shell_command(slave, cwd.as_deref())?.spawn()?;
         let child = Arc::new(Mutex::new(child));
         let mut pipe = Pipe::default();
         if !restored.history.is_empty() {
