@@ -28,7 +28,7 @@ Built on WebKit and Rust. No Electron. No Chrome. No mouse required.
 
 ## Why Octoweb?
 
-Most browsers are built around the mouse. Octoweb is built around the keyboard — and around the idea that your browser should amplify your thinking, not interrupt it. Every action has a shortcut. The AI assistant lives in a sidebar, not a tab. And your AI tools can drive the browser directly via MCP. No extensions. No config. Just open it and go.
+Most browsers are built around the mouse. Octoweb is built around the keyboard — and around the idea that your browser should amplify your thinking, not interrupt it. Every action has a shortcut. The AI assistant lives in a sidebar, not a tab. And your AI tools can drive the browser directly via MCP. No config. Just open it and go.
 
 **Three things it does differently:**
 
@@ -36,7 +36,7 @@ Most browsers are built around the mouse. Octoweb is built around the keyboard �
 
 2. **AI assistant built in** — Not an extension, not a tab. A sidebar overlay powered by a local [octomind](https://github.com/muvon/octomind) agent via [ACP](https://github.com/muvon/agent-client-protocol). Ask questions about the current page, get code explanations, summarize content — all without leaving the browser.
 
-3. **MCP server inside the browser** — Your AI tools can actually *drive* the browser. Octoweb runs an MCP server on `localhost:3434/mcp` that exposes 31 tools for navigation, tab management, page interaction, and content extraction. Point Claude Desktop or any MCP client at it and watch it browse.
+3. **MCP server inside the browser** — Your AI tools can actually *drive* the browser. Octoweb runs an MCP server on `localhost:3434/mcp` that exposes 38 tools for navigation, tab management, page interaction, content extraction, and mail. Point Claude Desktop or any MCP client at it and watch it browse.
 
 ---
 
@@ -55,7 +55,11 @@ Most browsers are built around the mouse. Octoweb is built around the keyboard �
 - **AI sidebar** (`⌘⇧A`) — Chat with a local AI agent about the current page. Streaming responses, code blocks with copy.
 - **Inline AI edit** (`⌘⇧E`) — Select text on any page, transform it with AI. Rewrite, summarize, translate.
 - **Proactive learning** — Background agent periodically analyzes your browsing and memorizes patterns. **Off by default** — it reads your tabs, history and page text, so you turn it on deliberately in Settings (`⌘,`).
-- **MCP server** — 31 tools for AI clients to control the browser. Navigate, click, type, screenshot, extract content.
+- **MCP server** — 38 tools for AI clients to control the browser. Navigate, click, type, screenshot, extract content, read and search mail.
+- **Mail** (`⌘⇧I`) — Gmail, iCloud, Outlook, Private Email, or any IMAP account in a pane beside the page: Important and Other, single-key triage, snooze, undo send, send later, search, attachment previews. Accounts are scoped per workspace.
+- **Notes** (`⌘⇧J`) — One markdown file per workspace. `⌥⌘J` captures the page as a task, or the selection as a quote.
+- **Terminal** (`` ⌘` ``) — A real shell under the page, with tabs and splits, per workspace; layout, directories, and output come back after a restart.
+- **Extensions** — Chrome Web Store extensions, or a `.crx`, `.zip`, `.xpi`, or unpacked folder, scoped per workspace (macOS 15.4+).
 - **Find-in-page** (`⌘F`) — Full-text search with highlighting.
 - **Page zoom** — `+`/`-` to zoom, `⌘0` to reset.
 - **Screenshots** — `⌘S` for viewport, `⌘⇧S` for full page. Copied to clipboard.
@@ -168,8 +172,8 @@ Claude Desktop / octomind / any MCP client
 | `browser_navigate` | Navigate to a URL — always in the background (new tab, or in-place via `tab_id`); never steals focus. Reports the URL it actually landed on and how settled the page is. `javascript:`/`data:`/`blob:`/`file:` are refused |
 | `browser_go_back` | Go back in history |
 | `browser_go_forward` | Go forward in history |
-| `browser_reload` | Reload current page |
-| `browser_wait` | Wait for load / SPA readiness / a CSS selector to appear |
+| `browser_reload` | Reload current page (`hard: true` bypasses the cache) |
+| `browser_wait` | Wait for load / SPA readiness / network idle / a CSS selector to appear |
 | `browser_get_tabs` | List all open tabs with IDs, titles, URLs |
 | `browser_get_current_tab` | Get the tab the user is viewing |
 | `browser_switch_tab` | Show a tab to the user (the only tool that changes focus) |
@@ -195,6 +199,13 @@ Claude Desktop / octomind / any MCP client
 | `browser_get_later` | Pages saved for later and not yet opened |
 | `browser_search_history_content` | Full-text search over the text of visited pages — title, URL, visit time, matching snippet |
 | `browser_get_playing_tabs` | List tabs currently playing audio/video |
+| `mail_list_inbox` | The workspace's inbox: Important, Other, New senders |
+| `mail_search` | Search mail; understands `from:`, `to:`, `has:attachment`, `is:unread`, `before:`, `after:` |
+| `mail_read_thread` | Read a conversation, fenced as untrusted |
+| `mail_create_draft` | Put a draft in the composer for the user to review — never sends |
+| `mail_show` | Show a list of conversations in the mail pane |
+| `mail_set_summaries` | Attach one-line summaries to inbox rows |
+| `mail_add_tasks` | Add tasks linked to a conversation to the workspace notes |
 | `render_ui` | Draw an interactive A2UI surface (forms, approval cards, live views) in the AI sidebar and block until the user clicks |
 
 **Workspace routing:** one server serves every workspace. A request's `X-Octoweb-Workspace` token says which workspace it acts on; callers that send no token fall through to the first workspace. The sidebar's agent sessions carry their token automatically, so an agent driving tabs in a background workspace never disturbs the one you're looking at.
@@ -228,8 +239,9 @@ Every shortcut is configurable in Settings (`⌘,`) — remaps persist to `~/.co
 | `⌘W` | Close tab / session |
 | `⌘T` | New AI session |
 | `⌘R` | Reload current page |
-| `⌘[` | Back |
-| `⌘]` | Forward |
+| `⌘⇧R` | Hard reload (bypass cache) |
+| `⌘[` | Back / previous terminal split |
+| `⌘]` | Forward / next terminal split |
 | `⌘N` | New tab |
 | `⌘⇧T` | Reopen last closed tab |
 | `⌘.` | Stop loading |
@@ -247,9 +259,13 @@ Every shortcut is configurable in Settings (`⌘,`) — remaps persist to `~/.co
 | `⌘⇧C` | Copy URL, or selection + URL, as plain text |
 | `⌥⌘C` | Copy as markdown: quote with source link, or the whole page |
 | `⌘⇧L` | Save the page for later / remove it |
-| `⌘⇧I` | Toggle DevTools |
+| `⌘⇧I` | Toggle inbox (mail) |
+| `⌥⌘I` | Toggle DevTools |
+| `⌘⇧J` | Toggle notes |
+| `⌥⌘J` | Capture page as task, or selection as quote, to notes |
+| `` ⌘` `` | Toggle terminal |
 | `⌘↵` | Fullscreen window |
-| `⌘⇧↵` | Fullscreen AI sidebar |
+| `⌘⇧↵` | Fullscreen AI sidebar / terminal |
 | `⌘⇧N` | Pin/unpin tab |
 | `⌘⇧O` | Toggle workspace switcher |
 | `⌘⇧M` | Move current tab to another workspace |

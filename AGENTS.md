@@ -10,7 +10,7 @@ main.rs                      ← App entry, event loop, WebView pool, keyboard (
    ├── browser.rs            ← TabManager (tabs, history, active state, visit counts)
    ├── config.rs             ← Config, session persistence, favicon cache, prompt history
    ├── acp.rs                ← ACP integration (sidebar AI + background learning agent)
-   ├── mcp.rs                ← MCP server — 31 browser control tools over HTTP JSON-RPC
+   ├── mcp.rs                ← MCP server — 38 browser and mail control tools over HTTP JSON-RPC
    ├── agent_tabs.rs         ← MCP-driven tabs: kept rendering off-screen, exempt from hibernation
    │
    ├── url.rs                ← URL resolution (user input → navigable URL)
@@ -64,17 +64,19 @@ Two ACP connections run independently:
 
 ### MCP — Browser Control Server (`mcp.rs`)
 
-HTTP JSON-RPC on `localhost:3434/mcp` (`OCTOWEB_MCP_PORT` overrides; `OCTOWEB_CONFIG_DIR` isolates the profile for side-by-side instances). External AI agents control the browser via 31 tools:
+HTTP JSON-RPC on `localhost:3434/mcp` (`OCTOWEB_MCP_PORT` overrides; `OCTOWEB_CONFIG_DIR` isolates the profile for side-by-side instances). External AI agents control the browser via 38 tools:
 
 | Category | Tools |
 |----------|-------|
 | Navigation | `browser_navigate` (always background), `browser_go_back`, `browser_go_forward`, `browser_reload`, `browser_wait` |
 | Tab management | `browser_get_tabs`, `browser_get_current_tab`, `browser_switch_tab`, `browser_close_tab` |
 | Page content | `browser_snapshot`, `browser_get_page_info`, `browser_get_page_content`, `browser_execute_js`, `browser_screenshot` |
-| Interaction | `browser_click`, `browser_hover`, `browser_type`, `browser_scroll`, `browser_press_key`, `browser_select_option` |
+| Interaction | `browser_click`, `browser_hover`, `browser_type`, `browser_fill_form`, `browser_scroll`, `browser_press_key`, `browser_select_option`, `browser_dismiss_overlay` |
 | Dialogs & uploads | `browser_handle_dialog`, `browser_upload_file` (arm before the triggering click) |
 | Diagnostics | `browser_console_messages`, `browser_network_requests` |
 | History & media | `browser_get_history`, `browser_search_history_content`, `browser_get_later`, `browser_get_playing_tabs` |
+| Mail (workspace's accounts; never sends, archives or deletes) | `mail_list_inbox`, `mail_search`, `mail_read_thread`, `mail_create_draft`, `mail_show`, `mail_set_summaries`, `mail_add_tasks` |
+| Sidebar UI | `render_ui` (A2UI surface; blocks until the user answers) |
 
 Interactions run through an actionability harness (`dom_actions.rs`): resolve with retry, bounding-box stability, occlusion detection, pointer+mouse event sequences. Async scripts evaluate via `callAsyncJavaScript` (`async_eval.rs`) so Promises are actually awaited. End-to-end suite: `test_mcp.py` + `tests/fixtures/` (28 tests against a live instance).
 
@@ -93,7 +95,7 @@ Interactions run through an actionability harness (`dom_actions.rs`): resolve wi
 ### Keyboard Shortcuts (CGEventTap in `main.rs`)
 
 Global shortcuts intercepted at the system level via `CGEventTap`:
-- **⌘ combos**: K (overlay), ⇧A (sidebar), ⇧E (inline edit), ⇧I (devtools), R (reload), W (close tab), etc.
+- **⌘ combos**: K (overlay), ⇧A (sidebar), ⇧E (inline edit), ⇧I (mail), ⌥I (devtools), R (reload), W (close tab), etc.
 - **Ctrl combos**: P/N (prev/next tab), D/U (scroll), T/B (top/bottom)
 - Guards: overlay, inline edit, and sidebar visibility atomics prevent conflicts
 - When sidebar is visible, Ctrl+P/N/R/E/U pass through to sidebar JS (prompt history navigation)
