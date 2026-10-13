@@ -491,6 +491,13 @@ pub fn html() -> String {
       </div>
       <div class="row with-hint">
         <div class="row-label-stack">
+          <label class="row-label" id="terminal_option_as_meta_label" for="terminal_option_as_meta">Option as Meta in terminal</label>
+          <span class="row-hint">⌥F, ⌥B, ⌥D and ⌥⌫ reach the shell as word keys. Off, ⌥ types characters such as ƒ.</span>
+        </div>
+        <button class="toggle" id="terminal_option_as_meta" data-key="terminal_option_as_meta" role="switch" aria-checked="false" aria-labelledby="terminal_option_as_meta_label"></button>
+      </div>
+      <div class="row with-hint">
+        <div class="row-label-stack">
           <label class="row-label" for="home_page">Home page</label>
           <span class="row-hint">Loads on launch when there's no previous session to restore.</span>
         </div>

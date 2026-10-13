@@ -547,6 +547,10 @@ pub struct Config {
     /// The terminal panel follows `appearance`, or stays light or dark
     #[serde(default)]
     pub terminal_appearance: TerminalAppearance,
+    /// ⌥ in the terminal sends Meta (ESC-prefixed keys) for the shell's word
+    /// keys, rather than typing ⌥ characters such as ƒ
+    #[serde(default = "default_terminal_option_as_meta")]
+    pub terminal_option_as_meta: bool,
     /// The sidebar's account card shows usage details, not just its row
     #[serde(default)]
     pub account_expanded: bool,
@@ -682,6 +686,10 @@ fn default_terminal_height() -> u32 {
     320
 }
 
+fn default_terminal_option_as_meta() -> bool {
+    true
+}
+
 fn default_max_ai_prompt_history() -> usize {
     50
 }
@@ -714,6 +722,7 @@ impl Default for Config {
             terminal_height: default_terminal_height(),
             appearance: Appearance::Auto,
             terminal_appearance: TerminalAppearance::General,
+            terminal_option_as_meta: default_terminal_option_as_meta(),
             account_expanded: false,
             link_hints_sticky: false,
             ai_edit_auto_hide: false,

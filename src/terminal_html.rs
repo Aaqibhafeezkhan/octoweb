@@ -16,6 +16,7 @@
 //!   window.__termOpened(id, error)    — a shell started, or failed to
 //!   window.__termNew() / __termClose() / __termCycle(step) — keymap actions
 //!   window.__setShortcuts(data)       — update control titles
+//!   window.__termOptionAsMeta(on)     — ⌥ sends Meta, or types ⌥ characters
 
 const XTERM_JS: &str = include_str!("../assets/lib/xterm.min.js");
 const XTERM_CSS: &str = include_str!("../assets/lib/xterm.css");
@@ -26,8 +27,8 @@ const UNICODE11_ADDON_JS: &str = include_str!("../assets/lib/xterm-addon-unicode
 
 /// `keybindings_json` is `Keymap::ui_json`, for the controls' shortcut titles.
 /// `shell_theme_json` is `terminal::shell_theme`, or `null` to use only the
-/// built-in palettes.
-pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
+/// built-in palettes. `option_as_meta` is `Config::terminal_option_as_meta`.
+pub fn html(keybindings_json: &str, shell_theme_json: &str, option_as_meta: bool) -> String {
     r#"<!DOCTYPE html>
 <html>
 <head>
@@ -222,6 +223,7 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
   // `terminal::shell_theme`): `theme` replaces the THEMES entry of its own
   // appearance. null keeps THEMES.
   const SHELL = /*@@SHELL_THEME_JSON@@*/;
+  let optionAsMeta = /*@@OPTION_AS_META@@*/;
   const THEMES = {
     light: {
       background: '#f8f8fa', foreground: '#1d1d1f', cursor: '#1d1d1f', cursorAccent: '#f8f8fa',
@@ -318,6 +320,7 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
       cursorBlink: true,
       scrollback: 10000,
       macOptionClickForcesSelection: true,
+      macOptionIsMeta: optionAsMeta,
       // `term.unicode` (Unicode 11 widths) is gated behind this flag.
       allowProposedApi: true,
       theme: theme(),
@@ -531,10 +534,19 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
     closePane(t);
   }
 
+  // ⌥← / ⌥→ jump words as in Terminal.app; xterm.js sends CSI 1;3D/C,
+  // which zsh and readline leave unbound.
+  const WORD_KEYS = { ArrowLeft: '\x1bb', ArrowRight: '\x1bf' };
+
   // Positional keys the keymap doesn't hold: ⌘1–⌘9 pick a tab (like the
   // quickslots), ⌘D / ⌘⇧D split the focused pane beside / below, and ⌘K
   // clears. New, close and cycling come from Rust's keymap.
   function shortcut(e) {
+    if (e.type === 'keydown' && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && WORD_KEYS[e.code]) {
+      ipc({ type: 'input', id: space.active.focused.id, data: WORD_KEYS[e.code] });
+      e.preventDefault();
+      return false;
+    }
     if (e.type !== 'keydown' || !e.metaKey || e.ctrlKey || e.altKey) return true;
     if (e.code === 'KeyD') {
       split(e.shiftKey ? 'column' : 'row');
@@ -725,6 +737,11 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
     fullscreenChord = chordFor('sidebar_fullscreen');
     setFullscreen(panel.classList.contains('fullscreen'));
   };
+
+  window.__termOptionAsMeta = function(on) {
+    optionAsMeta = on;
+    panes.forEach(function(p) { p.term.options.macOptionIsMeta = on; });
+  };
   window.__setShortcuts(/*@@KEYBINDINGS_JSON@@*/);
   // Rust answers with __termSpace: the workspace on screen and its layout.
   ipc({ type: 'ready' });
@@ -734,6 +751,7 @@ pub fn html(keybindings_json: &str, shell_theme_json: &str) -> String {
 </html>"#
         .replace("/*@@THEME@@*/", crate::theme::CSS)
         .replace("/*@@SHELL_THEME_JSON@@*/", shell_theme_json)
+        .replace("/*@@OPTION_AS_META@@*/", &option_as_meta.to_string())
         .replace("/*@@KEYBINDINGS_JSON@@*/", keybindings_json)
         .replace("/*@@XTERM_CSS@@*/", XTERM_CSS)
         .replace("/*@@XTERM_JS@@*/", XTERM_JS)

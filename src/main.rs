@@ -2804,6 +2804,7 @@ fn main() {
         .with_html(terminal_html::html(
             &keymap.read().unwrap().ui_json().to_string(),
             &terminal::shell_theme().map_or_else(|| "null".to_string(), |theme| theme.to_string()),
+            cfg.terminal_option_as_meta,
         ))
         .with_transparent(true)
         // chrome_win is rarely key while you work in a page; without this the
@@ -7165,6 +7166,13 @@ fn main() {
                             );
                             cfg.terminal_appearance = appearance;
                         }
+                    }
+                    "terminal_option_as_meta" => {
+                        cfg.terminal_option_as_meta = val == "true";
+                        let _ = terminal_wv.evaluate_script(&format!(
+                            "window.__termOptionAsMeta({})",
+                            cfg.terminal_option_as_meta
+                        ));
                     }
                     "search_engine" => {
                         search_engine = val.clone();
@@ -12353,7 +12361,7 @@ mod chrome_js_syntax_tests {
             ("settings", crate::settings_html::html()),
             ("shortcuts", crate::shortcuts_html::html()),
             ("sidebar", crate::sidebar_html::html(50, false)),
-            ("terminal", crate::terminal_html::html("null", "null")),
+            ("terminal", crate::terminal_html::html("null", "null", true)),
             ("workspace_switcher", crate::workspace_switcher_html::html()),
         ]
     }
