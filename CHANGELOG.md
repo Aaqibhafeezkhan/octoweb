@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.17.0] - 2026-10-13
+
+### 📋 Release Summary
+
+Added integrated mail with Apple Mail shortcuts, previews, image privacy controls, and bundled Google OAuth credentials; workspace notes capture, workspace-scoped and browser extensions, persistent and configurable terminals, split-shell directory handling, Option-as-Meta input, link hints across page changes, MCP agent-tab and navigation controls, focused-panel titles, and hard reloads. Also refined mail presentation, webview navigation, terminal split navigation, terminal settings, extension site patterns, proxy initialization, MCP hidden-match reporting, window-title synchronization, and A2UI validation and local URL handling.
+
+### ✨ New Features & Enhancements
+
+- **mail**: support Apple Mail keyboard shortcuts `4b43c625`
+- **oauth**: support bundled Google OAuth credentials `bbf67d52`
+- **mail**: support mail previews and image privacy controls `a4af2f58`
+- **mail**: add integrated mail client support `a9f142dd`
+- **notes**: add workspace notes panel and capture workflow `60776ac0`
+- **terminal**: support configurable Option-as-Meta input `c7a97748`
+- **terminal**: start split shells in source pane directory `41a8d386`
+- **extensions**: scope extensions by workspace `e6899985`
+- **extensions**: support browser extensions `a6ad2451`
+- **link-hints**: keep link hints active across page changes `9c797a7c`
+- **mcp**: manage agent tabs and settle browser navigation `81258b4f`
+- **terminal**: persist terminal sessions across restarts `e3a55c10`
+- **terminal**: support configurable terminal appearance `7693f881`
+- **window**: update title for focused panels `7c1230d0`
+- **reload**: support hard reloads `51557a99`
+
+### 🔧 Improvements & Optimizations
+
+- **a2ui_js**: format temporary directory construction `7f8d9edd`
+
+### 🐛 Bug Fixes & Stability
+
+- **mail-html**: refine mail interface presentation `90c35616`
+- **webview**: restrict pane webview navigation `2f134c2b`
+- **terminal**: navigate between terminal splits `ce7d30df`
+- **settings**: reorganize terminal settings layout `30e30b08`
+- **extensions**: deduplicate granted site patterns `c88b0eea`
+- **ci**: give each run_node invocation its own temp dir `17e1d2c7`
+- **site-proxy**: initialize Network context before proxy setup `d0bbc7e0`
+- **mcp**: report hidden matches with opener refs `0bcf8e90`
+- **window-title**: synchronize workspace and page window titles `f61a40a2`
+- **a2ui**: validate A2UI controls and resolve local URLs `d412e02f`
+
+### 📚 Documentation & Examples
+
+- document MCP tools and shortcuts `761a3650`
+
 ## [0.16.0] - 2026-09-26
 
 ### 📋 Release Summary
