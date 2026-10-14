@@ -1251,14 +1251,21 @@ pub fn html(keybindings_json: &str) -> String {
       '<div class="actions"><button class="btn primary" type="button" id="c-send">Send<span class="kbd">⌘↩</span></button>' +
       '<button class="btn" type="button" id="c-later">Send later</button>' +
       '<button class="btn' + (d._remind ? ' set' : '') + '" type="button" id="c-remind">' + (d._remind ? 'Remind: ' + esc(d._remindLabel) : 'Remind me') + '</button>' +
-      (canWrite(d) && !w ? '<button class="btn write' + (intro ? ' intro' : '') + '" type="button" id="c-write" title="Draft the reply from this conversation and your notes">✦ Write with AI<span class="kbd">⌘J</span></button>' : '') +
+      (canWrite(d) && !w ? '<button class="btn write' + (intro ? ' intro' : '') + '" type="button" id="c-write" title="Draft the reply, or refine what you wrote, from this conversation">✦ <span class="label">' + writeLabel(d) + '</span><span class="kbd">⌘J</span></button>' : '') +
       '<span class="spacer"></span>' +
       '<button class="icon-btn" type="button" id="c-attach" title="Attach files" aria-label="Attach files">' + I.clip + '</button>' +
       '<button class="icon-btn" type="button" id="c-discard" title="Discard draft" aria-label="Discard draft">' + I.trash + '</button></div></div>';
     const fields = ['to', 'cc', 'bcc', 'subject', 'body'];
     fields.forEach(function(f) {
       const el = $('c-' + f);
-      if (el) el.addEventListener('input', function() { d[f] = el.value; scheduleDraftSave(); if (f === 'body') grow(el); });
+      if (el) el.addEventListener('input', function() {
+        d[f] = el.value;
+        scheduleDraftSave();
+        if (f !== 'body') return;
+        grow(el);
+        const label = document.querySelector('#c-write .label');
+        if (label) label.textContent = writeLabel(d);
+      });
     });
     const body = $('c-body');
     if (body) grow(body);
@@ -1345,13 +1352,20 @@ pub fn html(keybindings_json: &str) -> String {
   // as one native edit, so ⌘Z brings the notes back.
   const WRITER_TUNES = [['Shorter', 'Make it shorter'], ['Friendlier', 'Make it friendlier'], ['More formal', 'Make it more formal']];
   function canWrite(d) { return S.ai && d.thread && d.mode !== 'forward'; }
+  // With words in the body the writer refines them; with none it drafts.
+  function writeLabel(d) { return d.body.trim() ? 'Refine with AI' : 'Write with AI'; }
   function writerBar(d, w) {
     const kbd = function(k) { return '<span class="kbd">' + k + '</span>'; };
     const close = function(label) { return '<button class="pill" type="button" data-w="close">' + label + kbd('esc') + '</button>'; };
     const open = '<div class="writer" id="writer">';
+    if (w.phase === 'ask' && d.body.trim()) {
+      return open + '<button class="btn primary" type="button" data-w="improve">Improve' + kbd('↩') + '</button>' +
+        WRITER_TUNES.map(function(t) { return '<button class="pill" type="button" data-tune="' + esc(t[1]) + '">' + esc(t[0]) + '</button>'; }).join('') +
+        '<label class="ask"><input id="w-input" autocomplete="off" placeholder="Or say how to change it…"></label>' + close('Cancel') + '</div>';
+    }
     if (w.phase === 'ask') {
-      return open + '<label class="ask"><span class="spark">✦</span><input id="w-input" autocomplete="off" placeholder="' +
-        (d.body.trim() ? 'Anything to add? ↩ turns your notes into the reply' : 'What should it say? Or just ↩') + '"></label>' + close('Cancel') + '</div>';
+      return open + '<label class="ask"><span class="spark">✦</span><input id="w-input" autocomplete="off" placeholder="What should it say? Or just ↩"></label>' +
+        close('Cancel') + '</div>';
     }
     if (w.phase === 'writing') {
       return open + '<span class="spark">✦</span><span class="status">Writing…</span>' + close('Stop') + '</div>';
@@ -1384,7 +1398,9 @@ pub fn html(keybindings_json: &str) -> String {
     bar.addEventListener('click', function(e) {
       const b = e.target.closest('[data-w], [data-tune]');
       if (!b) return;
-      if (b.dataset.tune) write(d, b.dataset.tune, w.text);
+      // Before any reply exists the tunes work on what the body holds.
+      if (b.dataset.tune) write(d, b.dataset.tune, w.phase === 'ask' ? d.body : w.text);
+      else if (b.dataset.w === 'improve') write(d, '', d.body);
       else if (b.dataset.w === 'keep') keepWriting();
       else if (b.dataset.w === 'retry') write(d, w.request.instruction, w.request.text);
       else closeWriter();

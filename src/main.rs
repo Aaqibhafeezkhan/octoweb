@@ -7933,6 +7933,7 @@ fn main() {
                         }
                     }
                     "mail_ai_summaries" => cfg.mail_ai_summaries = val == "true",
+                    "mail_sounds" => cfg.mail_sounds = val == "true",
                     "mail_brief_morning" => cfg.mail_brief_morning = val == "true",
                     "proxies" => match serde_json::from_str::<Vec<config::ProxyRule>>(&val) {
                         Ok(mut rules) => {
@@ -10199,6 +10200,10 @@ fn main() {
                     if matches!(req, mail::PageRequest::Ai { .. }) && !cfg.mail_ai {
                         toast!("Turn on mail AI in Settings → Mail first.", "\u{2709}\u{FE0F}", "Mail");
                         return;
+                    }
+                    // The moment Send is pressed, as Spark does; Send later stays quiet.
+                    if cfg.mail_sounds && matches!(req, mail::PageRequest::Send { send_at: None, .. }) {
+                        macos::play_mail_sent();
                     }
                     let ws = workspace_manager.active().id.clone();
                     let accounts = mail::accounts_in(&cfg.mail_accounts, &ws);

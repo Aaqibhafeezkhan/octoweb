@@ -229,6 +229,8 @@ are joined by links, not merged into one list.
 - **WRT-8** Sent mail shall be stored in the account's Sent folder, unless the
   server does so itself (Gmail).
 - **WRT-9** Attachments shall be added by drag and drop or a file picker.
+- **WRT-10** Pressing **Send** shall play a short sent sound, like Spark;
+  Send later shall not. Settings → Mail turns it off; it is on by default.
 
 ## Search
 
@@ -266,7 +268,10 @@ context already uses, so instructions inside an email are treated as data.
   what is asked of the user and any dates.
 - **AI-3** In a reply composer, a labelled **✦ Write with AI** button beside
   Send (or **⌘J**) shall open the writer right under the text, with one line
-  for what to say. The button draws the eye once as the reply opens.
+  for what to say. The button draws the eye once as the reply opens. With
+  words already in the body it reads **✦ Refine with AI** and opens on
+  **Improve** (↩), **Shorter**, **Friendlier**, **More formal** and a line
+  for any other change, all working on that text.
   The `octoweb:mail-writer` specialist — text in, text out, no tools —
   writes the reply in the user's voice from the thread, the text of its PDF
   and plain-text attachments, the user's past replies to that sender, and

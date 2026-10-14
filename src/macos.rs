@@ -27,6 +27,39 @@ pub fn pick_files() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+const MAIL_SENT_SOUND: &[u8] = include_bytes!("../assets/sounds/mail-sent.wav");
+
+thread_local! {
+    // Kept for the app's life: a sound released mid-play goes quiet.
+    static MAIL_SENT: std::cell::OnceCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>> =
+        const { std::cell::OnceCell::new() };
+}
+
+/// The whoosh of a message being sent (WRT-10). Main thread only.
+pub fn play_mail_sent() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSData;
+
+    MAIL_SENT.with(|cell| {
+        let sound = cell.get_or_init(|| unsafe {
+            let data = NSData::with_bytes(MAIL_SENT_SOUND);
+            let sound: *mut AnyObject = msg_send![class!(NSSound), alloc];
+            let sound: *mut AnyObject = msg_send![sound, initWithData: &*data];
+            objc2::rc::Retained::from_raw(sound)
+        });
+        let Some(sound) = sound else {
+            tracing::warn!("mail sent sound did not load");
+            return;
+        };
+        unsafe {
+            // Sends in quick succession restart it rather than overlap.
+            let _: bool = msg_send![&**sound, stop];
+            let _: bool = msg_send![&**sound, play];
+        }
+    });
+}
+
 #[link(name = "PDFKit", kind = "framework")]
 extern "C" {}
 

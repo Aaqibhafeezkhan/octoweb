@@ -605,6 +605,9 @@ pub struct Config {
     /// Off by default: mail renders as its sender designed it.
     #[serde(default)]
     pub mail_block_images: bool,
+    /// A short whoosh as a message is sent, like Spark and Apple Mail.
+    #[serde(default = "default_mail_sounds")]
+    pub mail_sounds: bool,
     /// Mail AI features (summaries, drafts, brief, task extraction). Off until
     /// the user turns them on: mail text then goes to the configured agent.
     #[serde(default)]
@@ -809,6 +812,10 @@ fn default_terminal_option_as_meta() -> bool {
     true
 }
 
+fn default_mail_sounds() -> bool {
+    true
+}
+
 fn default_max_ai_prompt_history() -> usize {
     50
 }
@@ -858,6 +865,7 @@ impl Default for Config {
             mail_ai: false,
             mail_ai_summaries: false,
             mail_block_images: false,
+            mail_sounds: true,
             mail_brief_morning: false,
             mail_brief_last: String::new(),
             mail_accounts: Vec::new(),

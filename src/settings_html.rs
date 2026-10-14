@@ -679,6 +679,16 @@ pub fn html() -> String {
         </div>
       </div>
       <div class="section">
+        <div class="section-title">Sound</div>
+        <div class="row with-hint">
+          <div class="row-label-stack">
+            <label class="row-label" id="mail_sounds_label" for="mail_sounds">Play a sound when mail is sent</label>
+            <span class="row-hint">A short whoosh the moment you press Send.</span>
+          </div>
+          <button class="toggle" id="mail_sounds" data-key="mail_sounds" role="switch" aria-checked="true" aria-labelledby="mail_sounds_label"></button>
+        </div>
+      </div>
+      <div class="section">
         <div class="section-title">AI</div>
         <div class="row with-hint">
           <div class="row-label-stack">

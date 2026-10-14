@@ -2813,21 +2813,28 @@ fn draft_prompt(
     attachments: &str,
 ) -> Option<String> {
     let thread = thread_text(shared, item)?;
+    let me = shared.account(&item.account)?;
     let voice = past_replies(shared, item);
+    // Who is writing: on a first reply to someone nothing else names the
+    // user, and the writer would sign "[Your name]".
+    let me_line = if me.name.is_empty() {
+        me.address.clone()
+    } else {
+        format!("{} <{}>", me.name, me.address)
+    };
     // The app appends the account's signature when one is set; otherwise the
-    // user's own sign-off and signature belong in the body.
-    let signature = match shared.account(&item.account) {
-        Some(a) if !a.signature.trim().is_empty() => {
-            "Signature: the app adds mine below the reply, so end with a sign-off at most."
-        }
-        _ => "Signature: nothing is added for me, so end the way my emails to them end.",
+    // user's sign-off and name belong in the body.
+    let signature = if me.signature.trim().is_empty() {
+        "Signature: nothing is added for me, so end the way my emails to them end, or with a sign-off and my name."
+    } else {
+        "Signature: the app adds mine below the reply, so end with a sign-off at most."
     };
     let instruction = match instruction.trim() {
         "" => String::new(),
         i => format!("\n\nInstruction: {i}"),
     };
     Some(format!(
-        "{thread}{attachments}{voice}\n\n{signature}{instruction}\n\n<text>\n{}\n</text>",
+        "{thread}{attachments}{voice}\n\nMe: {me_line}\n{signature}{instruction}\n\n<text>\n{}\n</text>",
         text.trim()
     ))
 }
@@ -3585,6 +3592,34 @@ mod tests {
             .insert("acc", INBOX, Some(1), false, true, &parsed)
             .thread;
         let shared = shared(store);
+        let mut me = Account::resolve(
+            &MailAccount {
+                id: [1; 16],
+                provider: MailProvider::Other,
+                address: "don@muvon.io".into(),
+                name: "Don Karter".into(),
+                color: String::new(),
+                signature: String::new(),
+                gatekeeper: false,
+                scope: Default::default(),
+                imap_host: "imap.x".into(),
+                imap_port: 993,
+                smtp_host: "smtp.x".into(),
+                smtp_port: 465,
+                smtp_security: SmtpSecurity::Tls,
+                login: String::new(),
+                archive_folder: String::new(),
+                has_password: true,
+                password: None,
+                auth: Default::default(),
+                oauth_client_id: String::new(),
+                has_client_secret: false,
+                client_secret: None,
+            },
+            "pw".into(),
+        );
+        me.key = "acc".into();
+        shared.accounts.lock().unwrap().insert(me.key.clone(), me);
         let item = Item {
             account: "acc".into(),
             thread,
@@ -3600,9 +3635,12 @@ mod tests {
         .unwrap();
         let conversation = p.find("Please confirm the report.").unwrap();
         let attached = p.find("Attachments of this conversation").unwrap();
-        let signature = p.find("\n\nSignature: nothing is added for me").unwrap();
+        let me = p.find("\n\nMe: Don Karter <don@muvon.io>\n").unwrap();
+        let signature = p.find("Signature: nothing is added for me").unwrap();
         let instruction = p.find("\n\nInstruction: keep it short\n").unwrap();
-        assert!(conversation < attached && attached < signature && signature < instruction);
+        assert!(
+            conversation < attached && attached < me && me < signature && signature < instruction
+        );
         assert!(p.ends_with("\n\n<text>\nok with numbers\nask filing date\n</text>"));
 
         let bare = draft_prompt(&shared, &item, "", "  ", "").unwrap();
