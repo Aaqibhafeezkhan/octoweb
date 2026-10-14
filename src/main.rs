@@ -32,6 +32,7 @@ mod mail_e2e;
 mod mail_html;
 mod mail_oauth;
 mod mail_parse;
+mod mail_patch;
 mod mail_store;
 mod markdown_js;
 mod mcp;
@@ -146,6 +147,10 @@ enum AppEvent {
     // Open URL in a tab left in the background: no switch, no focus. Lands in
     // the source tab's workspace, else the one on screen.
     OpenInBackgroundTab(String, Option<usize>),
+    // A link opened in a mail message (mail_patch.rs).
+    MailLink(mail_patch::Link),
+    // A `window.__mail` call from native mail input: keys, swipe.
+    MailCall(String),
     PageLoadStarted(usize),                 // (tab_id) — show progress bar
     PageLoadFinished(usize),                // (tab_id) — hide progress bar
     NavigationError(usize, String, String), // (tab_id, url, error) — show error page
@@ -3003,6 +3008,18 @@ fn main() {
         .expect("Failed to create mail WebView");
     let _ = mail_wv.set_visible(false);
     let mail_view = objc2::rc::Retained::as_ptr(&mail_wv.webview()) as usize;
+    mail_patch::install(mail_view, {
+        let p = proxy.clone();
+        move |link| {
+            let _ = p.send_event(AppEvent::MailLink(link));
+        }
+    });
+    mail_patch::monitor_swipes(mail_view, {
+        let p = proxy.clone();
+        move |call| {
+            let _ = p.send_event(AppEvent::MailCall(call));
+        }
+    });
     let mut mail_visible = false;
     let mail_engine = {
         let p = proxy.clone();
@@ -3128,6 +3145,17 @@ fn main() {
                     Some(ev) => {
                         let _ = p.send_event(ev);
                         consume
+                    }
+                    // The message frame runs no scripts: its keys reach the
+                    // page's handler from here.
+                    None if matches!(tab, PaneTab::Mail) && !cmd && !ctrl && !opt => {
+                        match mail_patch::frame_key(event, keycode, shift) {
+                            Some(call) => {
+                                let _ = p.send_event(AppEvent::MailCall(call));
+                                consume
+                            }
+                            None => pass,
+                        }
                     }
                     None => pass,
                 };
@@ -8191,6 +8219,20 @@ fn main() {
                 tracing::debug!(new_id, ?source, "opened tab in background");
             }
 
+            Event::UserEvent(AppEvent::MailLink(link)) => {
+                if link.url.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("mailto:")) {
+                    let url = serde_json::Value::String(link.url);
+                    let _ = mail_wv.evaluate_script(&format!("window.__mail && window.__mail.mailto({url})"));
+                } else if link.background {
+                    let _ = proxy.send_event(AppEvent::OpenInBackgroundTab(link.url, None));
+                } else {
+                    let _ = proxy.send_event(AppEvent::Notes(notes::Request::OpenUrl { url: link.url }));
+                }
+            }
+            Event::UserEvent(AppEvent::MailCall(call)) => {
+                let _ = mail_wv.evaluate_script(&call);
+            }
+
             // ── Switch tab: hide current, show target — no reload ─────────
             Event::UserEvent(AppEvent::SwitchTab(tab_id)) => {
                 overlay_visible = false;
@@ -10062,13 +10104,7 @@ fn main() {
                     mail::Pane::ResizeReset => {
                         let _ = proxy.send_event(AppEvent::Notes(notes::Request::ResizeReset));
                     }
-                    mail::Pane::OpenUrl { url, background: false } => {
-                        let _ = proxy.send_event(AppEvent::Notes(notes::Request::OpenUrl { url }));
-                    }
-                    mail::Pane::OpenUrl { url, background: true } => {
-                        let _ = proxy.send_event(AppEvent::OpenInBackgroundTab(url, None));
-                    }
-                    mail::Pane::CopyText { text } => webview_utils::copy_text_to_pasteboard(&text),
+                    mail::Pane::FrameFocus { focused } => mail_patch::set_frame_focused(focused),
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()

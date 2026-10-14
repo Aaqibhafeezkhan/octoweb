@@ -2,9 +2,9 @@
 //! inbox, a thread, and the composer. Docked it shows one of them at a time;
 //! fullscreen puts the list beside the thread.
 //!
-//! HTML mail renders in a sandboxed iframe under a CSP that runs none of its
-//! scripts and blocks every remote load until the user allows images
-//! (READ-2). Links open in browser tabs through Rust (READ-3).
+//! HTML mail renders in a sandboxed iframe without scripts, under a CSP that
+//! blocks every remote load until the user allows images (READ-2). Its links,
+//! keys and swipes are handled natively in `mail_patch.rs` (READ-3, TRI-11).
 //!
 //! Messages to Rust (`window.ipc`): `mail::Pane` and `mail::PageRequest`.
 //!
@@ -15,6 +15,7 @@
 //!   changed()                      — mail changed: refresh what is shown
 //!   open(account, thread, fromNotes), openDraft(draft), show({title, items})
 //!   files(key, files), unread(n), fullscreen(on), focus()
+//!   key({key, shift}), swipe(phase, …), mailto(href) — native input (mail_patch.rs)
 //!   window.__setShortcuts(data)
 
 pub fn html(keybindings_json: &str) -> String {
@@ -435,12 +436,10 @@ pub fn html(keybindings_json: &str) -> String {
     popover._options = options;
   }
   function closePopover() { popover.classList.remove('open'); popoverPick = null; }
-  // Mail frames get this too: their mousedowns never reach this document.
-  function dismissFloats(e) {
+  document.addEventListener('mousedown', function(e) {
     if (popover.classList.contains('open') && !popover.contains(e.target)) closePopover();
     if (help.classList.contains('open') && !help.contains(e.target)) help.classList.remove('open');
-  }
-  document.addEventListener('mousedown', dismissFloats);
+  });
 
   // ── Undo bar (TRI-1, WRT-4) ─────────────────────────────────────────────────
   let undoTimer = 0, undoAction = null;
@@ -786,9 +785,9 @@ pub fn html(keybindings_json: &str) -> String {
         html += '<div class="images-bar"><span>Remote images are hidden.</span><button class="pill" type="button" data-images="once" data-i="' + i + '">Show</button>' +
           '<button class="pill" type="button" data-images="always" data-i="' + i + '">Always from ' + esc(m.from.name || m.from.addr) + '</button></div>';
       }
-      // allow-scripts only lets this page's listeners run in the frame: the
-      // CSP's default-src 'none' still blocks every script of the mail's own.
-      html += '<div class="msg-body">' + (m.html ? '<iframe class="mail" sandbox="allow-same-origin allow-scripts" data-i="' + i + '" title="Message"></iframe>' :
+      // No scripts in the frame; mail_patch.rs handles its links, keys and
+      // swipes. allow-popups lets target=_blank links reach it.
+      html += '<div class="msg-body">' + (m.html ? '<iframe class="mail" sandbox="allow-same-origin allow-popups" data-i="' + i + '" title="Message"></iframe>' :
         '<div class="msg-text">' + textHtml(m.text || (m.body_loaded ? '' : 'Loading…')) + '</div>') + '</div>';
       if (hasQuote(m)) html += '<button class="pill quote-toggle" type="button" data-quotes="' + i + '">Show quoted text</button>';
       if (m.attachments && m.attachments.length) {
@@ -802,6 +801,7 @@ pub fn html(keybindings_json: &str) -> String {
     });
     html += '<div id="reply-slot"></div>';
     detail.innerHTML = html;
+    syncFrameFocus();
     detail.querySelectorAll('iframe.mail').forEach(function(f) {
       const i = Number(f.dataset.i), m = t.messages[i];
       f.addEventListener('load', function() { wireFrame(f); });
@@ -817,118 +817,58 @@ pub fn html(keybindings_json: &str) -> String {
     // would never shrink below the iframe default.
     const fit = function() { f.style.height = Math.ceil(doc.body.getBoundingClientRect().height) + 'px'; };
     fit();
-    doc.addEventListener('load', fit, true);
     setTimeout(fit, 300);
     // READ-3: the full address shows on hover before clicking.
     doc.querySelectorAll('a[href]').forEach(function(a) { a.title = a.getAttribute('href'); });
-    doc.addEventListener('click', function(e) {
-      const a = e.target.closest && e.target.closest('a[href]');
-      if (!a) return;
-      e.preventDefault();
-      openLink(a.getAttribute('href'), false);
-    });
-    doc.addEventListener('contextmenu', function(e) { linkMenu(e, f); });
-    doc.addEventListener('mousedown', dismissFloats);
-    doc.addEventListener('wheel', onSwipe, { passive: false });
-    doc.addEventListener('keydown', onKey);
     f._fit = fit;
   }
 
-  function openLink(href, background) {
-    if (!href) return;
-    if (/^mailto:/i.test(href)) {
-      const to = decodeURIComponent(href.slice(7).split('?')[0]);
-      compose({ to: to });
-      return;
-    }
-    if (/^https?:\/\//i.test(href)) ipc({ type: 'open_url', url: href, background: background });
+  // The message frame runs no scripts, so mail_patch.rs forwards the keys
+  // typed in it while it holds focus.
+  let frameFocused = false;
+  function syncFrameFocus() {
+    const on = !!document.activeElement && document.activeElement.matches('iframe.mail');
+    if (on === frameFocused) return;
+    frameFocused = on;
+    ipc({ type: 'frame_focus', focused: on });
   }
-
-  // READ-3: links get this menu; elsewhere the native one keeps Copy and Look Up.
-  function linkMenu(e, frame) {
-    const a = e.target.closest && e.target.closest('a[href]');
-    const href = a && a.getAttribute('href');
-    if (!href || !/^https?:\/\//i.test(href)) return;
-    e.preventDefault();
-    const box = frame ? frame.getBoundingClientRect() : { left: 0, top: 0 };
-    const x = box.left + e.clientX, y = box.top + e.clientY;
-    const real = untracked(href);
-    const options = [
-      { label: 'Open in new tab', run: function() { openLink(href, false); } },
-      { label: 'Open in background tab', run: function() { openLink(href, true); } },
-      { label: 'Copy link', run: function() { ipc({ type: 'copy_text', text: href }); } },
-    ];
-    if (real !== href) options.push({ label: 'Copy link without tracking', run: function() { ipc({ type: 'copy_text', text: real }); } });
-    let host = real;
-    try { host = new URL(real).host; } catch (_) { /* not a URL: show it whole */ }
-    openPopover({ getBoundingClientRect: function() { return { left: x, bottom: y }; } }, host, options, function(o) { o.run(); });
-  }
-
-  // A tracking redirect's destination: an http(s) URL in a query parameter
-  // (?url=, ?q=, …) or in a base64 JSON path segment ({"href": …}, as
-  // customer.io sends). The link itself when neither is there.
-  function untracked(href) {
-    let u;
-    try { u = new URL(href); } catch (_) { return href; }
-    for (const v of u.searchParams.values()) if (/^https?:\/\//i.test(v)) return v;
-    for (const seg of u.pathname.split('/')) {
-      let dest = null;
-      try { dest = JSON.parse(atob(seg.replace(/-/g, '+').replace(/_/g, '/'))); } catch (_) { continue; }
-      dest = dest && (dest.href || dest.url);
-      if (typeof dest === 'string' && /^https?:\/\//i.test(dest)) return dest;
-    }
-    return href;
-  }
+  // Focus moving into a frame blurs this window before it lands there.
+  window.addEventListener('blur', function() { setTimeout(syncFrameFocus, 0); });
+  window.addEventListener('focus', syncFrameFocus);
+  document.addEventListener('focusin', syncFrameFocus);
 
   // ── Swipe right for Done (TRI-11) ───────────────────────────────────────
-  // A two-finger swipe arrives as wheel events; a pause in them ends it, so
-  // its momentum can't carry on into the next conversation.
-  const SWIPE_LOCK_PX = 8, SWIPE_DONE_PX = 120, SWIPE_END_MS = 180;
-  let swipe = null, swipeEnd = 0;
-  function swipeTarget(e) {
-    if (S.composer) return null;
-    const open = S.thread && { el: detail, items: [{ account: S.thread.account, thread: S.thread.thread }] };
-    if (e.target.ownerDocument !== document) return open;
-    const row = e.target.closest('.row');
-    const r = row && S.rows[Number(row.dataset.i)];
-    if (r && r.thread) return { el: row, items: [{ account: r.thread.account, thread: r.thread.thread }] };
-    return detail.contains(e.target) ? open : null;
+  // mail_patch.rs follows the gesture and reports it here; lifting the fingers
+  // past SWIPE_DONE_PX marks the row or thread it started on Done.
+  const SWIPE_DONE_PX = 120;
+  let swipe = null;
+  function swipeAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    if (!el || S.composer || PV.m) return null;
+    const row = el.closest('.row');
+    const r = row && list.contains(row) && S.rows[Number(row.dataset.i)];
+    if (r && r.thread) return { el: row, dx: 0, items: [{ account: r.thread.account, thread: r.thread.thread }] };
+    if (S.thread && detail.contains(el)) return { el: detail, dx: 0, items: [{ account: S.thread.account, thread: S.thread.thread }] };
+    return null;
   }
-  function scrolledLeft(el) {
-    for (; el; el = el.parentElement) if (el.scrollLeft > 0) return true;
-    return false;
-  }
-  function endSwipe() {
-    if (swipe && swipe.t) swipe.t.el.style.transform = '';
-    swipe = null;
-  }
-  function onSwipe(e) {
-    clearTimeout(swipeEnd);
-    swipeEnd = setTimeout(endSwipe, SWIPE_END_MS);
-    if (!swipe) swipe = { t: swipeTarget(e), dx: 0, dy: 0, locked: false, done: false };
-    const s = swipe;
-    if (s.done) { e.preventDefault(); return; }
-    if (!s.t) return;
-    // Fingers moving right scroll the content right: negative deltaX.
-    s.dx -= e.deltaX;
-    if (!s.locked) {
-      s.dy += Math.abs(e.deltaY);
-      if (Math.abs(s.dx) + s.dy < SWIPE_LOCK_PX) return;
-      if (s.dx <= 2 * s.dy || scrolledLeft(e.target)) { s.t = null; return; }
-      s.locked = true;
+  function onSwipe(phase, a, b) {
+    if (phase === 'begin') { swipe = swipeAt(a, b); return; }
+    if (!swipe) return;
+    if (phase === 'move') {
+      swipe.dx = a;
+      swipe.el.style.transform = 'translateX(' + Math.max(0, Math.min(a, SWIPE_DONE_PX)) + 'px)';
+      return;
     }
-    e.preventDefault();
-    if (s.dx < SWIPE_DONE_PX) { s.t.el.style.transform = 'translateX(' + Math.max(0, s.dx) + 'px)'; return; }
-    s.done = true;
-    s.t.el.style.transform = '';
-    act('done', s.t.items);
+    const s = swipe;
+    swipe = null;
+    s.el.style.transform = '';
+    if (phase === 'end' && s.dx >= SWIPE_DONE_PX) act('done', s.items);
   }
-  list.addEventListener('wheel', onSwipe, { passive: false });
-  detail.addEventListener('wheel', onSwipe, { passive: false });
 
   detail.addEventListener('click', function(e) {
     const a = e.target.closest('a[href]');
-    if (a) { e.preventDefault(); openLink(a.getAttribute('href'), false); return; }
+    // The link navigates, and mail_patch.rs opens it in a tab.
+    if (a) return;
     const t = S.thread;
     const actBtn = e.target.closest('[data-act]');
     if (actBtn) { threadAction(actBtn.dataset.act, actBtn); return; }
@@ -961,7 +901,6 @@ pub fn html(keybindings_json: &str) -> String {
       openPreview(Number(p[0]), Number(p[1]));
     }
   });
-  detail.addEventListener('contextmenu', function(e) { linkMenu(e, null); });
 
   // ── Attachment preview (READ-4) ─────────────────────────────────────────────
   const FILE_KINDS = [
@@ -1509,6 +1448,14 @@ pub fn html(keybindings_json: &str) -> String {
     },
     acted: function() { refresh(); },
     images: function() {},
+    key: function(k) {
+      onKey({ key: k.key, shiftKey: k.shift, metaKey: false, ctrlKey: false, altKey: false, isComposing: false,
+        target: document.activeElement, preventDefault: function() {} });
+    },
+    swipe: onSwipe,
+    mailto: function(href) {
+      compose({ to: decodeURIComponent(href.slice(7).split('?')[0]) });
+    },
     preview: function(d) {
       if (d.data && PV.m) PV.cache.set(d.message + ':' + d.index, d.data);
       if (!PV.m || PV.m.id !== d.message || PV.j !== d.index) return;

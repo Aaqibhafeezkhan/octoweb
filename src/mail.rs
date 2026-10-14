@@ -458,13 +458,9 @@ pub enum Pane {
         width: u32,
     },
     ResizeReset,
-    OpenUrl {
-        url: String,
-        background: bool,
-    },
-    /// Link menu → Copy link.
-    CopyText {
-        text: String,
+    /// The message frame gained or lost keyboard focus (`mail_patch`).
+    FrameFocus {
+        focused: bool,
     },
     /// Choose files to attach with the system picker.
     PickFiles {

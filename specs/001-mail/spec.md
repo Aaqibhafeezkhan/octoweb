@@ -198,10 +198,9 @@ are joined by links, not merged into one list.
   (Settings → Mail), remote content is blocked and the user shall be able to
   load it for this message or always for this sender.
 - **READ-3** Links in mail shall open in a new browser tab of the current
-  workspace; the full URL shall show on hover before clicking. Right-clicking
-  a link shall offer: open in new tab, open in background tab, copy link, and
-  — when it is a tracking redirect whose destination can be read — copy link
-  without tracking.
+  workspace (⌘-click: in the background); the full URL shall show on hover
+  before clicking. Right-clicking a link shall offer open in new tab, open in
+  background tab, and copy link.
 - **READ-4** Attachments shall be listed with name, size and file type;
   opening one shall preview it in the pane (PDF, images, text; ←/→ between a
   message's attachments) with a Download action that saves it to Downloads
@@ -314,12 +313,12 @@ context already uses, so instructions inside an email are treated as data.
   synced before its parent adopting the child's thread, then the normalised
   subject within 30 days when a participant is shared. Gmail's `X-GM-THRID`
   is not used: one rule for all providers.
-- **Rendering.** Mail HTML in a sandboxed iframe under a CSP whose
-  `default-src 'none'` blocks the mail's own scripts and allows remote images
-  unless the user blocks them. The sandbox has `allow-scripts` only so the
-  pane's listeners (links, link menu, swipe, keys, height) run in the frame:
-  WebKit drops them without it. Inline `cid:` images are inlined as data URIs
-  when the message is parsed.
+- **Rendering.** Mail HTML in a sandboxed iframe without `allow-scripts`, under
+  a CSP that allows remote images unless the user blocks them; inline `cid:`
+  images are inlined as data URIs when the message is parsed. WebKit runs
+  none of the page's listeners inside such a frame, so links, the link menu,
+  keys typed in a message and swipes are handled natively (`mail_patch.rs`).
+  `allow-popups` only lets `target=_blank` links reach that handler.
 - **Panel.** Mail is the second tab of the notes pane: two WebViews in the
   same column, sharing its width, resize and fullscreen (`pane_bounds!`), only
   one visible at a time. `mail.rs` owns sync on its own thread and talks to the
