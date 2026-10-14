@@ -143,6 +143,9 @@ enum AppEvent {
     // login). Foregrounded only when the source is the visible tab or None — so a
     // page the agent drives in a BACKGROUND tab can't yank the user's view/focus.
     OpenInNewTab(String, Option<usize>),
+    // Open URL in a tab left in the background: no switch, no focus. Lands in
+    // the source tab's workspace, else the one on screen.
+    OpenInBackgroundTab(String, Option<usize>),
     PageLoadStarted(usize),                 // (tab_id) — show progress bar
     PageLoadFinished(usize),                // (tab_id) — hide progress bar
     NavigationError(usize, String, String), // (tab_id, url, error) — show error page
@@ -8126,24 +8129,7 @@ fn main() {
                 }
 
                 if !foreground {
-                    // Silent background open — mirrors MCP background navigate:
-                    // no active-tab switch, no pending_swap, no set_focus. Lands
-                    // in the source tab's own workspace: an agent-driven page in
-                    // a background workspace must not leak its popup (and the
-                    // cookie jar it loads with) into whichever one is on screen.
-                    let ws_idx = source
-                        .and_then(|src| workspace_manager.index_of_tab(src))
-                        .unwrap_or(workspace_manager.active_index());
-                    // Popups from an isolated tab stay isolated — a persistent
-                    // cookie jar would leak the private session into history.
-                    let isolated = source.is_some_and(|src| is_isolated_tab(&workspace_manager, src));
-                    let new_id = if isolated {
-                        workspace_manager.at(ws_idx).tabs.lock().unwrap().open_incognito_background(url.clone())
-                    } else {
-                        workspace_manager.at(ws_idx).tabs.lock().unwrap().open_background(url.clone())
-                    };
-                    spawn_tab_webview_at!(ws_idx, new_id, &url);
-                    tracing::debug!(new_id, ?source, "OpenInNewTab kept in background (agent-driven source)");
+                    let _ = proxy.send_event(AppEvent::OpenInBackgroundTab(url, source));
                     return;
                 }
 
@@ -8182,6 +8168,27 @@ fn main() {
                 update_address_bar_url!(url);
                 macos::mru_push(&mut workspace_manager.active_mut().mru, tab_id);
                 browser_win.set_focus();
+            }
+
+            Event::UserEvent(AppEvent::OpenInBackgroundTab(url, source)) => {
+                // Silent background open — mirrors MCP background navigate:
+                // no active-tab switch, no pending_swap, no set_focus. Lands
+                // in the source tab's own workspace: an agent-driven page in
+                // a background workspace must not leak its popup (and the
+                // cookie jar it loads with) into whichever one is on screen.
+                let ws_idx = source
+                    .and_then(|src| workspace_manager.index_of_tab(src))
+                    .unwrap_or(workspace_manager.active_index());
+                // Popups from an isolated tab stay isolated — a persistent
+                // cookie jar would leak the private session into history.
+                let isolated = source.is_some_and(|src| is_isolated_tab(&workspace_manager, src));
+                let new_id = if isolated {
+                    workspace_manager.at(ws_idx).tabs.lock().unwrap().open_incognito_background(url.clone())
+                } else {
+                    workspace_manager.at(ws_idx).tabs.lock().unwrap().open_background(url.clone())
+                };
+                spawn_tab_webview_at!(ws_idx, new_id, &url);
+                tracing::debug!(new_id, ?source, "opened tab in background");
             }
 
             // ── Switch tab: hide current, show target — no reload ─────────
@@ -10055,9 +10062,13 @@ fn main() {
                     mail::Pane::ResizeReset => {
                         let _ = proxy.send_event(AppEvent::Notes(notes::Request::ResizeReset));
                     }
-                    mail::Pane::OpenUrl { url } => {
+                    mail::Pane::OpenUrl { url, background: false } => {
                         let _ = proxy.send_event(AppEvent::Notes(notes::Request::OpenUrl { url }));
                     }
+                    mail::Pane::OpenUrl { url, background: true } => {
+                        let _ = proxy.send_event(AppEvent::OpenInBackgroundTab(url, None));
+                    }
+                    mail::Pane::CopyText { text } => webview_utils::copy_text_to_pasteboard(&text),
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()

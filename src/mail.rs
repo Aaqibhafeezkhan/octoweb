@@ -460,6 +460,11 @@ pub enum Pane {
     ResizeReset,
     OpenUrl {
         url: String,
+        background: bool,
+    },
+    /// Link menu → Copy link.
+    CopyText {
+        text: String,
     },
     /// Choose files to attach with the system picker.
     PickFiles {
