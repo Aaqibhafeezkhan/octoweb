@@ -26,6 +26,27 @@ pub fn pick_files() -> Vec<std::path::PathBuf> {
         .map(|p| std::path::PathBuf::from(p.to_string()))
         .collect()
 }
+
+#[link(name = "PDFKit", kind = "framework")]
+extern "C" {}
+
+/// The text of a PDF, by PDFKit, for the mail drafting assistant. `None` when
+/// it does not open or has no text layer (a scan). Any thread.
+pub fn pdf_text(bytes: &[u8]) -> Option<String> {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSData, NSString};
+
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let data = NSData::with_bytes(bytes);
+        let doc: *mut AnyObject = msg_send![class!(PDFDocument), alloc];
+        let doc: *mut AnyObject = msg_send![doc, initWithData: &*data];
+        let doc = objc2::rc::Retained::from_raw(doc)?;
+        let text: *mut NSString = msg_send![&*doc, string];
+        let text = text.as_ref()?.to_string();
+        (!text.trim().is_empty()).then_some(text)
+    })
+}
 /// Set the app's preferred language to English for WKWebView's Accept-Language header.
 ///
 /// By default, WKWebView sends all system preferred languages in Accept-Language.
@@ -616,4 +637,55 @@ pub fn octomind_agents() -> Vec<(String, String)> {
     }
     agents.sort();
     agents
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-page PDF showing `text` in Helvetica.
+    fn pdf(text: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .into(),
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, o) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+        }
+        let xref = out.len();
+        out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+        for off in offsets {
+            out.extend(format!("{off:010} 00000 n \n").bytes());
+        }
+        out.extend(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn pdf_text_reads_the_text_layer() {
+        let text = pdf_text(&pdf("Total due 4200 HKD by 31 October")).unwrap();
+        assert!(
+            text.contains("Total due 4200 HKD by 31 October"),
+            "{text:?}"
+        );
+        assert_eq!(pdf_text(b"not a pdf"), None);
+    }
 }

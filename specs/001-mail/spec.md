@@ -264,10 +264,17 @@ context already uses, so instructions inside an email are treated as data.
   shall be generated on arrival and cached.
 - **AI-2** Opening a thread shall offer **Summarise** — a short summary with
   what is asked of the user and any dates.
-- **AI-3** In the composer, **Draft with AI** shall take a one-line intent
-  ("say yes, propose Tuesday") and write a reply in the user's voice, using
-  the thread and the user's past replies to that sender; the draft lands in
-  the composer for editing and is never sent by the AI.
+- **AI-3** In a reply composer, **⌘J** or the **✦** in the body's corner
+  shall open the writer right under the text, with one line for what to say.
+  The `octoweb:mail-writer` specialist — text in, text out, no tools —
+  writes the reply in the user's voice from the thread, the text of its PDF
+  and plain-text attachments, the user's past replies to that sender, and
+  what the composer holds (rough notes, or nothing for the reply the
+  conversation calls for). The reply shall stream into the body's place,
+  lighter until kept; under it: **Keep** (↩), **Shorter**, **Friendlier**,
+  **More formal**, **↻** and a line to ask for any other change; Esc
+  discards or stops. Keep shall put the reply in the body as one edit that
+  ⌘Z undoes. Nothing is ever sent by the AI.
 - **AI-4** **Daily brief** — on request, or each morning where enabled — shall
   group the inbox into *Needs reply*, *Waiting on others*, *FYI* and *Can
   archive*, each item one line; the user shall be able to apply a group's

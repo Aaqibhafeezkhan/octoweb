@@ -16,6 +16,7 @@
 //!   open(account, thread, fromNotes), openDraft(draft), show({title, items})
 //!   files(key, files), unread(n), fullscreen(on), focus()
 //!   key({key, shift}), swipe(phase, …), mailto(href) — native input (mail_patch.rs)
+//!   draftStream({key, text, done}), draftFailed({key, message}) — the reply writer (AI-3)
 //!   window.__setShortcuts(data)
 
 pub fn html(keybindings_json: &str) -> String {
@@ -256,8 +257,33 @@ pub fn html(keybindings_json: &str) -> String {
   .files:empty { display: none; }
   .file { background: var(--fill); border-radius: var(--r-capsule); padding: 3px 10px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
   .file button { border: none; background: none; cursor: pointer; color: var(--label-3); padding: 0; }
-  .ai-row { display: flex; gap: 6px; padding: 8px 14px; box-shadow: 0 -0.5px 0 var(--hairline); }
-  .ai-row input { flex: 1; min-width: 0; border: none; outline: none; background: var(--fill); border-radius: var(--r-capsule); height: 28px; padding: 0 12px; font: inherit; color: var(--label); }
+  /* AI-3: the writer lives in the composer, right under the text it writes. */
+  .body-wrap { position: relative; }
+  .spark-btn {
+    position: absolute; right: 10px; bottom: 8px; width: 26px; height: 26px; border: none; border-radius: 50%;
+    background: var(--fill); color: var(--accent); font-size: 13px; cursor: pointer; opacity: 0.75;
+    transition: opacity var(--t-fast), background var(--t-fast);
+  }
+  .spark-btn:hover { opacity: 1; background: var(--fill-hover); }
+  .writer-draft {
+    min-height: 160px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
+    font: 13px/1.55 var(--font-text); color: var(--label);
+    background: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+  /* Lighter while it streams, like any suggestion not yet kept. */
+  .writer-draft.writing { color: var(--label-2); }
+  .writer-draft .caret {
+    display: inline-block; width: 7px; height: 1.1em; margin-left: 1px; vertical-align: text-bottom;
+    border-radius: 2px; background: var(--accent); animation: writer-blink 1s steps(1) infinite;
+  }
+  .writer { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 10px 8px 14px; box-shadow: 0 -0.5px 0 var(--hairline); }
+  .writer .ask { flex: 1 1 180px; min-width: 0; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 11px; border-radius: var(--r-capsule); background: var(--fill); }
+  .writer .ask input { flex: 1; min-width: 0; border: none; outline: none; background: none; font: inherit; color: var(--label); }
+  .writer .spark { color: var(--accent); }
+  .writer .status { flex: 1; color: var(--label-2); }
+  .writer .err { flex: 1; min-width: 0; color: var(--err); font-size: 12px; }
+  .writer .kbd { margin-left: 5px; color: var(--label-3); }
+  .writer .btn.primary .kbd { color: var(--on-accent); opacity: .7; }
   .actions { display: flex; gap: 6px; padding: 10px 10px 10px 14px; align-items: center; box-shadow: 0 -0.5px 0 var(--hairline); flex-wrap: wrap; }
   .actions .spacer { flex: 1; }
   .btn { border: none; border-radius: var(--r-capsule); padding: 5px 13px; background: var(--fill); cursor: pointer; font-size: 12.5px; transition: background var(--t-fast); }
@@ -306,6 +332,7 @@ pub fn html(keybindings_json: &str) -> String {
   .pv-empty .btn { margin-top: 12px; }
   @keyframes pv-fade { from { opacity: 0; } }
   @keyframes pv-pop { from { opacity: 0; transform: scale(0.96); } }
+  @keyframes writer-blink { 50% { opacity: 0; } }
 </style>
 </head>
 <body>
@@ -375,7 +402,7 @@ pub fn html(keybindings_json: &str) -> String {
     view: null, scheduled: [], drafts: [],
     mode: 'inbox', query: '', hits: [], showTitle: '', showItems: [],
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
-    thread: null, fromNotes: false, composer: null, composerError: '',
+    thread: null, fromNotes: false, composer: null, composerError: '', writer: null,
     undo: null, sending: new Map(), fullscreen: false, chords: {},
   };
 
@@ -694,13 +721,13 @@ pub fn html(keybindings_json: &str) -> String {
   function openThread(acc, thread, fromNotes) {
     S.fromNotes = !!fromNotes;
     S.thread = { account: acc, thread: thread, loading: true };
-    S.composer = null;
+    S.composer = null; cancelDraft();
     panel.classList.add('detail');
     detail.innerHTML = '<div class="empty">Loading…</div>';
     ipc({ type: 'thread', account: acc, thread: thread });
   }
   function closeThread(keepFocus) {
-    S.thread = null; S.composer = null;
+    S.thread = null; S.composer = null; cancelDraft();
     panel.classList.remove('detail');
     detail.innerHTML = '';
     if (S.fromNotes && !keepFocus) { S.fromNotes = false; ipc({ type: 'back_to_notes' }); return; }
@@ -1195,6 +1222,8 @@ pub fn html(keybindings_json: &str) -> String {
       return '<option value="' + esc(a.key) + '"' + (a.key === d.account ? ' selected' : '') + '>' + esc((a.name ? a.name + ' <' + a.address + '>' : a.address)) + '</option>';
     }).join('');
     const showCc = d.cc || d.bcc || d._cc;
+    const w = S.writer && S.writer.key === d.key ? S.writer : null;
+    const drafted = w && (w.phase === 'writing' || w.phase === 'review');
     slot.innerHTML = '<div class="composer' + (d.thread ? '' : ' standalone') + '" id="composer">' +
       '<div class="title">' + esc(title) + (d._saved ? '<span class="draft">Draft saved</span>' : '') + '</div>' +
       '<div class="field"><label>From</label><select id="c-from">' + from + '</select></div>' +
@@ -1203,11 +1232,15 @@ pub fn html(keybindings_json: &str) -> String {
       (showCc ? '<div class="field"><label>Cc</label><input id="c-cc" value="' + esc(d.cc) + '" autocomplete="off" spellcheck="false"></div>' +
         '<div class="field"><label>Bcc</label><input id="c-bcc" value="' + esc(d.bcc) + '" autocomplete="off" spellcheck="false"></div>' : '') +
       '<div class="field"><label>Subject</label><input id="c-subject" value="' + esc(d.subject) + '"></div>' +
-      '<textarea id="c-body" placeholder="Write…  **bold**, *italic*, - lists, [links](https://…)">' + esc(d.body) + '</textarea>' +
+      (drafted ? '<div class="writer-draft' + (w.phase === 'writing' ? ' writing' : '') + '" id="w-draft">' + esc(w.text) +
+          (w.phase === 'writing' ? '<span class="caret"></span>' : '') + '</div>' :
+        '<div class="body-wrap"><textarea id="c-body" placeholder="' +
+          (canWrite(d) ? 'Write — or ⌘J to draft it with AI' : 'Write…  **bold**, *italic*, - lists, [links](https://…)') + '">' + esc(d.body) + '</textarea>' +
+          (canWrite(d) ? '<button class="spark-btn" type="button" id="c-spark" title="Write with AI (⌘J)" aria-label="Write with AI">✦</button>' : '') + '</div>') +
+      (w ? writerBar(d, w) : '') +
       '<div class="files" id="c-files">' + (d.attachments || []).map(function(f, i) {
         return '<span class="file">' + esc(f.name) + ' <span class="size">' + fmtSize(Math.floor(f.data.length * 3 / 4)) + '</span><button type="button" data-rm="' + i + '" aria-label="Remove">✕</button></span>';
       }).join('') + '</div>' +
-      (S.ai && d.thread ? '<div class="ai-row"><input id="c-intent" placeholder="Draft with AI — e.g. “say yes, propose Tuesday”"><button class="btn" type="button" id="c-ai">✦ Draft</button></div>' : '') +
       '<div class="error" id="c-error">' + esc(S.composerError) + '</div>' +
       '<div class="actions"><button class="btn primary" type="button" id="c-send">Send<span class="kbd">⌘↩</span></button>' +
       '<button class="btn" type="button" id="c-later">Send later</button>' +
@@ -1220,7 +1253,8 @@ pub fn html(keybindings_json: &str) -> String {
       const el = $('c-' + f);
       if (el) el.addEventListener('input', function() { d[f] = el.value; scheduleDraftSave(); if (f === 'body') grow(el); });
     });
-    grow($('c-body'));
+    const body = $('c-body');
+    if (body) grow(body);
     $('c-from').addEventListener('change', function() { d.account = $('c-from').value; scheduleDraftSave(); });
     const cc = $('c-show-cc');
     if (cc) cc.addEventListener('click', function() { d._cc = true; renderComposer(); $('c-cc').focus(); });
@@ -1235,13 +1269,6 @@ pub fn html(keybindings_json: &str) -> String {
     });
     $('c-attach').addEventListener('click', function() { ipc({ type: 'pick_files', key: d.key }); });
     $('c-discard').addEventListener('click', discard);
-    const ai = $('c-ai');
-    if (ai) ai.addEventListener('click', function() {
-      const intent = $('c-intent').value.trim();
-      if (!intent) { $('c-intent').focus(); return; }
-      ipc({ type: 'ai', kind: 'draft', item: { account: d.account, thread: d.thread }, text: intent });
-      showUndo('The assistant is drafting…', null, 4000);
-    });
     $('c-files').addEventListener('click', function(e) {
       const rm = e.target.closest('[data-rm]');
       if (rm) { d.attachments.splice(Number(rm.dataset.rm), 1); scheduleDraftSave(); renderComposer(); }
@@ -1262,8 +1289,11 @@ pub fn html(keybindings_json: &str) -> String {
         reader.readAsDataURL(file);
       });
     });
-    const focusField = !d.to ? 'c-to' : 'c-body';
-    setTimeout(function() { const el = $(focusField); if (el && document.activeElement.tagName !== 'INPUT') el.focus(); }, 0);
+    wireWriter(d, w, box);
+    if (!w) {
+      const focusField = !d.to ? 'c-to' : 'c-body';
+      setTimeout(function() { const el = $(focusField); if (el && document.activeElement.tagName !== 'INPUT') el.focus(); }, 0);
+    }
     if (d.thread) box.scrollIntoView({ block: 'nearest' });
   }
 
@@ -1297,8 +1327,111 @@ pub fn html(keybindings_json: &str) -> String {
   function closeComposer() {
     const d = S.composer;
     S.composer = null;
+    cancelDraft();
     if (d && d.thread) { const slot = $('reply-slot'); if (slot) slot.innerHTML = ''; }
     else if (!S.thread) { panel.classList.remove('detail'); detail.innerHTML = ''; list.focus(); }
+  }
+
+  // ── Writer (AI-3) ─────────────────────────────────────────────────────────
+  // ⌘J or ✦ opens it under the text; octoweb:mail-writer turns the notes
+  // (or nothing) into the reply, streamed in place. Keep puts it in the body
+  // as one native edit, so ⌘Z brings the notes back.
+  const WRITER_TUNES = [['Shorter', 'Make it shorter'], ['Friendlier', 'Make it friendlier'], ['More formal', 'Make it more formal']];
+  function canWrite(d) { return S.ai && d.thread && d.mode !== 'forward'; }
+  function writerBar(d, w) {
+    const kbd = function(k) { return '<span class="kbd">' + k + '</span>'; };
+    const close = function(label) { return '<button class="pill" type="button" data-w="close">' + label + kbd('esc') + '</button>'; };
+    const open = '<div class="writer" id="writer">';
+    if (w.phase === 'ask') {
+      return open + '<label class="ask"><span class="spark">✦</span><input id="w-input" autocomplete="off" placeholder="' +
+        (d.body.trim() ? 'Anything to add? ↩ turns your notes into the reply' : 'What should it say? Or just ↩') + '"></label>' + close('Cancel') + '</div>';
+    }
+    if (w.phase === 'writing') {
+      return open + '<span class="spark">✦</span><span class="status">Writing…</span>' + close('Stop') + '</div>';
+    }
+    if (w.phase === 'error') {
+      return open + '<span class="spark">✦</span><span class="err">' + esc(w.error) + '</span>' +
+        '<button class="pill" type="button" data-w="retry">Try again</button>' + close('Close') + '</div>';
+    }
+    return open + '<button class="btn primary" type="button" data-w="keep">Keep' + kbd('↩') + '</button>' +
+      WRITER_TUNES.map(function(t) { return '<button class="pill" type="button" data-tune="' + esc(t[1]) + '">' + esc(t[0]) + '</button>'; }).join('') +
+      '<button class="pill" type="button" data-w="retry" title="Write it again" aria-label="Write it again">↻</button>' +
+      '<label class="ask"><input id="w-input" autocomplete="off" placeholder="Change something…"></label>' + close('Discard') + '</div>';
+  }
+  function wireWriter(d, w, box) {
+    // Ahead of the page's keys: Esc here closes the writer, not the composer.
+    box.addEventListener('keydown', function(e) {
+      const mine = S.writer && S.writer.key === d.key;
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'j' && canWrite(d)) {
+        e.preventDefault(); e.stopPropagation();
+        if (mine) closeWriter(); else openWriter(d);
+      } else if (e.key === 'Escape' && mine) {
+        e.preventDefault(); e.stopPropagation();
+        closeWriter();
+      }
+    });
+    const spark = $('c-spark');
+    if (spark) spark.addEventListener('click', function() { openWriter(d); });
+    if (!w) return;
+    const bar = $('writer');
+    bar.addEventListener('click', function(e) {
+      const b = e.target.closest('[data-w], [data-tune]');
+      if (!b) return;
+      if (b.dataset.tune) write(d, b.dataset.tune, w.text);
+      else if (b.dataset.w === 'keep') keepWriting();
+      else if (b.dataset.w === 'retry') write(d, w.request.instruction, w.request.text);
+      else closeWriter();
+    });
+    const input = $('w-input');
+    if (input) {
+      // In review an empty ↩ keeps the reply; words ask for a change.
+      input.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.isComposing) return;
+        e.preventDefault();
+        const said = input.value.trim();
+        if (w.phase === 'ask') write(d, said, d.body);
+        else if (said) write(d, said, w.text);
+        else keepWriting();
+      });
+      input.focus();
+    } else {
+      // Focus stays in the composer, so Esc stops the writer rather than
+      // reaching the page and closing the whole composer.
+      bar.querySelector('button').focus();
+    }
+    bar.scrollIntoView({ block: 'nearest' });
+  }
+  function openWriter(d) {
+    cancelDraft();
+    S.writer = { key: d.key, phase: 'ask' };
+    renderComposer();
+  }
+  function write(d, instruction, text) {
+    cancelDraft();
+    S.writer = { key: d.key, phase: 'writing', text: '', request: { instruction: instruction, text: text } };
+    // The conversation's account, not From: the reply belongs to the thread.
+    ipc({ type: 'ai', kind: 'draft', item: { account: S.thread.account, thread: d.thread }, text: instruction, body: text });
+    renderComposer();
+  }
+  function closeWriter() {
+    cancelDraft();
+    renderComposer();
+    const body = $('c-body');
+    if (body) body.focus();
+  }
+  function keepWriting() {
+    const text = S.writer.text;
+    S.writer = null;
+    renderComposer();
+    // One native edit: the field's own ⌘Z brings back what it held.
+    const body = $('c-body');
+    body.focus();
+    body.select();
+    document.execCommand('insertText', false, text);
+  }
+  function cancelDraft() {
+    if (S.writer && S.writer.phase === 'writing') ipc({ type: 'draft_stop' });
+    S.writer = null;
   }
   function discard() {
     const d = S.composer;
@@ -1426,7 +1559,7 @@ pub fn html(keybindings_json: &str) -> String {
       ['f', 'Forward'], ['c', 'Compose'], ['/', 'Search'], ['x', 'Select'], ['⌘Z', 'Undo'], ['⌘↩', 'Send'],
       ['⌘R ⇧⌘R', 'Reply / all'], ['⇧⌘F', 'Forward'], ['⌘N', 'Compose'], ['⌃⌘A', 'Done'], ['⇧⌘U', 'Mark unread'], ['⇧⌘D', 'Send'],
     ];
-    if (S.ai) keys.push(['s', 'Summarise (AI)']);
+    if (S.ai) keys.push(['s', 'Summarise (AI)'], ['⌘J', 'Write a reply with AI']);
     help.innerHTML = keys.map(function(k) { return '<div><kbd>' + esc(k[0]) + '</kbd>' + esc(k[1]) + '</div>'; }).join('');
   }
 
@@ -1531,7 +1664,7 @@ pub fn html(keybindings_json: &str) -> String {
       panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
-        S.view = null; S.thread = null; S.composer = null; S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
+        S.view = null; S.thread = null; S.composer = null; cancelDraft(); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
         panel.classList.remove('detail'); detail.innerHTML = ''; search.value = '';
       } else if (images) renderThread();
       renderBanner();
@@ -1601,6 +1734,22 @@ pub fn html(keybindings_json: &str) -> String {
     changed: refresh,
     open: function(acc, thread, fromNotes) { S.mode = 'inbox'; openThread(acc, thread, fromNotes); },
     openDraft: function(draft) { draft.attachments = draft.attachments || []; openComposer(draft); showUndo('Draft ready — review and send', null, 4000); },
+    // The writer's reply so far for the composer with draft key `key`.
+    draftStream: function(data) {
+      const w = S.writer;
+      if (!w || w.key !== data.key || w.phase !== 'writing') return;
+      w.text = data.text;
+      if (data.done) { w.phase = 'review'; renderComposer(); return; }
+      const el = $('w-draft');
+      if (el) el.innerHTML = esc(data.text) + '<span class="caret"></span>';
+    },
+    draftFailed: function(data) {
+      const w = S.writer;
+      if (!w || w.key !== data.key || w.phase !== 'writing') return;
+      w.phase = 'error';
+      w.error = data.message;
+      renderComposer();
+    },
     show: function(data) { S.mode = 'show'; S.showTitle = data.title; S.showItems = data.items; S.focus = 0; closeThread(true); render(); },
     files: function(k, files) {
       const d = S.composer;

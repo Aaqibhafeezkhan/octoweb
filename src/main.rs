@@ -2850,6 +2850,12 @@ fn main() {
     let mut mail_ai_handle: Option<acp::AcpHandle> = None;
     let mut mail_ai_pid: Option<u32> = None;
     let mut mail_ai_due: Option<std::time::Instant> = None;
+    // The mail reply writer (AI-3): one run at a time, the composer draft key
+    // it writes for, and its response so far.
+    let mut mail_draft_handle: Option<acp::AcpHandle> = None;
+    let mut mail_draft_pid: Option<u32> = None;
+    let mut mail_draft_key: Option<String> = None;
+    let mut mail_draft_response = String::new();
     // Checked once a minute for the morning brief (AI-4).
     let mut mail_brief_check_at = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut learning_next_at: Option<std::time::Instant> = if cfg.proactive_learning {
@@ -5747,6 +5753,49 @@ fn main() {
             }
         }
 
+        // ── Mail AI: the reply writer (AI-3), streamed into the composer ──
+        let draft_events = mail_draft_handle.as_mut().map(|h| h.poll()).unwrap_or_default();
+        if !draft_events.is_empty() {
+            let mut ended: Option<Result<(), String>> = None;
+            for ev in draft_events {
+                match ev {
+                    acp::AgentEvent::ProcessPid(pid) => mail_draft_pid = Some(pid),
+                    acp::AgentEvent::Chunk(chunk) => mail_draft_response.push_str(&chunk),
+                    acp::AgentEvent::Done => ended = Some(Ok(())),
+                    acp::AgentEvent::Error(err) => ended = Some(Err(format!("The writer stopped: {err}"))),
+                    _ => {}
+                }
+            }
+            let key = mail_draft_key.clone().unwrap_or_default();
+            let stream = |text: &str, done: bool| {
+                mail::script("draftStream", &serde_json::json!({ "key": key, "text": text, "done": done }))
+            };
+            let failed = |message: &str| {
+                mail::script("draftFailed", &serde_json::json!({ "key": key, "message": message }))
+            };
+            let call = match (&ended, mail::draft_text(&mail_draft_response)) {
+                (Some(Err(e)), _) => Some(failed(e)),
+                (Some(Ok(())), Some((text, _))) if !text.trim().is_empty() => Some(stream(text, true)),
+                // No reply block: whatever it said instead (a question, a refusal) is the message.
+                (Some(Ok(())), _) => {
+                    let said: String = mail_draft_response.trim().chars().take(300).collect();
+                    Some(failed(if said.is_empty() { "The writer returned no reply." } else { &said }))
+                }
+                (None, Some((text, _))) => Some(stream(text, false)),
+                (None, None) => None,
+            };
+            if let Some(call) = call {
+                let _ = mail_wv.evaluate_script(&call);
+            }
+            if ended.is_some() {
+                tracing::info!(ok = matches!(ended, Some(Ok(()))), "mail writer run ended");
+                mail_draft_handle = None;
+                mail_draft_pid = None;
+                mail_draft_key = None;
+                mail_draft_response.clear();
+            }
+        }
+
         // ── Mail AI: background summaries (AI-1) and the morning brief (AI-4) ──
         if let Some(ref mut h) = mail_ai_handle {
             for ev in h.poll() {
@@ -5790,7 +5839,7 @@ fn main() {
                 if let (Some(engine), false) = (&mail_engine, accounts.is_empty()) {
                     cfg.mail_brief_last = today;
                     cfg.save();
-                    let req = mail::PageRequest::Ai { kind: "brief".into(), item: None, text: String::new() };
+                    let req = mail::PageRequest::Ai { kind: "brief".into(), item: None, text: String::new(), body: String::new() };
                     engine.send(mail::Command::Page { ws, accounts, req });
                 }
             }
@@ -10101,6 +10150,12 @@ fn main() {
                     }
                     mail::Pane::FrameFocus { focused } => mail_patch::set_frame_focused(focused),
                     mail::Pane::SwipeMiss => mail_patch::swipe_missed(),
+                    mail::Pane::DraftStop => {
+                        mail_draft_handle = None;
+                        mail_draft_pid = None;
+                        mail_draft_key = None;
+                        mail_draft_response.clear();
+                    }
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()
@@ -10184,6 +10239,36 @@ fn main() {
                         .ok();
                         if let Some(ref h) = mail_ai_handle {
                             h.send_prompt(prompt, vec![]);
+                        }
+                    }
+                }
+                mail::Event::Draft { key, prompt } => {
+                    // A new request replaces a run still writing.
+                    mail_draft_handle = None;
+                    mail_draft_pid = None;
+                    mail_draft_response.clear();
+                    // Text in, text out: the writer gets no browser or mail tools.
+                    let started = if cfg.mail_ai {
+                        let wake = proxy.clone();
+                        acp::AcpHandle::connect("octomind acp octoweb:mail-writer", None, move || {
+                            let _ = wake.send_event(AppEvent::LearningWake);
+                        })
+                        .map_err(|e| format!("The writer could not start: {e}"))
+                    } else {
+                        Err("Mail AI is off in Settings → Mail.".to_string())
+                    };
+                    match started {
+                        Ok(h) if h.send_prompt(prompt, vec![]) => {
+                            mail_draft_handle = Some(h);
+                            mail_draft_key = Some(key);
+                        }
+                        started => {
+                            let message = started.err().unwrap_or_else(|| "The writer closed before it started.".into());
+                            let _ = mail_wv.evaluate_script(&mail::script(
+                                "draftFailed",
+                                &serde_json::json!({ "key": key, "message": message }),
+                            ));
+                            mail_draft_key = None;
                         }
                     }
                 }
@@ -10453,7 +10538,7 @@ fn main() {
                     &ai_prompt_history,
                     cfg.max_acp_session_messages,
                     cfg.max_history,
-                    learning_pid.into_iter().chain(mail_ai_pid).collect(),
+                    learning_pid.into_iter().chain(mail_ai_pid).chain(mail_draft_pid).collect(),
                     control_flow,
                 );
             }
@@ -11311,7 +11396,7 @@ fn main() {
                             &ai_prompt_history,
                             cfg.max_acp_session_messages,
                             cfg.max_history,
-                            learning_pid.into_iter().chain(mail_ai_pid).collect(),
+                            learning_pid.into_iter().chain(mail_ai_pid).chain(mail_draft_pid).collect(),
                             control_flow,
                         );
                     } else if window_id == chrome_win_id {

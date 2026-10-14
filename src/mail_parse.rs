@@ -64,19 +64,11 @@ pub fn parse(raw: &[u8], fallback_id: &str) -> Option<Parsed> {
     let from = first(msg.from()).unwrap_or_default();
     let text = msg.body_text(0).map(|t| t.into_owned());
     let html = msg.body_html(0).map(|h| inline_cid_images(&h, &msg));
-    let attachments = msg
-        .attachments()
-        .filter(|part| part.content_id().is_none() || part.attachment_name().is_some())
+    let attachments = listed(&msg)
         .map(|part| Attachment {
-            name: part.attachment_name().unwrap_or("attachment").to_string(),
+            name: attachment_name(part),
             size: part.contents().len(),
-            mime: part
-                .content_type()
-                .map(|ct| match ct.subtype() {
-                    Some(sub) => format!("{}/{sub}", ct.ctype()),
-                    None => ct.ctype().to_string(),
-                })
-                .unwrap_or_default(),
+            mime: mime(part),
         })
         .collect();
     let header = |name: &'static str| msg.header_raw(name).map(str::trim);
@@ -108,14 +100,40 @@ pub fn parse(raw: &[u8], fallback_id: &str) -> Option<Parsed> {
 /// The attachments of `raw`, in the order `parse` lists them, with contents.
 pub fn attachment_bytes(raw: &[u8], index: usize) -> Option<(String, Vec<u8>)> {
     let msg = MessageParser::default().parse(raw)?;
-    let part = msg
-        .attachments()
+    let part = listed(&msg).nth(index)?;
+    Some((attachment_name(part), part.contents().to_vec()))
+}
+
+/// Every attachment of `raw` as `parse` lists them: name, MIME type, contents.
+pub fn attachments(raw: &[u8]) -> Vec<(String, String, Vec<u8>)> {
+    let Some(msg) = MessageParser::default().parse(raw) else {
+        return Vec::new();
+    };
+    listed(&msg)
+        .map(|part| (attachment_name(part), mime(part), part.contents().to_vec()))
+        .collect()
+}
+
+/// The parts shown as attachments: inline images referenced by `cid:` are
+/// part of the body instead.
+fn listed<'a>(
+    msg: &'a mail_parser::Message<'a>,
+) -> impl Iterator<Item = &'a mail_parser::MessagePart<'a>> {
+    msg.attachments()
         .filter(|part| part.content_id().is_none() || part.attachment_name().is_some())
-        .nth(index)?;
-    Some((
-        part.attachment_name().unwrap_or("attachment").to_string(),
-        part.contents().to_vec(),
-    ))
+}
+
+fn attachment_name(part: &mail_parser::MessagePart) -> String {
+    part.attachment_name().unwrap_or("attachment").to_string()
+}
+
+fn mime(part: &mail_parser::MessagePart) -> String {
+    part.content_type()
+        .map(|ct| match ct.subtype() {
+            Some(sub) => format!("{}/{sub}", ct.ctype()),
+            None => ct.ctype().to_string(),
+        })
+        .unwrap_or_default()
 }
 
 fn addr(a: &mail_parser::Addr) -> Addr {
@@ -352,6 +370,23 @@ Anna\r\n";
         assert_eq!(
             parse(raw.as_bytes(), "7.1@acct").unwrap().message_id,
             "7.1@acct"
+        );
+    }
+
+    #[test]
+    fn attachments_come_with_their_type_and_contents() {
+        let raw = "From: a@b\r\nSubject: x\r\nContent-Type: multipart/mixed; boundary=B\r\n\r\n\
+--B\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\
+--B\r\nContent-Type: text/csv; name=figures.csv\r\nContent-Disposition: attachment; filename=figures.csv\r\n\r\na,b\r\n1,2\r\n\
+--B--\r\n";
+        let all = attachments(raw.as_bytes());
+        assert_eq!(all.len(), 1);
+        let (name, mime, bytes) = &all[0];
+        assert_eq!((name.as_str(), mime.as_str()), ("figures.csv", "text/csv"));
+        assert_eq!(String::from_utf8_lossy(bytes).trim(), "a,b\r\n1,2");
+        assert_eq!(
+            parse(raw.as_bytes(), "f").unwrap().attachments[0].mime,
+            "text/csv"
         );
     }
 }
