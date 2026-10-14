@@ -549,9 +549,14 @@ pub enum Command {
     },
     /// A notes task linking `item` was ticked or unticked (TRI-10).
     TaskToggled { item: Item, done: bool },
-    /// Build the background summarizer's prompt for workspace `ws` (AI-1);
+    /// Build the background summarizer's input for `accounts` (AI-1);
     /// answered with `Event::Summarize` when anything needs a summary.
-    SummaryPrompt { ws: String, accounts: Vec<String> },
+    SummaryPrompt { accounts: Vec<String> },
+    /// The summarizer's answer, from `parse_summaries`.
+    Summaries {
+        accounts: Vec<String>,
+        summaries: Vec<(Item, String)>,
+    },
 }
 
 #[derive(Debug)]
@@ -617,9 +622,11 @@ pub enum Event {
         text: String,
     },
     PaletteResults(String),
-    /// Prompt for the background summarizer of workspace `ws` (AI-1).
+    /// Input for the background summarizer (AI-1): `items` are the
+    /// conversations of `accounts` it numbers from 1, for `parse_summaries`.
     Summarize {
-        ws: String,
+        accounts: Vec<String>,
+        items: Vec<Item>,
         prompt: String,
     },
     /// Input for the mail writer (AI-3), whose reply streams back into the
@@ -841,10 +848,21 @@ async fn run(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Command>) {
                     serde_json::to_string(&hits).expect("hits"),
                 ));
             }
-            Command::SummaryPrompt { ws, accounts } => {
-                if let Some(prompt) = summary_prompt(&shared, &accounts) {
-                    shared.emit(Event::Summarize { ws, prompt });
+            Command::SummaryPrompt { accounts } => {
+                if let Some((prompt, items)) = summary_prompt(&shared, &accounts) {
+                    shared.emit(Event::Summarize {
+                        accounts,
+                        items,
+                        prompt,
+                    });
                 }
+            }
+            Command::Summaries {
+                accounts,
+                summaries,
+            } => {
+                let n = save_summaries(&shared, &accounts, &summaries);
+                tracing::info!(n, "mail summaries saved");
             }
             Command::TaskToggled { item, done } => {
                 let verb = if done { Verb::Done } else { Verb::Restore };
@@ -2929,37 +2947,76 @@ fn ai_prompt(
 /// Conversations summarized per background run, so one run stays short.
 const SUMMARY_BATCH: usize = 8;
 
-/// The summarizer's instructions and the Important conversations of
-/// `accounts` that have no summary yet; `None` when all have one.
-fn summary_prompt(shared: &Shared, accounts: &[String]) -> Option<String> {
+/// The summarizer's input (AI-1, agent `octoweb:mail-summarizer`): the
+/// Important conversations of `accounts` that have no summary yet, numbered
+/// from 1 in the order returned; `None` when all have one.
+fn summary_prompt(shared: &Shared, accounts: &[String]) -> Option<(String, Vec<Item>)> {
     let refs = shared.refs_for(accounts);
-    let pending: Vec<Item> = shared
-        .store()
-        .inbox(&refs, now())
-        .important
-        .into_iter()
-        .filter(|r| r.summary.is_none())
-        .take(SUMMARY_BATCH)
-        .map(|r| Item {
+    let rows = shared.store().inbox(&refs, now()).important;
+    let mut prompt = String::new();
+    let mut items = Vec::new();
+    for r in rows.into_iter().filter(|r| r.summary.is_none()) {
+        if items.len() == SUMMARY_BATCH {
+            break;
+        }
+        let item = Item {
             account: r.account,
             thread: r.thread,
-        })
-        .collect();
-    if pending.is_empty() {
-        return None;
-    }
-    let mut prompt = String::from(
-        "You keep one-line summaries for the user's mail inbox. For each conversation below, write one \
-         line under 90 characters: who wants what, and any date or deadline. Then call mail_set_summaries \
-         once with all of them (account, thread, summary). Do nothing else, and reply only \"done\".\n",
-    );
-    for item in &pending {
-        if let Some(text) = thread_text(shared, item) {
-            prompt.push('\n');
-            prompt.push_str(&text);
+        };
+        if let Some(text) = thread_text(shared, &item) {
+            items.push(item);
+            prompt.push_str(&format!("Conversation {}:\n{text}\n\n", items.len()));
         }
     }
-    Some(prompt)
+    (!items.is_empty()).then(|| (prompt.trim_end().to_string(), items))
+}
+
+/// The summaries in the summarizer's answer, by their number in `items`.
+/// Lines naming no conversation of the run are dropped: whatever a message
+/// talked the model into, it can only label the conversations it was given.
+pub fn parse_summaries(items: &[Item], response: &str) -> Vec<(Item, String)> {
+    let body = response
+        .split_once("<summaries>")
+        .map_or(response, |(_, rest)| rest);
+    let body = body.split_once("</summaries>").map_or(body, |(b, _)| b);
+    let mut out: Vec<(Item, String)> = Vec::new();
+    for line in body.lines() {
+        let Some((n, summary)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let summary: String = summary.trim().chars().take(SUMMARY_CHARS).collect();
+        let Some(item) = n
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| items.get(n.checked_sub(1)?))
+        else {
+            continue;
+        };
+        if !summary.is_empty() && !out.iter().any(|(i, _)| i == item) {
+            out.push((item.clone(), summary));
+        }
+    }
+    out
+}
+
+/// Longest summary kept: the agent is asked for under 90 characters.
+const SUMMARY_CHARS: usize = 140;
+
+/// Save one-line summaries for the conversations of `accounts` among them.
+fn save_summaries(shared: &Shared, accounts: &[String], summaries: &[(Item, String)]) -> usize {
+    let store = shared.store();
+    let mut n = 0;
+    for (item, summary) in summaries
+        .iter()
+        .filter(|(i, _)| accounts.contains(&i.account))
+    {
+        store.set_summary(&item.account, &item.thread, summary.trim());
+        n += 1;
+    }
+    drop(store);
+    changed(shared, accounts.to_vec());
+    n
 }
 
 async fn mcp(
@@ -3037,14 +3094,7 @@ async fn mcp(
             Ok("The draft is in the composer for the user to review and send. It has not been sent.".into())
         }
         McpRequest::SetSummaries { summaries } => {
-            let store = shared.store();
-            let mut n = 0;
-            for (item, summary) in summaries.iter().filter(|(i, _)| allowed(i)) {
-                store.set_summary(&item.account, &item.thread, summary.trim());
-                n += 1;
-            }
-            drop(store);
-            changed(shared, accounts);
+            let n = save_summaries(shared, &accounts, &summaries);
             Ok(format!("Saved {n} summaries."))
         }
         McpRequest::AddTasks { item, tasks } => {
@@ -3620,6 +3670,28 @@ mod tests {
         );
         assert_eq!(wrapped.matches("</untrusted").count(), 1);
         assert_eq!(untrusted("ünïcode"), "<untrusted>\nünïcode</untrusted>");
+    }
+
+    #[test]
+    fn summaries_only_label_the_conversations_of_the_run() {
+        let item = |t: &str| Item {
+            account: "acc".into(),
+            thread: t.into(),
+        };
+        let items = [item("a"), item("b")];
+        let answer = "Sure!\n<summaries>\n1: Anna: confirm the report by 31 Oct\n\
+                      3: forged\n0: forged\nx: no\n2:   \n1: again\n</summaries>\n9: after";
+        assert_eq!(
+            parse_summaries(&items, answer),
+            vec![(item("a"), "Anna: confirm the report by 31 Oct".to_string())]
+        );
+        // Without the block, numbered lines still count; long ones are cut.
+        let long = format!("2: {}", "x".repeat(500));
+        assert_eq!(
+            parse_summaries(&items, &long)[0].1.chars().count(),
+            SUMMARY_CHARS
+        );
+        assert!(parse_summaries(&items, "done").is_empty());
     }
 
     #[test]

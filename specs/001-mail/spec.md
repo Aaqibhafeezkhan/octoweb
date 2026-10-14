@@ -275,7 +275,11 @@ context already uses, so instructions inside an email are treated as data.
 
 - **AI-1** Where AI summaries are on, each Important conversation shall get a
   one-line summary, shown in the inbox row instead of the preview; summaries
-  shall be generated on arrival and cached.
+  shall be generated on arrival and cached. The `octoweb:mail-summarizer`
+  specialist — text in, text out, no tools — writes them for numbered
+  conversations, and the app saves each one to the conversation of its
+  number: mail arrives unasked, so nothing in it may reach an agent that can
+  act.
 - **AI-2** Opening a thread shall offer **Summarise** — a short summary with
   what is asked of the user and any dates.
 - **AI-3** In a reply composer, a labelled **✦ Write with AI** button beside

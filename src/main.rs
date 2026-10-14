@@ -2845,11 +2845,14 @@ fn main() {
     // it (like session agents) since ControlFlow::Exit skips destructors and
     // would otherwise orphan a mid-run learning agent on every quit.
     let mut learning_pid: Option<u32> = None;
-    // Background mail summarizer (spec AI-1): a hidden assistant run that
-    // saves one-line summaries through `mail_set_summaries`.
+    // Background mail summarizer (spec AI-1): `octoweb:mail-summarizer`, text
+    // in and out, and the conversations of its run, which the app saves
+    // summaries for itself.
     let mut mail_ai_handle: Option<acp::AcpHandle> = None;
     let mut mail_ai_pid: Option<u32> = None;
     let mut mail_ai_due: Option<std::time::Instant> = None;
+    let mut mail_ai_run: Option<(Vec<String>, Vec<mail::Item>)> = None;
+    let mut mail_ai_response = String::new();
     // The mail reply writer (AI-3): one run at a time, the composer draft key
     // it writes for, and its response so far.
     let mut mail_draft_handle: Option<acp::AcpHandle> = None;
@@ -5803,20 +5806,28 @@ fn main() {
             }
         }
 
-        // ── Mail AI: background summaries (AI-1) and the morning brief (AI-4) ──
+        // ── Mail AI: background summaries (AI-1) ──
         if let Some(ref mut h) = mail_ai_handle {
             for ev in h.poll() {
                 match ev {
                     acp::AgentEvent::ProcessPid(pid) => mail_ai_pid = Some(pid),
+                    acp::AgentEvent::Chunk(chunk) => mail_ai_response.push_str(&chunk),
                     acp::AgentEvent::Done => {
-                        tracing::info!("mail summaries run completed");
+                        if let (Some((accounts, items)), Some(engine)) = (mail_ai_run.take(), &mail_engine) {
+                            let summaries = mail::parse_summaries(&items, &mail_ai_response);
+                            tracing::info!(asked = items.len(), got = summaries.len(), "mail summaries run completed");
+                            engine.send(mail::Command::Summaries { accounts, summaries });
+                        }
                         mail_ai_handle = None;
                         mail_ai_pid = None;
+                        mail_ai_response.clear();
                     }
                     acp::AgentEvent::Error(err) => {
                         tracing::warn!(error = %err, "mail summaries run failed");
                         mail_ai_handle = None;
                         mail_ai_pid = None;
+                        mail_ai_run = None;
+                        mail_ai_response.clear();
                     }
                     _ => {}
                 }
@@ -5825,10 +5836,9 @@ fn main() {
         if mail_ai_due.is_some_and(|due| std::time::Instant::now() >= due) && mail_ai_handle.is_none() {
             mail_ai_due = None;
             if let Some(engine) = &mail_engine {
-                let ws = workspace_manager.active().id.clone();
-                let accounts = mail::accounts_in(&cfg.mail_accounts, &ws);
+                let accounts = mail::accounts_in(&cfg.mail_accounts, &workspace_manager.active().id);
                 if !accounts.is_empty() {
-                    engine.send(mail::Command::SummaryPrompt { ws, accounts });
+                    engine.send(mail::Command::SummaryPrompt { accounts });
                 }
             }
         }
@@ -10237,22 +10247,19 @@ fn main() {
                         }
                     }
                 }
-                mail::Event::Summarize { ws, prompt } => {
+                mail::Event::Summarize { accounts, items, prompt } => {
                     if mail_ai_handle.is_none() && cfg.mail_ai && cfg.mail_ai_summaries {
-                        let token = workspace_manager
-                            .index_of(&ws)
-                            .and_then(|i| workspace_manager.at(i).mcp_token.clone());
+                        // It reads mail nobody asked it to: no browser or mail
+                        // tools, so a message can't make it act.
                         let wake = proxy.clone();
-                        mail_ai_handle = acp::AcpHandle::connect(
-                            "octomind acp octoweb:assistant",
-                            token,
-                            move || {
-                                let _ = wake.send_event(AppEvent::LearningWake);
-                            },
-                        )
-                        .ok();
-                        if let Some(ref h) = mail_ai_handle {
-                            h.send_prompt(prompt, vec![]);
+                        mail_ai_handle = acp::AcpHandle::connect("octomind acp octoweb:mail-summarizer", None, move || {
+                            let _ = wake.send_event(AppEvent::LearningWake);
+                        })
+                        .ok()
+                        .filter(|h| h.send_prompt(prompt, vec![]));
+                        if mail_ai_handle.is_some() {
+                            mail_ai_run = Some((accounts, items));
+                            mail_ai_response.clear();
                         }
                     }
                 }
