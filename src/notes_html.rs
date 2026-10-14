@@ -60,12 +60,14 @@ pub fn html(keybindings_json: &str) -> String {
   #panel.fullscreen #resize-handle { display: none; }
   body.resizing, body.resizing * { cursor: col-resize !important; }
 
+  /* Sized like the assistant sidebar's header beside it: a 32px row, 22px
+     pills in 13px text, 24px controls. */
   #bar {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 40px;
+    gap: 4px;
+    height: 32px;
     padding: 0 10px;
     box-shadow: 0 0.5px 0 var(--hairline);
     font-family: var(--font-text);
@@ -74,7 +76,7 @@ pub fn html(keybindings_json: &str) -> String {
     -webkit-user-select: none; user-select: none;
   }
   .seg { display: flex; gap: 2px; padding: 2px; border-radius: var(--r-capsule); background: var(--fill); }
-  .tab { border: none; background: transparent; padding: 3px 11px; border-radius: var(--r-capsule); color: var(--label-2); font: inherit; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: background var(--t-fast), color var(--t-fast); }
+  .tab { border: none; background: transparent; height: 18px; padding: 0 10px; border-radius: var(--r-capsule); color: var(--label-2); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 5px; transition: background var(--t-fast), color var(--t-fast); }
   .tab:hover { color: var(--label); }
   .tab.active { background: var(--card); color: var(--label); box-shadow: 0 0 0 0.5px var(--hairline), 0 1px 3px rgba(0, 0, 0, 0.08); }
   .badge { min-width: 16px; padding: 0 5px; box-sizing: border-box; border-radius: var(--r-capsule); background: var(--accent); color: var(--on-accent); font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; }
@@ -85,16 +87,16 @@ pub fn html(keybindings_json: &str) -> String {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px; height: 28px;
+    width: 24px; height: 24px;
     padding: 0;
     border: none;
-    border-radius: var(--r-capsule);
+    border-radius: var(--r-ctl);
     background: transparent;
     color: var(--label-2);
     cursor: pointer;
     transition: background var(--t-fast), color var(--t-fast);
   }
-  #reveal-btn svg, #fullscreen-btn svg, #close-btn svg { width: 15px; height: 15px; }
+  #reveal-btn svg, #fullscreen-btn svg, #close-btn svg { width: 14px; height: 14px; }
   #reveal-btn:hover, #fullscreen-btn:hover, #close-btn:hover { background: var(--fill-hover); }
   #reveal-btn:active, #fullscreen-btn:active, #close-btn:active { background: var(--fill-press); }
   #fullscreen-btn.active {
