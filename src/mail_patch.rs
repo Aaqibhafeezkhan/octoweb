@@ -13,8 +13,10 @@
 //!   `webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:`
 //!   is swapped too and returns none. Meta refresh and forms can't navigate a
 //!   script-less sandboxed frame, so nothing else reaches these paths.
-//! - **Link menu.** `willOpenMenu:withEvent:` renames WebKit's new-window items
-//!   to what they do here and drops the download item.
+//! - **History.** The same policy refuses back and forward: the page has no
+//!   history worth a step, and stepping back blanks the pane.
+//! - **Menu.** `willOpenMenu:withEvent:` renames WebKit's new-window items
+//!   to what they do here and drops download, back, forward and reload.
 //! - **Keys.** A key typed while the message frame has focus never reaches the
 //!   page's handler; `frame_key` turns it into a `window.__mail.key` call.
 //! - **Swipe.** A scroll-wheel monitor follows two-finger gestures by phase.
@@ -34,6 +36,8 @@ use objc2_foundation::{NSPoint, NSRect};
 const POLICY_CANCEL: isize = 0;
 /// `WKNavigationTypeLinkActivated`.
 const NAV_LINK_ACTIVATED: isize = 0;
+/// `WKNavigationTypeBackForward`.
+const NAV_BACK_FORWARD: isize = 2;
 /// `NSEventModifierFlagCommand`.
 const FLAG_COMMAND: usize = 1 << 20;
 
@@ -42,6 +46,9 @@ const MENU_OPEN_LINK: &str = "WKMenuItemIdentifierOpenLink";
 const MENU_OPEN_LINK_NEW_WINDOW: &str = "WKMenuItemIdentifierOpenLinkInNewWindow";
 const MENU_OPEN_IMAGE_NEW_WINDOW: &str = "WKMenuItemIdentifierOpenImageInNewWindow";
 const MENU_DOWNLOAD_LINK: &str = "WKMenuItemIdentifierDownloadLinkedFile";
+const MENU_GO_BACK: &str = "WKMenuItemIdentifierGoBack";
+const MENU_GO_FORWARD: &str = "WKMenuItemIdentifierGoForward";
+const MENU_RELOAD: &str = "WKMenuItemIdentifierReload";
 
 /// `NSEventMaskScrollWheel` = 1 << `NSEventTypeScrollWheel` (22).
 const MASK_SCROLL_WHEEL: u64 = 1 << 22;
@@ -160,7 +167,9 @@ extern "C-unwind" fn decide_policy(
     action: *mut AnyObject,
     handler: *mut AnyObject,
 ) {
-    if webview as usize == MAIL_VIEW.load(Ordering::SeqCst) && unsafe { opened(action) } {
+    if webview as usize == MAIL_VIEW.load(Ordering::SeqCst)
+        && unsafe { back_forward(action) || opened(action) }
+    {
         unsafe {
             let block: &block2::Block<dyn Fn(isize)> =
                 &*(handler as *const block2::Block<dyn Fn(isize)>);
@@ -189,6 +198,15 @@ extern "C-unwind" fn create_web_view(
     let original: CreateWebViewImp =
         unsafe { std::mem::transmute(ORIGINAL_CREATE_WEB_VIEW.load(Ordering::SeqCst)) };
     original(this, sel, webview, configuration, action, features)
+}
+
+/// A move through the pane's history — Backspace, the Back menu item. Each
+/// message frame's load leaves an entry, and going back to one loads its
+/// `about:srcdoc` into the page itself: an empty document that leaves the
+/// transparent pane invisible. The pane never has a page to go back to.
+unsafe fn back_forward(action: *mut AnyObject) -> bool {
+    let kind: isize = msg_send![&*action, navigationType];
+    kind == NAV_BACK_FORWARD
 }
 
 /// Hand the link behind `action` to `on_link`; `false` when it is not one.
@@ -260,7 +278,7 @@ extern "C-unwind" fn will_open_menu(
                 MENU_OPEN_LINK => "Open in New Tab",
                 MENU_OPEN_LINK_NEW_WINDOW => "Open in Background Tab",
                 MENU_OPEN_IMAGE_NEW_WINDOW => "Open Image in Background Tab",
-                MENU_DOWNLOAD_LINK => {
+                MENU_DOWNLOAD_LINK | MENU_GO_BACK | MENU_GO_FORWARD | MENU_RELOAD => {
                     let _: () = msg_send![&*menu, removeItemAtIndex: i];
                     continue;
                 }
