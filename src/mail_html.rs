@@ -877,8 +877,18 @@ pub fn html(keybindings_json: &str) -> String {
     if (!el || S.composer || PV.m || el.closest('.swipe-out')) return null;
     const row = el.closest('.row');
     const r = row && list.contains(row) && S.rows[Number(row.dataset.i)];
-    if (r && r.thread) return { el: row, items: [{ account: r.thread.account, thread: r.thread.thread }] };
-    if (S.thread && detail.contains(el)) return { el: detail, items: [{ account: S.thread.account, thread: S.thread.thread }] };
+    if (r && r.thread) return { el: row, also: [], items: [{ account: r.thread.account, thread: r.thread.thread }] };
+    if (r && r.group) {
+      // A sender group: all its conversations, and when it is open their rows
+      // fold away with it.
+      const keys = new Set(r.group.threads.map(key));
+      const also = Array.from(list.querySelectorAll('.row')).filter(function(x) {
+        const o = S.rows[Number(x.dataset.i)];
+        return o && o.thread && keys.has(key(o.thread));
+      });
+      return { el: row, also: also, items: r.group.threads.map(function(t) { return { account: t.account, thread: t.thread }; }) };
+    }
+    if (S.thread && detail.contains(el)) return { el: detail, also: [], items: [{ account: S.thread.account, thread: S.thread.thread }] };
     return null;
   }
   function onSwipe(phase, a, b) {
@@ -951,6 +961,7 @@ pub fn html(keybindings_json: &str) -> String {
   // it, so the rows below glide up before the list redraws without it.
   function swipeOut(s) {
     swipeClass(s, 'add', ['swipe-out']);
+    s.also.forEach(function(el) { el.classList.add('swipe-out'); });
     s.track.classList.add('swipe-armed');
     setSwipe(s, s.el.clientWidth);
     setTimeout(function() {
@@ -959,9 +970,11 @@ pub fn html(keybindings_json: &str) -> String {
         act('done', s.items);
         return;
       }
-      s.el.style.height = s.el.offsetHeight + 'px';
+      const fold = [s.el].concat(s.also);
+      fold.forEach(function(el) { el.style.height = el.offsetHeight + 'px'; });
       requestAnimationFrame(function() {
-        swipeClass(s, 'add', ['swipe-fold']);
+        s.track.classList.add('swipe-fold');
+        fold.forEach(function(el) { el.classList.add('swipe-fold'); });
         setTimeout(function() { s.track.remove(); act('done', s.items); }, SWIPE_FOLD_MS);
       });
     }, SWIPE_OUT_MS);
