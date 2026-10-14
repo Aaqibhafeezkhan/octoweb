@@ -94,7 +94,7 @@ pub fn html(keybindings_json: &str) -> String {
   }
   #search::placeholder { color: var(--label-3); }
   #search:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); }
-  #list { flex: 1 1 auto; overflow-y: auto; padding-bottom: 24px; outline: none; }
+  #list { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding-bottom: 24px; outline: none; }
 
   .section { padding: 14px 18px 5px; font-size: 12px; font-weight: 600; color: var(--label-2); display: flex; gap: 6px; align-items: center; }
   .section .more { margin-left: auto; font-weight: 400; }
@@ -119,6 +119,35 @@ pub fn html(keybindings_json: &str) -> String {
   #list:focus .row.focused .dot, #list:focus .row.selected .dot { background: var(--on-accent) !important; }
   #list:focus .row.focused .ai, #list:focus .row.selected .ai, #list:focus .row.focused .mark.accent, #list:focus .row.selected .mark.accent { color: var(--on-accent); }
   #list:focus .row.focused .pill.primary { background: var(--on-accent); color: var(--accent); }
+  /* TRI-11: a swipe slides the row or thread right, its own background and
+     all, uncovering a Done track behind it that turns solid, check popping
+     in, once releasing would mark it Done. --swipe is the travel, registered
+     so a release animates the element and its track as one. */
+  @property --swipe { syntax: '<length>'; inherits: true; initial-value: 0px; }
+  @property --swipe-fill { syntax: '<color>'; inherits: false; initial-value: transparent; }
+  .swiping { transform: translate3d(var(--swipe), 0, 0); }
+  .row.swiping { z-index: 1; }
+  .swipe-track {
+    position: fixed; z-index: 0; pointer-events: none;
+    width: calc(var(--swipe) + var(--swipe-under, 0px)); border-radius: var(--swipe-radius, 0);
+    --swipe-fill: color-mix(in srgb, var(--ok) 40%, transparent);
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+      no-repeat max(14px, calc(100% - 36px - var(--swipe-under, 0px))) center / var(--swipe-check, 0px) var(--swipe-fill);
+    transition: --swipe-fill var(--t-fast) var(--ease), background-size var(--t-pop) var(--spring);
+  }
+  /* A row's rounded corners: the track runs on under it. */
+  .swipe-track.under { --swipe-under: 12px; --swipe-radius: 10px; }
+  .swipe-track.swipe-armed { --swipe-fill: var(--ok); --swipe-check: 18px; }
+  .swiping.swipe-back { transition: --swipe 0.32s var(--spring); }
+  .swipe-track.swipe-back { transition: --swipe 0.32s var(--spring), --swipe-fill var(--t-fast) var(--ease), background-size var(--t-pop) var(--spring); }
+  .swiping.swipe-out { transition: --swipe 0.2s var(--ease); }
+  .swipe-track.swipe-out { transition: --swipe 0.2s var(--ease), --swipe-fill var(--t-fast) var(--ease), background-size var(--t-pop) var(--spring); }
+  .row.swipe-out { box-sizing: border-box; }
+  .row.swipe-fold, .swipe-track.swipe-fold {
+    height: 0 !important; padding-top: 0; padding-bottom: 0; opacity: 0; overflow: hidden;
+    transition: height 0.18s var(--ease), padding 0.18s var(--ease), opacity 0.18s var(--ease);
+  }
   .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; }
   .row:not(.unread) .dot { visibility: hidden; }
   /* With several accounts a read row keeps a faint dot in its account's color. */
@@ -838,31 +867,104 @@ pub fn html(keybindings_json: &str) -> String {
   document.addEventListener('focusin', syncFrameFocus);
 
   // ── Swipe right for Done (TRI-11) ───────────────────────────────────────
-  // mail_patch.rs follows the gesture and reports it here; lifting the fingers
-  // past SWIPE_DONE_PX marks the row or thread it started on Done.
-  const SWIPE_DONE_PX = 120;
+  // mail_patch.rs owns the gesture (travel, when it arms, whether the release
+  // marks Done); this draws it on the row or thread it began on. Timers, not
+  // transitionend: with reduced motion there are no transitions to end.
+  const SWIPE_BACK_MS = 320, SWIPE_OUT_MS = 200, SWIPE_FOLD_MS = 180;
   let swipe = null;
   function swipeAt(x, y) {
     const el = document.elementFromPoint(x, y);
-    if (!el || S.composer || PV.m) return null;
+    if (!el || S.composer || PV.m || el.closest('.swipe-out')) return null;
     const row = el.closest('.row');
     const r = row && list.contains(row) && S.rows[Number(row.dataset.i)];
-    if (r && r.thread) return { el: row, dx: 0, items: [{ account: r.thread.account, thread: r.thread.thread }] };
-    if (S.thread && detail.contains(el)) return { el: detail, dx: 0, items: [{ account: S.thread.account, thread: S.thread.thread }] };
+    if (r && r.thread) return { el: row, items: [{ account: r.thread.account, thread: r.thread.thread }] };
+    if (S.thread && detail.contains(el)) return { el: detail, items: [{ account: S.thread.account, thread: S.thread.thread }] };
     return null;
   }
   function onSwipe(phase, a, b) {
-    if (phase === 'begin') { swipe = swipeAt(a, b); return; }
-    if (!swipe) return;
-    if (phase === 'move') {
-      swipe.dx = a;
-      swipe.el.style.transform = 'translateX(' + Math.max(0, Math.min(a, SWIPE_DONE_PX)) + 'px)';
+    if (phase === 'begin') {
+      swipe = swipeAt(a, b);
+      if (swipe) startSwipe(swipe); else ipc({ type: 'swipe_miss' });
       return;
     }
     const s = swipe;
+    if (!s) return;
+    if (phase === 'move') {
+      s.dx = a; s.armed = b;
+      // One paint per frame however fast the trackpad reports.
+      if (!s.frame) s.frame = requestAnimationFrame(function() { s.frame = 0; paintSwipe(s); });
+      return;
+    }
     swipe = null;
-    s.el.style.transform = '';
-    if (phase === 'end' && s.dx >= SWIPE_DONE_PX) act('done', s.items);
+    cancelAnimationFrame(s.frame);
+    if (a) swipeOut(s); else swipeBack(s);
+  }
+  // The track sits where the element started, behind it, clipped to the part
+  // on screen; fixed, since nothing scrolls while the fingers swipe.
+  function startSwipe(s) {
+    const el = s.el;
+    // Still easing back from a release: take it over where it is.
+    const travel = parseFloat(getComputedStyle(el).getPropertyValue('--swipe')) || 0;
+    if (el._track) el._track.remove();
+    el.classList.remove('swipe-back');
+    el.classList.add('swiping');
+    const r = el.getBoundingClientRect(), clip = (el === detail ? detail : list).getBoundingClientRect();
+    const top = Math.max(r.top, clip.top), bottom = Math.min(r.bottom, clip.bottom);
+    const track = document.createElement('div');
+    track.className = 'swipe-track' + (el === detail ? '' : ' under');
+    track.style.left = (r.left - travel) + 'px';
+    track.style.top = top + 'px';
+    track.style.height = Math.max(0, bottom - top) + 'px';
+    document.body.appendChild(track);
+    el._track = s.track = track;
+    s.dx = travel; s.armed = false; s.frame = 0;
+    setSwipe(s, travel);
+  }
+  function setSwipe(s, px) {
+    s.el.style.setProperty('--swipe', px + 'px');
+    s.track.style.setProperty('--swipe', px + 'px');
+  }
+  function swipeClass(s, op, names) {
+    s.el.classList[op].apply(s.el.classList, names);
+    s.track.classList[op].apply(s.track.classList, names);
+  }
+  function endSwipe(s) {
+    s.el.classList.remove('swiping', 'swipe-back', 'swipe-out');
+    s.el.style.removeProperty('--swipe');
+    s.track.remove();
+    if (s.el._track === s.track) s.el._track = null;
+  }
+  function paintSwipe(s) {
+    setSwipe(s, Math.max(0, Math.min(s.dx, s.el.clientWidth)));
+    s.track.classList.toggle('swipe-armed', s.armed);
+  }
+  function swipeBack(s) {
+    swipeClass(s, 'add', ['swipe-back']);
+    s.track.classList.remove('swipe-armed');
+    setSwipe(s, 0);
+    setTimeout(function() {
+      // A new swipe on this element took over.
+      if (s.el._track === s.track) endSwipe(s);
+    }, SWIPE_BACK_MS);
+  }
+  // The element leaves to the right; a row then folds away, its track with
+  // it, so the rows below glide up before the list redraws without it.
+  function swipeOut(s) {
+    swipeClass(s, 'add', ['swipe-out']);
+    s.track.classList.add('swipe-armed');
+    setSwipe(s, s.el.clientWidth);
+    setTimeout(function() {
+      if (s.el === detail) {
+        endSwipe(s);
+        act('done', s.items);
+        return;
+      }
+      s.el.style.height = s.el.offsetHeight + 'px';
+      requestAnimationFrame(function() {
+        swipeClass(s, 'add', ['swipe-fold']);
+        setTimeout(function() { s.track.remove(); act('done', s.items); }, SWIPE_FOLD_MS);
+      });
+    }, SWIPE_OUT_MS);
   }
 
   detail.addEventListener('click', function(e) {

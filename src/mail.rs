@@ -462,6 +462,8 @@ pub enum Pane {
     FrameFocus {
         focused: bool,
     },
+    /// Nothing to swipe under the gesture that began (`mail_patch`).
+    SwipeMiss,
     /// Choose files to attach with the system picker.
     PickFiles {
         key: String,

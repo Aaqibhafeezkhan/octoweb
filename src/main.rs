@@ -149,7 +149,7 @@ enum AppEvent {
     OpenInBackgroundTab(String, Option<usize>),
     // A link opened in a mail message (mail_patch.rs).
     MailLink(mail_patch::Link),
-    // A `window.__mail` call from native mail input: keys, swipe.
+    // A `window.__mail.key` call for a key typed in a mail message.
     MailCall(String),
     PageLoadStarted(usize),                 // (tab_id) — show progress bar
     PageLoadFinished(usize),                // (tab_id) — hide progress bar
@@ -3014,12 +3014,7 @@ fn main() {
             let _ = p.send_event(AppEvent::MailLink(link));
         }
     });
-    mail_patch::monitor_swipes(mail_view, {
-        let p = proxy.clone();
-        move |call| {
-            let _ = p.send_event(AppEvent::MailCall(call));
-        }
-    });
+    mail_patch::monitor_swipes(mail_view);
     let mut mail_visible = false;
     let mail_engine = {
         let p = proxy.clone();
@@ -10105,6 +10100,7 @@ fn main() {
                         let _ = proxy.send_event(AppEvent::Notes(notes::Request::ResizeReset));
                     }
                     mail::Pane::FrameFocus { focused } => mail_patch::set_frame_focused(focused),
+                    mail::Pane::SwipeMiss => mail_patch::swipe_missed(),
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()

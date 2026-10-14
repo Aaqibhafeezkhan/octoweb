@@ -17,9 +17,10 @@
 //!   to what they do here and drops the download item.
 //! - **Keys.** A key typed while the message frame has focus never reaches the
 //!   page's handler; `frame_key` turns it into a `window.__mail.key` call.
-//! - **Swipe.** A scroll-wheel monitor follows two-finger gestures by phase and
-//!   reports a horizontal one to the page, which picks the row or thread under
-//!   it and marks it Done on release.
+//! - **Swipe.** A scroll-wheel monitor follows two-finger gestures by phase.
+//!   It owns the gesture — when it arms, the trackpad tick as it does, and
+//!   whether the release marks Done — while the page only draws the row or
+//!   thread under it following the fingers.
 
 use std::cell::{OnceCell, RefCell};
 use std::ffi::CStr;
@@ -51,6 +52,15 @@ const PHASE_ENDED: usize = 8;
 const PHASE_CANCELLED: usize = 16;
 /// Finger travel (points) before a gesture counts as horizontal or vertical.
 const SWIPE_LOCK_PT: f64 = 8.0;
+/// Finger travel (points) past which releasing a swipe marks Done.
+const SWIPE_DONE_PT: f64 = 120.0;
+/// A flick commits short of that: this far, still moving this fast (points
+/// per event) when the fingers lift.
+const SWIPE_FLICK_PT: f64 = 40.0;
+const SWIPE_FLICK_SPEED_PT: f64 = 12.0;
+/// `NSHapticFeedbackPatternAlignment`, `NSHapticFeedbackPerformanceTimeNow`.
+const HAPTIC_ALIGNMENT: isize = 1;
+const HAPTIC_NOW: usize = 1;
 
 type PolicyImp =
     extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject);
@@ -71,6 +81,8 @@ static ORIGINAL_CREATE_WEB_VIEW: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_WILL_OPEN_MENU: AtomicUsize = AtomicUsize::new(0);
 /// The message frame has keyboard focus inside the mail page.
 static FRAME_FOCUSED: AtomicBool = AtomicBool::new(false);
+/// The page found nothing to swipe: the gesture goes back to scrolling.
+static SWIPE_MISSED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     // AppKit calls the patched methods on the main thread only.
@@ -289,6 +301,11 @@ pub fn frame_key(event: *mut AnyObject, keycode: u16, shift: bool) -> Option<Str
     ))
 }
 
+/// The page found no row or thread under the swipe that just began.
+pub fn swipe_missed() {
+    SWIPE_MISSED.store(true, Ordering::SeqCst);
+}
+
 #[derive(Clone, Copy)]
 enum Gesture {
     Idle,
@@ -299,22 +316,24 @@ enum Gesture {
         dx: f64,
         dy: f64,
     },
+    /// `speed`: the finger travel of the latest event.
     Swiping {
         dx: f64,
+        speed: f64,
     },
     /// A vertical gesture, or one outside the pane: left to scrolling.
     Ignored,
 }
 
-/// Follow two-finger gestures over `mail_view` and hand `on_call` the
-/// `window.__mail.swipe(…)` calls for a horizontal one. Call once.
-pub fn monitor_swipes(mail_view: usize, on_call: impl Fn(String) + 'static) {
+/// Follow two-finger gestures over `mail_view` and drive the page's
+/// `window.__mail.swipe` for a horizontal one. Call once.
+pub fn monitor_swipes(mail_view: usize) {
     let gesture = RefCell::new(Gesture::Idle);
     let handler = block2::RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
         let mut g = gesture.borrow_mut();
         // SAFETY: the scroll-wheel mask guarantees an NSEvent of that type,
         // and the mail view lives as long as the app.
-        let consumed = unsafe { track(&mut g, event, mail_view as *mut AnyObject, &on_call) };
+        let consumed = unsafe { track(&mut g, event, mail_view as *mut AnyObject) };
         if consumed {
             std::ptr::null_mut()
         } else {
@@ -334,12 +353,10 @@ pub fn monitor_swipes(mail_view: usize, on_call: impl Fn(String) + 'static) {
 
 /// Advance `g` by one scroll event; `true` when the event is the swipe's and
 /// must not scroll the page.
-unsafe fn track(
-    g: &mut Gesture,
-    event: *mut AnyObject,
-    view: *mut AnyObject,
-    on_call: &impl Fn(String),
-) -> bool {
+unsafe fn track(g: &mut Gesture, event: *mut AnyObject, view: *mut AnyObject) -> bool {
+    if matches!(g, Gesture::Swiping { .. }) && SWIPE_MISSED.load(Ordering::SeqCst) {
+        *g = Gesture::Ignored;
+    }
     let phase: usize = msg_send![&*event, phase];
     let momentum: usize = msg_send![&*event, momentumPhase];
     if phase == 0 {
@@ -377,36 +394,71 @@ unsafe fn track(
                 return false;
             }
             tracing::debug!(x, y, dx, natural, "mail swipe");
-            on_call(format!(
-                "window.__mail && window.__mail.swipe('begin', {x}, {y})"
-            ));
-            on_call(format!(
-                "window.__mail && window.__mail.swipe('move', {dx})"
-            ));
-            *g = Gesture::Swiping { dx };
+            SWIPE_MISSED.store(false, Ordering::SeqCst);
+            call(
+                view,
+                &format!("window.__mail && window.__mail.swipe('begin', {x}, {y})"),
+            );
+            moved(view, 0.0, dx);
+            *g = Gesture::Swiping { dx, speed: finger };
             true
         }
-        Gesture::Swiping { dx } if phase & PHASE_CHANGED != 0 => {
-            let dx = dx + finger;
-            on_call(format!(
-                "window.__mail && window.__mail.swipe('move', {dx})"
-            ));
-            *g = Gesture::Swiping { dx };
+        Gesture::Swiping { dx, .. } if phase & PHASE_CHANGED != 0 => {
+            moved(view, dx, dx + finger);
+            *g = Gesture::Swiping {
+                dx: dx + finger,
+                speed: finger,
+            };
             true
         }
         // Stays Swiping so the momentum that follows is swallowed too.
-        Gesture::Swiping { .. } if phase & PHASE_ENDED != 0 => {
-            on_call("window.__mail && window.__mail.swipe('end')".into());
+        Gesture::Swiping { dx, speed } if phase & PHASE_ENDED != 0 => {
+            let done =
+                dx >= SWIPE_DONE_PT || (dx >= SWIPE_FLICK_PT && speed >= SWIPE_FLICK_SPEED_PT);
+            call(
+                view,
+                &format!("window.__mail && window.__mail.swipe('end', {done})"),
+            );
             true
         }
         Gesture::Swiping { .. } if phase & PHASE_CANCELLED != 0 => {
-            on_call("window.__mail && window.__mail.swipe('cancel')".into());
+            call(view, "window.__mail && window.__mail.swipe('end', false)");
             *g = Gesture::Ignored;
             true
         }
         Gesture::Swiping { .. } => true,
         _ => false,
     }
+}
+
+/// The swipe went from `from` to `to`: show it, and tick the trackpad as it
+/// crosses the point where releasing marks Done, either way.
+unsafe fn moved(view: *mut AnyObject, from: f64, to: f64) {
+    let armed = to >= SWIPE_DONE_PT;
+    if armed != (from >= SWIPE_DONE_PT) {
+        let performer: *mut AnyObject =
+            msg_send![class!(NSHapticFeedbackManager), defaultPerformer];
+        let _: () = msg_send![
+            &*performer,
+            performFeedbackPattern: HAPTIC_ALIGNMENT,
+            performanceTime: HAPTIC_NOW,
+        ];
+    }
+    call(
+        view,
+        &format!("window.__mail && window.__mail.swipe('move', {to}, {armed})"),
+    );
+}
+
+/// Run `js` in the mail page straight from the event monitor: no event-loop
+/// hop between the fingers and the frame they move.
+unsafe fn call(view: *mut AnyObject, js: &str) {
+    let js = objc2_foundation::NSString::from_str(js);
+    let _: () = msg_send![
+        &*view,
+        evaluateJavaScript: &*js,
+        completionHandler: None::<&block2::Block<dyn Fn(*mut AnyObject, *mut AnyObject)>>,
+    ];
 }
 
 /// The event's position in `view`, in its top-left-origin coordinates (CSS px
