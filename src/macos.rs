@@ -118,6 +118,34 @@ pub fn pdf_text(bytes: &[u8]) -> Option<String> {
         (!text.trim().is_empty()).then_some(text)
     })
 }
+
+/// Mark a saved mail attachment the way Mail does, so Gatekeeper checks it
+/// before it first opens and the Finder says where it came from. Unmarked, an
+/// app or script from a message would open with no check at all.
+pub fn quarantine_attachment(path: &std::path::Path) -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSString, NSURL};
+
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+        let props: *mut AnyObject = msg_send![class!(NSMutableDictionary), dictionary];
+        for (key, value) in [
+            ("LSQuarantineType", "LSQuarantineTypeEmailAttachment"),
+            ("LSQuarantineAgentName", "Octoweb"),
+        ] {
+            let (key, value) = (NSString::from_str(key), NSString::from_str(value));
+            let _: () = msg_send![props, setObject: &*value, forKey: &*key];
+        }
+        let key = NSString::from_str("NSURLQuarantinePropertiesKey");
+        msg_send![
+            &*url,
+            setResourceValue: props,
+            forKey: &*key,
+            error: std::ptr::null_mut::<*mut AnyObject>()
+        ]
+    })
+}
 /// Set the app's preferred language to English for WKWebView's Accept-Language header.
 ///
 /// By default, WKWebView sends all system preferred languages in Accept-Language.
@@ -776,5 +804,22 @@ mod tests {
             "{text:?}"
         );
         assert_eq!(pdf_text(b"not a pdf"), None);
+    }
+
+    #[test]
+    fn saved_attachments_are_quarantined() {
+        let dir = std::env::temp_dir().join(format!("octoweb-quarantine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("invoice.command");
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        assert!(quarantine_attachment(&path));
+        let mark = std::process::Command::new("/usr/bin/xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mark = String::from_utf8_lossy(&mark.stdout);
+        assert!(mark.contains(";Octoweb;"), "{mark:?}");
     }
 }

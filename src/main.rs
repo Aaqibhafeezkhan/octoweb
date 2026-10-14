@@ -2997,6 +2997,10 @@ fn main() {
             &keymap.read().unwrap().ui_json().to_string(),
         ))
         .with_transparent(true)
+        // A store of its own, kept in memory: remote images in mail must not
+        // carry the cookies of sites signed into in the browser — a tracking
+        // pixel would tell its sender exactly who opened the message.
+        .with_incognito(true)
         // Built hidden: it must not take the keyboard until it is shown.
         .with_focused(false)
         .with_accept_first_mouse(true)
