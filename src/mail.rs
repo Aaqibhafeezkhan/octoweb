@@ -390,6 +390,9 @@ pub enum PageRequest {
     Thread {
         account: String,
         thread: String,
+        /// Loaded ahead or redrawn, not opened: it stays unread.
+        #[serde(default)]
+        peek: bool,
     },
     Act {
         verb: Verb,
@@ -1808,11 +1811,18 @@ async fn page(shared: &Arc<Shared>, ws: String, accounts: Vec<String>, req: Page
                 ));
             }
         }
-        PageRequest::Thread { account, thread } => {
+        PageRequest::Thread {
+            account,
+            thread,
+            peek,
+        } => {
             if !accounts.contains(&account) {
                 return;
             }
-            send_thread(shared, &ws, &account, &thread).await;
+            send_thread(shared, &ws, &account, &thread, peek).await;
+            if peek {
+                return;
+            }
             // READ-5: opening marks read on the server.
             let unread: Vec<ServerRef> = shared
                 .store()
@@ -1977,7 +1987,8 @@ async fn page(shared: &Arc<Shared>, ws: String, accounts: Vec<String>, req: Page
 }
 
 /// The thread for the page, fetching bodies stored as headers only first.
-async fn send_thread(shared: &Shared, ws: &str, account_key: &str, thread: &str) {
+/// `peek` tells the page it was not opened (loaded ahead, or a redraw).
+async fn send_thread(shared: &Shared, ws: &str, account_key: &str, thread: &str, peek: bool) {
     let Some(account) = shared.account(account_key) else {
         return;
     };
@@ -2022,6 +2033,7 @@ async fn send_thread(shared: &Shared, ws: &str, account_key: &str, thread: &str)
             &serde_json::json!({
                 "account": account_key,
                 "thread": thread,
+                "peek": peek,
                 "messages": messages,
                 "state": state,
                 "images": images,

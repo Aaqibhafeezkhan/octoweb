@@ -169,7 +169,8 @@ are joined by links, not merged into one list.
   next conversation shall take over, so a run of `e e e` clears the inbox: in
   the open thread the next one (below, else above) opens in its place; in the
   list it takes focus. With none left, the list shows. A thread opened from
-  notes returns as before.
+  notes returns as before. The next conversation shall show at once: the ones
+  beside the open one load ahead without being marked read.
 - **TRI-4** Snooze shall offer: later today, this evening, tomorrow morning,
   this weekend, next week, and a custom date; times shall be local.
 - **TRI-5** A snoozed conversation shall leave the inbox until its time, then
@@ -210,7 +211,8 @@ are joined by links, not merged into one list.
   opening one shall preview it in the pane (PDF, images, text; ←/→ between a
   message's attachments) with a Download action that saves it to Downloads
   and reveals it, using the existing download flow.
-- **READ-5** Opening a thread shall mark it read on the server.
+- **READ-5** Opening a thread shall mark it read on the server. Loading it
+  ahead or redrawing it shall not, so one marked unread stays unread.
 
 ## Writing
 

@@ -361,6 +361,7 @@ fn mail_e2e() {
     h.page(PageRequest::Thread {
         account: h.key.clone(),
         thread: lunch.clone(),
+        peek: false,
     });
     let thread = h.page_reply("thread");
     let message_id = thread["messages"][0]["id"].as_i64().unwrap();
@@ -551,6 +552,7 @@ fn mail_e2e() {
     h.page(PageRequest::Thread {
         account: h.key.clone(),
         thread: with_file.clone(),
+        peek: false,
     });
     let thread = h.page_reply("thread");
     assert_eq!(thread["messages"][0]["attachments"][0]["name"], "notes.txt");

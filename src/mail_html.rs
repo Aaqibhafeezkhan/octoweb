@@ -100,7 +100,7 @@ pub fn html(keybindings_json: &str) -> String {
   }
   #search::placeholder { color: var(--label-3); }
   #search:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); }
-  #list { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding-bottom: 24px; outline: none; }
+  #list { position: relative; flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding-bottom: 24px; outline: none; }
 
   .section { padding: 14px 18px 5px; font-size: 12px; font-weight: 600; color: var(--label-2); display: flex; gap: 6px; align-items: center; }
   .section .more { margin-left: auto; font-weight: 400; }
@@ -193,7 +193,7 @@ pub fn html(keybindings_json: &str) -> String {
     flex: 0 0 auto; display: none; align-items: center; gap: 2px; margin: 4px 10px 10px; padding: 4px 4px 4px 14px;
     border-radius: var(--r-capsule); background: var(--glass); box-shadow: var(--shadow-float), var(--glass-shine);
   }
-  #selbar.open { display: flex; }
+  #selbar.open { display: flex; --in-x: 0px; --in-y: 12px; animation: rise-in 0.3s var(--spring) both; }
   #sel-count { flex: 1; font-size: 12px; font-weight: 600; white-space: nowrap; }
 
   /* Thread */
@@ -225,7 +225,9 @@ pub fn html(keybindings_json: &str) -> String {
   .msg-text .quote { color: var(--label-3); display: none; }
   .msg-text.quotes .quote { display: inline; }
   .msg-text a, .linkish { color: var(--accent); }
-  iframe.mail { width: 100%; border: none; display: block; background: #fff; border-radius: 10px; min-height: 40px; }
+  /* Shown once it has its height: no white box flashing, then jumping. */
+  iframe.mail { width: 100%; border: none; display: block; background: #fff; border-radius: 10px; min-height: 40px; opacity: 0; transition: opacity 0.16s var(--ease); }
+  iframe.mail.fitted { opacity: 1; }
   .images-bar { margin: 2px 14px 8px; padding: 5px 6px 5px 12px; border-radius: var(--r-capsule); background: var(--fill); font-size: 12px; color: var(--label-2); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .images-bar span { flex: 1; }
   .images-bar .pill { background: var(--card); box-shadow: 0 0 0 0.5px var(--hairline); }
@@ -315,7 +317,7 @@ pub fn html(keybindings_json: &str) -> String {
 
   /* Popover, undo bar, help */
   #popover { position: fixed; z-index: 50; min-width: 220px; background: var(--glass-thick); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border-radius: var(--r-card); box-shadow: var(--shadow-float), var(--glass-shine); padding: 5px; display: none; }
-  #popover.open { display: block; }
+  #popover.open { display: block; transform-origin: top left; animation: pop-in 0.16s var(--ease); }
   #popover .opt { display: flex; gap: 10px; align-items: center; width: 100%; border: none; background: none; text-align: left; padding: 6px 9px; border-radius: 9px; cursor: pointer; }
   #popover .opt:hover, #popover .opt.focused { background: var(--fill-hover); }
   #popover .opt .when { margin-left: auto; color: var(--label-3); font-size: 11.5px; }
@@ -323,12 +325,21 @@ pub fn html(keybindings_json: &str) -> String {
   #popover .custom { display: flex; gap: 6px; padding: 6px 6px 3px; }
   #popover .custom input { flex: 1; border: none; border-radius: var(--r-capsule); background: var(--fill); color: var(--label); font: inherit; padding: 3px 10px; }
   #popover .title { padding: 4px 9px 6px; font-size: 12px; color: var(--label-2); font-weight: 600; }
-  #undo { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 40; background: var(--label); color: var(--canvas); border-radius: var(--r-capsule); padding: 6px 6px 6px 16px; font-size: 12.5px; display: none; align-items: center; gap: 10px; box-shadow: var(--shadow-float); white-space: nowrap; }
+  #undo {
+    position: fixed; left: 50%; bottom: 14px; z-index: 40; background: var(--label); color: var(--canvas); border-radius: var(--r-capsule); padding: 6px 6px 6px 16px; font-size: 12.5px; display: flex; align-items: center; gap: 10px; box-shadow: var(--shadow-float); white-space: nowrap;
+    opacity: 0; visibility: hidden; pointer-events: none; transform: translate(-50%, 12px) scale(0.96);
+    transition: opacity 0.16s var(--ease), transform 0.16s var(--ease), visibility 0s 0.16s, bottom 0.24s var(--ease);
+  }
   body.selecting #undo { bottom: 62px; }
-  #undo.open { display: flex; }
+  #undo.open {
+    opacity: 1; visibility: visible; pointer-events: auto; transform: translate(-50%, 0);
+    transition: opacity 0.18s var(--ease), transform 0.32s var(--spring), visibility 0s, bottom 0.24s var(--ease);
+  }
+  /* A new action while it shows: the bar answers with a small pop. */
+  #undo.bump { animation: undo-bump 0.26s var(--spring); }
   #undo button { border: none; border-radius: var(--r-capsule); padding: 4px 12px; background: color-mix(in srgb, var(--canvas) 22%, transparent); color: var(--canvas); cursor: pointer; font-weight: 600; }
   #help { position: fixed; inset: 46px 14px auto 14px; z-index: 45; background: var(--glass-thick); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); border-radius: var(--r-card); box-shadow: var(--shadow-float), var(--glass-shine); padding: 14px 18px; display: none; columns: 2; column-gap: 24px; font-size: 12px; }
-  #help.open { display: block; }
+  #help.open { display: block; transform-origin: top right; animation: pop-in var(--t-pop) var(--ease); }
   #help div { display: flex; gap: 8px; padding: 2px 0; break-inside: avoid; }
   #help kbd { min-width: 34px; color: var(--label-2); font: 11px var(--font-mono); }
 
@@ -351,6 +362,32 @@ pub fn html(keybindings_json: &str) -> String {
   @keyframes pv-pop { from { opacity: 0; transform: scale(0.96); } }
   @keyframes writer-blink { 50% { opacity: 0; } }
   @keyframes write-sweep { to { transform: translateX(100%); } }
+
+  /* Motion: things move the way they came. The thread slides in over the
+     list and the list back over it; the next conversation rises into place,
+     the previous one drops in; rows glide when others leave (render). The
+     theme's reduced-motion rule stops all of it. */
+  @keyframes fade-in { from { opacity: 0; } }
+  @keyframes rise-in { from { opacity: 0; transform: translate3d(var(--in-x, 0px), var(--in-y, 0px), 0); } }
+  @keyframes pop-in { from { opacity: 0; transform: scale(0.96); } }
+  @keyframes ghost-out { to { opacity: 0; transform: scale(0.97); } }
+  @keyframes undo-bump { 40% { transform: translate(-50%, 0) scale(1.04); } }
+  #panel.detail:not(.fullscreen) #detail-pane { --in-x: 24px; --in-y: 0px; animation: rise-in 0.26s var(--ease); }
+  #panel:not(.detail):not(.fullscreen) #list-pane { --in-x: -24px; --in-y: 0px; animation: rise-in 0.26s var(--ease); }
+  #detail-pane[data-enter="next"] { --in-y: 14px; }
+  #detail-pane[data-enter="prev"] { --in-y: -14px; }
+  #detail-pane[data-enter="open"] { --in-y: 0px; }
+  #detail-pane[data-enter="next"] > :not(.thread-head), #detail-pane[data-enter="next"] .thread-title .subject,
+  #detail-pane[data-enter="prev"] > :not(.thread-head), #detail-pane[data-enter="prev"] .thread-title .subject,
+  #detail-pane[data-enter="open"] > * { --in-x: 0px; animation: rise-in 0.22s var(--ease) both; }
+  #detail-pane[data-enter="fill"] > :not(.thread-head) { animation: fade-in 0.18s var(--ease) both; }
+  /* Not loaded yet: say so only if it takes a moment. */
+  #panel #detail-pane > .pending { animation: fade-in 0.2s var(--ease) 0.35s both; }
+  .msg.expand { animation: fade-in 0.2s var(--ease) both; }
+  .composer.enter { --in-x: 0px; --in-y: 10px; animation: rise-in 0.24s var(--ease) both; }
+  .row.row-in { animation: fade-in 0.22s var(--ease) both; }
+  .row.row-ghost { position: absolute; z-index: 2; margin: 0; pointer-events: none; animation: ghost-out 0.2s var(--ease) forwards; }
+  .row.row-ghost::before { display: none; }
 </style>
 </head>
 <body>
@@ -414,6 +451,11 @@ pub fn html(keybindings_json: &str) -> String {
   const DOT_COLORS = ['#0a84ff', '#ff9f0a', '#30d158', '#bf5af2', '#ff375f', '#64d2ff'];
   const SAVE_DRAFT_MS = 800;
   const UNDO_BAR_MS = 6000;
+  // A conversation acted away stays off the list this long, whatever older
+  // inbox reply arrives meanwhile.
+  const GONE_MS = 5000;
+  const GLIDE_MS = 260, GHOST_MS = 200;
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
 
   const S = {
     ws: null, accounts: [], ai: false, blockImages: false,
@@ -422,11 +464,17 @@ pub fn html(keybindings_json: &str) -> String {
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
     thread: null, fromNotes: false, composer: null, composerError: '', writer: null,
     undo: null, sending: new Map(), fullscreen: false, chords: {},
+    gone: new Map(), enter: '', focusKey: null,
   };
 
   function ipc(msg) { window.ipc.postMessage(JSON.stringify(msg)); }
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function key(item) { return item.account + '\u0000' + item.thread; }
+  // A list row's identity across redraws, for focus and motion.
+  function rowKey(r) {
+    return !r ? '' : r.thread ? 't' + key(r.thread) : r.group ? 'g' + r.group.addr : r.draft ? 'd' + r.draft.key : r.scheduled ? 's' + r.scheduled.id : '';
+  }
+  function rowAttr(k) { return esc(encodeURIComponent(k)); }
   function account(k) { return S.accounts.find(function(a) { return a.key === k; }); }
   function color(k) {
     const i = S.accounts.findIndex(function(a) { return a.key === k; });
@@ -521,6 +569,7 @@ pub fn html(keybindings_json: &str) -> String {
     $('undo-text').textContent = text;
     undoAction = action;
     $('undo-btn').style.display = action ? '' : 'none';
+    if (undoBar.classList.contains('open')) { undoBar.classList.remove('bump'); void undoBar.offsetWidth; undoBar.classList.add('bump'); }
     undoBar.classList.add('open');
     clearTimeout(undoTimer);
     undoTimer = setTimeout(hideUndo, ms || UNDO_BAR_MS);
@@ -541,47 +590,76 @@ pub fn html(keybindings_json: &str) -> String {
     const n = items.length > 1 ? items.length + ' conversations' : '';
     const label = (LABEL[verb] || verb) + (n ? ' · ' + n : '') + (verb === 'snooze' && until ? ' until ' + fmtTime(until, true) : '');
     showUndo(label, inverse ? undo : null);
-    if (REMOVES[verb]) {
-      // TRI-3: the next conversation takes over — in the open thread it opens
-      // in its place, in the list it takes focus.
-      const keys = new Set(items.map(key));
-      const thread = S.thread && keys.has(key(S.thread));
-      const next = thread && !S.fromNotes ? nextAfter(keys) : null;
-      S.view && dropRows(keys);
-      S.selected.clear();
-      if (thread) closeThread(true);
-      if (next) openThread(next.account, next.thread, false);
-      render();
-      if (next) {
-        const i = S.rows.findIndex(function(r) { return r.thread && key(r.thread) === key(next); });
-        if (i >= 0 && i !== S.focus) { S.focus = i; render(); }
-      }
+    const keys = new Set(items.map(key));
+    if (!REMOVES[verb]) { local(verb, keys); return; }
+    // TRI-3: the next conversation takes over — in the open thread it opens
+    // in its place, in the list it takes focus.
+    keys.forEach(function(k) { S.gone.set(k, Date.now() + GONE_MS); });
+    const thread = S.thread && keys.has(key(S.thread));
+    const next = thread && !S.fromNotes ? nextAfter(keys) : null;
+    dropRows(keys);
+    S.selected.clear();
+    if (thread) closeThread(true);
+    if (next) {
+      S.focusKey = 't' + key(next.t);
+      openThread(next.t.account, next.t.thread, false, next.dir);
     }
+    render();
   }
-  // The conversation below the open one, else above, that `keys` leaves.
+  // What the server will say anyway, shown now.
+  function local(verb, keys) {
+    if (verb === 'pin' || verb === 'unpin') touch(keys, function(t) { t.pinned = verb === 'pin'; });
+    else if (verb === 'mark_read' || verb === 'mark_unread') touch(keys, function(t) { t.unread = verb === 'mark_unread'; });
+    else return;
+    render();
+    if (S.thread && S.thread.messages && keys.has(key(S.thread)) && headSig(S.thread) !== S.thread.headSig) renderHead();
+  }
+  // Every listed copy of the conversations in `keys`, changed in place.
+  function touch(keys, fn) {
+    const each = function(t) { if (keys.has(key(t))) fn(t); };
+    const v = S.view;
+    if (v) { v.important.forEach(each); v.new_senders.forEach(each); v.other.forEach(function(g) { g.threads.forEach(each); }); }
+    S.hits.forEach(each);
+    S.showItems.forEach(each);
+    if (S.thread && S.thread.row && keys.has(key(S.thread))) fn(S.thread.row);
+  }
+  // The conversation below the open one, else above, that `keys` leaves,
+  // and which way that is.
   function nextAfter(keys) {
     const here = S.rows.findIndex(function(r) { return r.thread && key(r.thread) === key(S.thread); });
     if (here < 0) return null;
     const left = function(j) { const r = S.rows[j]; return r && r.thread && !keys.has(key(r.thread)); };
-    for (let j = here + 1; j < S.rows.length; j++) if (left(j)) return S.rows[j].thread;
-    for (let j = here - 1; j >= 0; j--) if (left(j)) return S.rows[j].thread;
+    for (let j = here + 1; j < S.rows.length; j++) if (left(j)) return { t: S.rows[j].thread, dir: 'next' };
+    for (let j = here - 1; j >= 0; j--) if (left(j)) return { t: S.rows[j].thread, dir: 'prev' };
     return null;
   }
   function undo() {
     const u = S.undo;
     S.undo = null;
     hideUndo();
-    if (u) ipc({ type: 'act', verb: u.verb, items: u.items, until: null });
+    if (!u) return;
+    ipc({ type: 'act', verb: u.verb, items: u.items, until: null });
+    const keys = new Set(u.items.map(key));
+    keys.forEach(function(k) { S.gone.delete(k); });
+    local(u.verb, keys);
   }
   function dropRows(keys) {
     const v = S.view;
     const keep = function(t) { return !keys.has(key(t)); };
-    v.important = v.important.filter(keep);
-    v.new_senders = v.new_senders.filter(keep);
-    v.other.forEach(function(g) { g.threads = g.threads.filter(keep); });
-    v.other = v.other.filter(function(g) { return g.threads.length; });
+    if (v) {
+      v.important = v.important.filter(keep);
+      v.new_senders = v.new_senders.filter(keep);
+      v.other.forEach(function(g) { g.threads = g.threads.filter(keep); });
+      v.other = v.other.filter(function(g) { return g.threads.length; });
+    }
     S.hits = S.hits.filter(keep);
     S.showItems = S.showItems.filter(keep);
+  }
+  // Drops what was acted away from a list sent before the server knew.
+  function pruneGone() {
+    const keys = new Set(), t = Date.now();
+    S.gone.forEach(function(until, k) { if (until > t) keys.add(k); else S.gone.delete(k); });
+    if (keys.size) dropRows(keys);
   }
   // Selected rows, else the focused one, else the open thread.
   function targets() {
@@ -608,7 +686,7 @@ pub fn html(keybindings_json: &str) -> String {
     const preview = t.summary ? '<span class="ai">✦</span> ' + esc(t.summary) : esc(t.preview);
     const open = S.thread && S.thread.account === t.account && S.thread.thread === t.thread;
     const cls = 'row' + (t.unread ? ' unread' : '') + (S.selected.has(key(t)) ? ' selected' : '') + (i === S.focus ? ' focused' : '') + (open ? ' open' : '');
-    return '<div class="' + cls + '" data-i="' + i + '" role="option">' +
+    return '<div class="' + cls + '" data-i="' + i + '" data-k="' + rowAttr(rowKey(S.rows[i])) + '" role="option">' +
       '<span class="dot" style="background:' + esc(color(t.account)) + '"></span>' +
       '<div class="main"><div class="line1"><span class="from">' + esc(t.from_name || t.from_addr) + '</span>' +
       (t.count > 1 ? '<span class="count">' + t.count + '</span>' : '') +
@@ -620,11 +698,21 @@ pub fn html(keybindings_json: &str) -> String {
       '</div>' + (extra || '') + '</div>';
   }
 
+  let listShape = '';
   function render() {
+    // The same list redrawn keeps focus on its row while others come and go.
+    const shape = [S.ws, S.mode, S.query, S.showTitle].join('\u0001');
+    const same = shape === listShape;
+    listShape = shape;
+    const want = S.focusKey || (same ? rowKey(S.rows[S.focus]) : '');
+    S.focusKey = null;
+    const before = same ? measureRows() : null;
     S.rows = [];
     let html = '';
     const push = function(r) { S.rows.push(r); return S.rows.length - 1; };
+    const attrs = function(i) { return '" data-i="' + i + '" data-k="' + rowAttr(rowKey(S.rows[i])) + '">'; };
     if (!S.accounts.length) {
+      listShape = '';
       list.innerHTML = '<div class="empty"><div class="big">No mail accounts in this workspace</div>' +
         'Add Gmail, iCloud, Private Email or any IMAP account.<br><br>' +
         '<button class="pill primary" type="button" id="add-account">Add account</button></div>';
@@ -646,7 +734,7 @@ pub fn html(keybindings_json: &str) -> String {
         html += '<div class="section">Drafts</div>';
         S.drafts.forEach(function(d) {
           const i = push({ draft: d });
-          html += '<div class="row' + (i === S.focus ? ' focused' : '') + '" data-i="' + i + '"><span class="dot" style="background:' + esc(color(d.account)) + '"></span>' +
+          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(d.account)) + '"></span>' +
             '<div class="main"><div class="line1"><span class="from">To: ' + esc(d.to || '—') + '</span></div><div class="subject">' + esc(d.subject || '(no subject)') + '</div></div></div>';
         });
       }
@@ -654,7 +742,7 @@ pub fn html(keybindings_json: &str) -> String {
         html += '<div class="section">Sending later</div>';
         S.scheduled.forEach(function(s) {
           const i = push({ scheduled: s });
-          html += '<div class="row' + (i === S.focus ? ' focused' : '') + '" data-i="' + i + '"><span class="dot" style="background:' + esc(color(s.account)) + '"></span>' +
+          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(s.account)) + '"></span>' +
             '<div class="main"><div class="subject">Scheduled for ' + esc(fmtTime(s.at, true)) + '</div></div>' +
             '<div class="gate"><button class="pill" type="button" data-cancel="' + s.id + '">Cancel</button></div></div>';
         });
@@ -679,7 +767,7 @@ pub fn html(keybindings_json: &str) -> String {
         v.other.forEach(function(g) {
           const open = S.expanded.has(g.addr);
           const i = push({ group: g });
-          html += '<div class="row group' + (open ? ' open' : '') + (g.unread ? ' unread' : '') + (i === S.focus ? ' focused' : '') + '" data-i="' + i + '">' +
+          html += '<div class="row group' + (open ? ' open' : '') + (g.unread ? ' unread' : '') + (i === S.focus ? ' focused' : '') + attrs(i) +
             '<span class="chev">›</span><div class="main"><div class="line1"><span class="from">' + esc(g.name || g.addr) + '</span>' +
             '<span class="count">' + g.threads.length + '</span><span class="time">' + esc(fmtTime(g.threads[0].key)) + '</span></div>' +
             '<div class="preview">' + esc(g.threads[0].subject) + '</div></div></div>';
@@ -689,8 +777,16 @@ pub fn html(keybindings_json: &str) -> String {
     } else {
       html = '<div class="empty">Loading…</div>';
     }
-    S.focus = Math.max(0, Math.min(S.focus, S.rows.length - 1));
+    const built = S.focus;
+    const found = want ? S.rows.findIndex(function(r) { return rowKey(r) === want; }) : -1;
+    S.focus = Math.max(0, Math.min(found >= 0 ? found : S.focus, S.rows.length - 1));
     list.innerHTML = html;
+    if (S.focus !== built) {
+      const old = list.querySelector('.row.focused');
+      if (old) old.classList.remove('focused');
+      const el = list.querySelector('.row[data-i="' + S.focus + '"]');
+      if (el) el.classList.add('focused');
+    }
     const back = $('back-inbox');
     if (back) back.addEventListener('click', backToInbox);
     const ask = $('ask-ai');
@@ -699,7 +795,45 @@ pub fn html(keybindings_json: &str) -> String {
     if (all) all.addEventListener('click', doneAll);
     const focused = list.querySelector('.row.focused');
     if (focused) focused.scrollIntoView({ block: 'nearest' });
+    glide(before);
     renderSelbar();
+  }
+
+  // Where each row sat before a redraw, by identity.
+  function measureRows() {
+    const m = new Map();
+    if (REDUCED.matches) return m;
+    list.querySelectorAll('.row[data-k]').forEach(function(el) {
+      m.set(el.dataset.k, { el: el, top: el.offsetTop, left: el.offsetLeft, width: el.offsetWidth });
+    });
+    return m;
+  }
+  // Rows that stayed glide from where they were, new ones fade in, and those
+  // that left fade out where they were, so nothing jumps.
+  function glide(before) {
+    if (!before || !before.size) return;
+    const moved = [], added = [];
+    list.querySelectorAll('.row[data-k]').forEach(function(el) {
+      const old = before.get(el.dataset.k);
+      if (!old) { added.push(el); return; }
+      before.delete(el.dataset.k);
+      const dy = old.top - el.offsetTop;
+      if (Math.abs(dy) >= 1) moved.push([el, dy]);
+    });
+    added.forEach(function(el) { el.classList.add('row-in'); });
+    before.forEach(function(old) {
+      const g = old.el;
+      g.removeAttribute('data-i'); g.removeAttribute('data-k');
+      g.classList.add('row-ghost');
+      g.style.top = old.top + 'px'; g.style.left = old.left + 'px'; g.style.width = old.width + 'px';
+      list.appendChild(g);
+      setTimeout(function() { g.remove(); }, GHOST_MS);
+    });
+    if (!moved.length) return;
+    moved.forEach(function(p) { p[0].style.transition = 'none'; p[0].style.transform = 'translateY(' + p[1] + 'px)'; });
+    void list.offsetHeight;
+    moved.forEach(function(p) { p[0].style.transition = 'transform ' + GLIDE_MS + 'ms var(--ease)'; p[0].style.transform = ''; });
+    setTimeout(function() { moved.forEach(function(p) { p[0].style.transition = ''; }); }, GLIDE_MS);
   }
 
   list.addEventListener('click', function(e) {
@@ -731,7 +865,9 @@ pub fn html(keybindings_json: &str) -> String {
     S.focus = Math.max(0, Math.min(S.rows.length - 1, S.focus + step));
     render();
     const r = S.rows[S.focus];
-    if (S.fullscreen && r && r.thread) openThread(r.thread.account, r.thread.thread, false);
+    if (!r || !r.thread) return;
+    if (S.fullscreen) openThread(r.thread.account, r.thread.thread, false, step > 0 ? 'next' : 'prev');
+    else prefetchSoon(r.thread);
   }
   function openFocused() {
     const r = S.rows[S.focus];
@@ -752,18 +888,80 @@ pub fn html(keybindings_json: &str) -> String {
   }
 
   // ── Thread (READ) ───────────────────────────────────────────────────────────
-  function openThread(acc, thread, fromNotes) {
+  // Conversations as last sent: one opens at once, and its fresh copy only
+  // redraws what changed. Those beside the open one load ahead (peek: they
+  // stay unread), so moving on never waits.
+  const THREADS_MAX = 40, ASK_AGAIN_MS = 10000;
+  const threads = new Map(), asked = new Map();
+  function remember(data) {
+    const k = key(data);
+    threads.delete(k); threads.set(k, data); asked.delete(k);
+    if (threads.size > THREADS_MAX) threads.delete(threads.keys().next().value);
+  }
+  function prefetch(t) {
+    const k = key(t);
+    if (threads.has(k) || Date.now() - (asked.get(k) || 0) < ASK_AGAIN_MS) return;
+    asked.set(k, Date.now());
+    ipc({ type: 'thread', account: t.account, thread: t.thread, peek: true });
+  }
+  let prefetchTimer = 0;
+  function prefetchSoon(t) {
+    clearTimeout(prefetchTimer);
+    prefetchTimer = setTimeout(function() { prefetch(t); }, 150);
+  }
+  function prefetchAround(k) {
+    const i = S.rows.findIndex(function(r) { return r.thread && key(r.thread) === k; });
+    if (i < 0) return;
+    [1, -1].forEach(function(step) {
+      let j = i + step;
+      while (S.rows[j] && !S.rows[j].thread) j += step;
+      if (S.rows[j]) prefetch(S.rows[j].thread);
+    });
+  }
+
+  // `enter` is how it arrives: 'next' or 'prev' along the list; else it
+  // slides in over the list (docked) or fades in (fullscreen).
+  function openThread(acc, thread, fromNotes, enter) {
+    const k = acc + '\u0000' + thread;
     S.fromNotes = !!fromNotes;
-    S.thread = { account: acc, thread: thread, loading: true };
+    if (S.thread && S.thread.messages && key(S.thread) === k) { panel.classList.add('detail'); return; }
     leaveComposer();
+    const hit = threads.get(k);
+    S.thread = hit ? Object.assign({}, hit) : { account: acc, thread: thread, loading: true };
+    S.enter = enter || (S.fullscreen ? 'open' : '');
     panel.classList.add('detail');
-    detail.innerHTML = '<div class="empty">Loading…</div>';
+    markOpen(k);
+    if (hit) { resumeWriter(); renderThread(); } else pendingThread(k);
     ipc({ type: 'thread', account: acc, thread: thread });
+  }
+  // Its row shows it open and, as opening marks it read (READ-5), read.
+  function markOpen(k) {
+    list.querySelectorAll('.row.open:not(.group)').forEach(function(el) { el.classList.remove('open'); });
+    if (!k) return;
+    touch(new Set([k]), function(t) { t.unread = false; });
+    const el = list.querySelector('.row[data-k="' + rowAttr('t' + k) + '"]');
+    if (el) el.classList.remove('unread');
+    if (el) el.classList.add('open');
+  }
+  // Not loaded yet: its row's subject and the toolbar, so nothing moves when
+  // the messages come.
+  function pendingThread(k) {
+    const r = S.rows.find(function(x) { return x.thread && key(x.thread) === k; });
+    detail.dataset.enter = S.enter;
+    S.enter = '';
+    detail.innerHTML = threadHead(r ? r.thread.subject || '(no subject)' : '', r ? r.thread : {}) +
+      '<div class="empty pending">Loading…</div>';
+    detail.scrollTop = 0;
+    detail._k = k;
+    detail._pending = true;
   }
   function closeThread(keepFocus) {
     leaveComposer(); S.thread = null;
     panel.classList.remove('detail');
     detail.innerHTML = '';
+    detail._k = null;
+    detail.dataset.enter = '';
+    markOpen(null);
     if (S.fromNotes && !keepFocus) { S.fromNotes = false; ipc({ type: 'back_to_notes' }); return; }
     S.fromNotes = false;
     list.focus();
@@ -839,67 +1037,137 @@ pub fn html(keybindings_json: &str) -> String {
     return '<button class="icon-btn" type="button" ' + attr + '="' + id + '" title="' + esc(label + (keyHint ? ' (' + keyHint + ')' : '')) + '" aria-label="' + esc(label) + '">' + svg + '</button>';
   }
 
-  function renderThread() {
-    const t = S.thread;
-    if (!t || !t.messages) return;
-    const row = t.row || {};
-    const ai = S.ai;
+  function threadHead(subject, row) {
     const btn = function(id, label, keyHint, svg) { return iconBtn('data-act', id, label, keyHint, svg); };
     const group = function(inner) { return '<div class="tgroup">' + inner + '</div>'; };
-    let html = '<div class="thread-head"><div class="thread-title">' + btn('back', 'Back', 'Esc', I.back) +
-      '<h1 class="subject">' + esc(t.messages[0].subject || '(no subject)') + '</h1></div>' +
+    return '<div class="thread-head"><div class="thread-title">' + btn('back', 'Back', 'Esc', I.back) +
+      '<h1 class="subject">' + esc(subject) + '</h1></div>' +
       '<div class="toolbar">' +
       group(btn('done', 'Done', 'e', I.done) + btn('snooze', 'Snooze', 'h', I.snooze) +
         btn(row.pinned ? 'unpin' : 'pin', row.pinned ? 'Unpin' : 'Pin', 'p', I.pin) + btn('to_notes', 'To notes', 't', I.notes)) +
       group(btn('mute', 'Mute', 'm', I.mute) + btn('block', 'Block sender', 'b', I.block) + btn('mark_unread', 'Mark unread', 'u', I.unread)) +
       group(btn('reply', 'Reply', 'r', I.reply) + btn('all', 'Reply all', 'a', I.all) + btn('forward', 'Forward', 'f', I.forward)) +
-      (ai ? group(btn('summarise', 'Summarise with AI', 's', I.spark) + btn('extract', 'Extract tasks with AI', '', I.tasks)) : '') +
+      (S.ai ? group(btn('summarise', 'Summarise with AI', 's', I.spark) + btn('extract', 'Extract tasks with AI', '', I.tasks)) : '') +
       (row.class === 'other' ? '<button class="pill" type="button" data-act="important">Move sender to Important</button>' : '') +
       (row.class === 'important' ? '<button class="pill" type="button" data-act="other" title="Later mail from this sender goes to Other">Move sender to Other</button>' : '') +
       '</div></div>';
-    if (row.summary) html += '<div class="summary" id="t-line"><span style="color:var(--accent)">✦</span> ' + esc(row.summary) + '</div>';
-    html += '<div id="t-summary" hidden></div>';
-    const last = t.messages.length - 1;
-    t.messages.forEach(function(m, i) {
-      const open = i === last || !m.seen || t.open && t.open.has(i);
-      const who = m.from.name ? '<b>' + esc(m.from.name) + '</b> <span class="addr">' + esc(m.from.addr) + '</span>' : '<b>' + esc(m.from.addr) + '</b>';
-      if (!open) {
-        const snip = (m.text || '').replace(/\s+/g, ' ').slice(0, 120);
-        html += '<div class="msg collapsed" data-open="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who"><b>' + esc(m.from.name || m.from.addr) + '</b>' +
-          ' <span class="snip">— ' + esc(snip) + '</span></span><span class="time">' + esc(fmtTime(m.date)) + '</span></div></div>';
-        return;
-      }
-      const recipients = m.to.concat(m.cc).map(function(a) { return a.addr === t.me ? 'me' : (a.name || a.addr); }).join(', ');
-      html += '<div class="msg" data-i="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who">' + who + '</span><span class="time">' + esc(fmtTime(m.date, true)) + '</span></div>' +
-        (recipients ? '<div class="msg-to">to ' + esc(recipients) + '</div>' : '');
-      if (m.html && REMOTE.test(m.html) && !imagesOn(t, m, i)) {
-        html += '<div class="images-bar"><span>Remote images are hidden.</span><button class="pill" type="button" data-images="once" data-i="' + i + '">Show</button>' +
-          '<button class="pill" type="button" data-images="always" data-i="' + i + '">Always from ' + esc(m.from.name || m.from.addr) + '</button></div>';
-      }
-      // No scripts in the frame; mail_patch.rs handles its links, keys and
-      // swipes. allow-popups lets target=_blank links reach it.
-      html += '<div class="msg-body">' + (m.html ? '<iframe class="mail" sandbox="allow-same-origin allow-popups" data-i="' + i + '" title="Message"></iframe>' :
-        '<div class="msg-text">' + textHtml(m.text || (m.body_loaded ? '' : 'Loading…')) + '</div>') + '</div>';
-      if (hasQuote(m)) html += '<button class="pill quote-toggle" type="button" data-quotes="' + i + '">Show quoted text</button>';
-      if (m.attachments && m.attachments.length) {
-        html += '<div class="attachments">' + m.attachments.map(function(a, j) {
-          const ft = fileType(a);
-          return '<button class="att" type="button" data-att="' + i + ':' + j + '" title="Preview ' + esc(a.name) + '"><span class="ft ' + ft.cls + '">' + esc(ft.label) + '</span>' +
-            '<span><span class="nm">' + esc(a.name) + '</span><span class="size">' + fmtSize(a.size) + '</span></span></button>';
-        }).join('') + '</div>';
-      }
-      html += '</div>';
-    });
+  }
+  function messageHtml(t, m, i) {
+    const open = i === t.messages.length - 1 || t.open.has(i);
+    if (!open) {
+      const snip = (m.text || '').replace(/\s+/g, ' ').slice(0, 120);
+      return '<div class="msg collapsed" data-i="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who"><b>' + esc(m.from.name || m.from.addr) + '</b>' +
+        ' <span class="snip">— ' + esc(snip) + '</span></span><span class="time">' + esc(fmtTime(m.date)) + '</span></div></div>';
+    }
+    const who = m.from.name ? '<b>' + esc(m.from.name) + '</b> <span class="addr">' + esc(m.from.addr) + '</span>' : '<b>' + esc(m.from.addr) + '</b>';
+    const recipients = m.to.concat(m.cc).map(function(a) { return a.addr === t.me ? 'me' : (a.name || a.addr); }).join(', ');
+    let html = '<div class="msg" data-i="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who">' + who + '</span><span class="time">' + esc(fmtTime(m.date, true)) + '</span></div>' +
+      (recipients ? '<div class="msg-to">to ' + esc(recipients) + '</div>' : '');
+    if (m.html && REMOTE.test(m.html) && !imagesOn(t, m, i)) {
+      html += '<div class="images-bar"><span>Remote images are hidden.</span><button class="pill" type="button" data-images="once" data-i="' + i + '">Show</button>' +
+        '<button class="pill" type="button" data-images="always" data-i="' + i + '">Always from ' + esc(m.from.name || m.from.addr) + '</button></div>';
+    }
+    // No scripts in the frame; mail_patch.rs handles its links, keys and
+    // swipes. allow-popups lets target=_blank links reach it.
+    html += '<div class="msg-body">' + (m.html ? '<iframe class="mail" sandbox="allow-same-origin allow-popups" data-i="' + i + '" title="Message"></iframe>' :
+      '<div class="msg-text">' + textHtml(m.text || (m.body_loaded ? '' : 'Loading…')) + '</div>') + '</div>';
+    if (hasQuote(m)) html += '<button class="pill quote-toggle" type="button" data-quotes="' + i + '">Show quoted text</button>';
+    if (m.attachments && m.attachments.length) {
+      html += '<div class="attachments">' + m.attachments.map(function(a, j) {
+        const ft = fileType(a);
+        return '<button class="att" type="button" data-att="' + i + ':' + j + '" title="Preview ' + esc(a.name) + '"><span class="ft ' + ft.cls + '">' + esc(ft.label) + '</span>' +
+          '<span><span class="nm">' + esc(a.name) + '</span><span class="size">' + fmtSize(a.size) + '</span></span></button>';
+      }).join('') + '</div>';
+    }
+    return html + '</div>';
+  }
+  // What each part of the thread is drawn from: a fresh copy that draws the
+  // same is not redrawn, so its message frames do not reload.
+  function headSig(t) {
+    const r = t.row || {};
+    return [t.messages[0].subject, r.pinned, r.class, r.summary, S.ai].join('\u0001');
+  }
+  function bodySig(t) {
+    return (t.images || []).slice().sort().join(',') + '\u0001' + t.messages.map(function(m) {
+      return [m.id, m.body_loaded, (m.html || '').length, (m.text || '').length, (m.attachments || []).length].join(':');
+    }).join('|');
+  }
+
+  function renderThread() {
+    const t = S.thread;
+    if (!t || !t.messages) return;
+    const k = key(t), same = detail._k === k;
+    // Unread messages open, and stay open once read.
+    if (!t.open) t.open = new Set(t.messages.map(function(m, i) { return m.seen ? -1 : i; }).filter(function(i) { return i >= 0; }));
+    // Redrawn in place it keeps its scroll and its frames' heights; another
+    // conversation starts at the top.
+    const top = same ? detail.scrollTop : 0;
+    const heights = {};
+    if (same) detail.querySelectorAll('iframe.mail').forEach(function(f) { heights[f.dataset.i] = f.style.height; });
+    detail.dataset.enter = same ? (detail._pending ? 'fill' : '') : S.enter;
+    S.enter = '';
+    const row = t.row || {};
+    let html = threadHead(t.messages[0].subject || '(no subject)', row) +
+      '<div class="summary" id="t-line"' + (row.summary ? '' : ' hidden') + '><span style="color:var(--accent)">✦</span> <span class="tl-text">' + esc(row.summary || '') + '</span></div>' +
+      '<div id="t-summary" hidden></div>';
+    t.messages.forEach(function(m, i) { html += messageHtml(t, m, i); });
     html += '<div id="reply-slot"></div>';
     detail.innerHTML = html;
+    detail._k = k;
+    detail._pending = false;
+    t.headSig = headSig(t);
+    t.bodySig = bodySig(t);
     renderSummary();
     syncFrameFocus();
-    detail.querySelectorAll('iframe.mail').forEach(function(f) {
+    wireMessages(detail, heights);
+    detail.scrollTop = top;
+    if (S.composer) renderComposer();
+    prefetchAround(k);
+  }
+  // The toolbar and the inbox line alone, when only they changed.
+  function renderHead() {
+    const t = S.thread, head = detail.querySelector('.thread-head');
+    if (!t || !t.messages || !head) return;
+    const row = t.row || {};
+    detail.dataset.enter = '';
+    head.outerHTML = threadHead(t.messages[0].subject || '(no subject)', row);
+    const line = $('t-line');
+    if (line) line.querySelector('.tl-text').textContent = row.summary || '';
+    t.headSig = headSig(t);
+    renderSummary();
+  }
+  // One message redrawn, only its frame reloading: a folded one opening, or
+  // its images shown.
+  function renderMessage(i) {
+    const t = S.thread, el = detail.querySelector('.msg[data-i="' + i + '"]');
+    if (!t || !t.messages || !el) return;
+    detail.dataset.enter = '';
+    const f = el.querySelector('iframe.mail'), heights = {};
+    if (f) heights[i] = f.style.height;
+    el.insertAdjacentHTML('afterend', messageHtml(t, t.messages[i], i));
+    const fresh = el.nextElementSibling;
+    el.remove();
+    if (el.classList.contains('collapsed') && !fresh.classList.contains('collapsed')) fresh.classList.add('expand');
+    wireMessages(fresh, heights);
+  }
+  function wireMessages(root, heights) {
+    const t = S.thread;
+    root.querySelectorAll('iframe.mail').forEach(function(f) {
       const i = Number(f.dataset.i), m = t.messages[i];
+      if (heights[i]) f.style.height = heights[i];
       f.addEventListener('load', function() { wireFrame(f); });
       f.srcdoc = frameDoc(m.html, imagesOn(t, m, i));
     });
-    if (S.composer) renderComposer();
+  }
+  // A fresh copy of the open thread: only what changed is redrawn.
+  function showThread(data) {
+    const t = S.thread;
+    S.thread = Object.assign({}, data, { open: t.open, shown: t.shown, headSig: t.headSig, bodySig: t.bodySig });
+    resumeWriter();
+    const fresh = S.thread;
+    if (!t.messages || detail._k !== key(fresh) || detail._pending || bodySig(fresh) !== t.bodySig) renderThread();
+    else if (headSig(fresh) !== t.headSig) renderHead();
+    if (S.composer && S.composer.thread === fresh.thread && !$('composer')) renderComposer();
   }
 
   // AI-2: the open conversation's summary, streamed in under its toolbar.
@@ -909,7 +1177,7 @@ pub fn html(keybindings_json: &str) -> String {
     if (!slot) return;
     const mine = !!(s && t && s.account === t.account && s.thread === t.thread);
     // It says more than the inbox line, which steps aside.
-    if (line) line.hidden = mine;
+    if (line) line.hidden = mine || !(t && t.row && t.row.summary);
     slot.hidden = !mine;
     if (!mine) return;
     slot.className = 'summary thread-summary' + (s.phase === 'writing' ? ' writing' : '');
@@ -918,13 +1186,16 @@ pub fn html(keybindings_json: &str) -> String {
   }
 
   function wireFrame(f) {
+    f.classList.add('fitted');
     const doc = f.contentDocument;
-    if (!doc) return;
+    if (!doc || !doc.body) return;
     // The body's own height: the document's is at least the frame's, so it
     // would never shrink below the iframe default.
     const fit = function() { f.style.height = Math.ceil(doc.body.getBoundingClientRect().height) + 'px'; };
     fit();
-    setTimeout(fit, 300);
+    // Again whenever its content grows, as images arrive.
+    if (window.ResizeObserver) new ResizeObserver(fit).observe(doc.body);
+    else setTimeout(fit, 300);
     // READ-3: the full address shows on hover before clicking.
     doc.querySelectorAll('a[href]').forEach(function(a) { a.title = a.getAttribute('href'); });
     f._fit = fit;
@@ -1050,8 +1321,11 @@ pub fn html(keybindings_json: &str) -> String {
         closeThread();
         return;
       }
+      // Gone already: an inbox redraw meanwhile must not bring it back.
+      s.items.forEach(function(i) { S.gone.set(key(i), Date.now() + GONE_MS); });
       const fold = [s.el].concat(s.also);
       fold.forEach(function(el) { el.style.height = el.offsetHeight + 'px'; });
+      void s.el.offsetHeight;
       requestAnimationFrame(function() {
         s.track.classList.add('swipe-fold');
         fold.forEach(function(el) { el.classList.add('swipe-fold'); });
@@ -1068,16 +1342,17 @@ pub fn html(keybindings_json: &str) -> String {
     const actBtn = e.target.closest('[data-act]');
     if (actBtn) { threadAction(actBtn.dataset.act, actBtn); return; }
     const collapsed = e.target.closest('.msg.collapsed');
-    if (collapsed) { t.open = t.open || new Set(); t.open.add(Number(collapsed.dataset.open)); renderThread(); return; }
+    if (collapsed) { const i = Number(collapsed.dataset.i); t.open.add(i); renderMessage(i); return; }
     const images = e.target.closest('[data-images]');
     if (images) {
       const i = Number(images.dataset.i), m = t.messages[i];
       t.shown = t.shown || new Set(); t.shown.add(i);
       if (images.dataset.images === 'always') {
         t.images = (t.images || []).concat([m.from.addr]);
+        t.bodySig = bodySig(t);
         ipc({ type: 'images', account: t.account, thread: t.thread, sender: m.from.addr, always: true });
-      }
-      renderThread();
+        t.messages.forEach(function(x, j) { if (x.from.addr === m.from.addr) renderMessage(j); });
+      } else renderMessage(i);
       return;
     }
     const q = e.target.closest('[data-quotes]');
@@ -1264,9 +1539,11 @@ pub fn html(keybindings_json: &str) -> String {
     if (d.thread && (!S.thread || S.thread.thread !== d.thread)) {
       openThread(d.account, d.thread, false);
       S.composer = d;
+      // Opened from what was kept: the thread is there to reply under.
+      if (S.thread.messages) renderComposer();
       return;
     }
-    if (!d.thread) { S.thread = null; panel.classList.add('detail'); detail.innerHTML = ''; }
+    if (!d.thread) { S.thread = null; panel.classList.add('detail'); detail.innerHTML = ''; detail._k = null; detail.dataset.enter = ''; markOpen(null); }
     renderComposer();
   }
   function renderComposer() {
@@ -1284,7 +1561,9 @@ pub fn html(keybindings_json: &str) -> String {
     // The button's light sweeps once per composer, not on every redraw.
     const intro = canWrite(d) && !d._writeSeen;
     if (intro) d._writeSeen = true;
-    slot.innerHTML = '<div class="composer' + (d.thread ? '' : ' standalone') + '" id="composer">' +
+    // It rises in when it opens, not on every redraw.
+    const enter = !slot.querySelector('#composer');
+    slot.innerHTML = '<div class="composer' + (d.thread ? '' : ' standalone') + (enter ? ' enter' : '') + '" id="composer">' +
       '<div class="title">' + esc(title) + (d._saved ? '<span class="draft">Draft saved</span>' : '') + '</div>' +
       '<div class="field"><label>From</label><select id="c-from">' + from + '</select></div>' +
       '<div class="field"><label>To</label><input id="c-to" value="' + esc(d.to) + '" placeholder="name@example.com, …" autocomplete="off" spellcheck="false">' +
@@ -1361,7 +1640,7 @@ pub fn html(keybindings_json: &str) -> String {
       const focusField = !d.to ? 'c-to' : 'c-body';
       setTimeout(function() { const el = $(focusField); if (el && document.activeElement.tagName !== 'INPUT') el.focus(); }, 0);
     }
-    if (d.thread) box.scrollIntoView({ block: 'nearest' });
+    if (d.thread) box.scrollIntoView({ block: 'nearest', behavior: enter && !REDUCED.matches ? 'smooth' : 'auto' });
   }
 
   // The body grows with its text; the thread scrolls, not the textarea.
@@ -1532,7 +1811,7 @@ pub fn html(keybindings_json: &str) -> String {
     clearTimeout(draftTimer);
     ipc({ type: 'delete_draft', key: d.key });
     S.drafts = S.drafts.filter(function(x) { return x.key !== d.key; });
-    if (S.thread) S.thread.draft = null;
+    if (S.thread) { S.thread.draft = null; const kept = threads.get(key(S.thread)); if (kept) kept.draft = null; }
     closeComposer();
     render();
   }
@@ -1636,13 +1915,17 @@ pub fn html(keybindings_json: &str) -> String {
     while (j >= 0 && j < S.rows.length && !S.rows[j].thread) j += step;
     if (j < 0 || j >= S.rows.length) return;
     S.focus = j;
-    openThread(S.rows[j].thread.account, S.rows[j].thread.thread, false);
+    openThread(S.rows[j].thread.account, S.rows[j].thread.thread, false, step > 0 ? 'next' : 'prev');
   }
   // Reply in the open thread, or open the focused one and reply there.
   function replyTo(mode) {
     if (S.thread && panel.classList.contains('detail')) { reply(mode); return; }
     const r = S.rows[S.focus];
-    if (r && r.thread) { S._pendingReply = mode; openThread(r.thread.account, r.thread.thread, false); }
+    if (r && r.thread) {
+      openThread(r.thread.account, r.thread.thread, false);
+      // Kept from before, it can be replied to at once.
+      if (S.thread.messages) reply(mode); else S._pendingReply = mode;
+    }
   }
 
   function renderHelp() {
@@ -1740,7 +2023,8 @@ pub fn html(keybindings_json: &str) -> String {
     refreshTimer = setTimeout(function() {
       if (S.mode === 'search') ipc({ type: 'search', query: S.query });
       else ipc({ type: 'inbox' });
-      if (S.thread && !S.thread.loading && !S.composer) ipc({ type: 'thread', account: S.thread.account, thread: S.thread.thread });
+      // A redraw, not an open: a thread marked unread stays unread.
+      if (S.thread && !S.thread.loading && !S.composer) ipc({ type: 'thread', account: S.thread.account, thread: S.thread.thread, peek: true });
     }, 150);
   }
 
@@ -1758,7 +2042,8 @@ pub fn html(keybindings_json: &str) -> String {
       if (switched) {
         closePreview();
         S.view = null; S.thread = null; S.composer = null; cancelDraft(); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
-        panel.classList.remove('detail'); detail.innerHTML = ''; search.value = '';
+        S.gone.clear(); threads.clear(); asked.clear();
+        panel.classList.remove('detail'); detail.innerHTML = ''; detail._k = null; search.value = '';
       } else if (images) renderThread();
       renderBanner();
       render();
@@ -1772,19 +2057,26 @@ pub fn html(keybindings_json: &str) -> String {
     },
     inbox: function(data) {
       S.view = data.view; S.scheduled = data.scheduled || []; S.drafts = data.drafts || [];
-      if (S.mode === 'inbox') render();
+      pruneGone();
+      if (S.mode !== 'inbox') return;
+      render();
+      // The row in focus loads ahead, to open at once.
+      const r = S.rows[S.focus];
+      if (!S.thread && r && r.thread) prefetchSoon(r.thread);
     },
     search: function(data) {
       if (S.mode !== 'search' || data.query !== S.query) return;
-      S.hits = data.hits; render();
+      S.hits = data.hits;
+      pruneGone();
+      render();
     },
+    // A conversation, opened or loaded ahead (`peek`).
     thread: function(data) {
+      remember(data);
       const t = S.thread;
       if (!t || t.account !== data.account || t.thread !== data.thread) return;
-      const keep = { open: t.open, shown: t.shown };
-      S.thread = Object.assign(data, keep);
-      resumeWriter();
-      renderThread();
+      showThread(data);
+      if (data.peek) return;
       if (S._pendingReply) { const m = S._pendingReply; S._pendingReply = null; reply(m); }
       else if (data.draft && !S.composer) { S.composer = Object.assign({}, data.draft); renderComposer(); }
     },
