@@ -185,9 +185,10 @@ are joined by links, not merged into one list.
   come back to the inbox since; unticking shall return the conversation to
   the inbox. Marking the conversation Done shall not tick the task — the task
   may be more than the email.
-- **TRI-11** A two-finger swipe right on a conversation in the list, on a
-  sender group (all its conversations), or on the open thread, shall mark it
-  Done.
+- **TRI-11** A two-finger swipe right on a conversation in the list, or on a
+  sender group (all its conversations), shall mark it Done. On the open
+  thread the same swipe shall go back to the list, like its back button —
+  swipe actions belong to list rows, as in Apple Mail.
 
 ## Reading
 

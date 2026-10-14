@@ -19,8 +19,8 @@
 //!   page's handler; `frame_key` turns it into a `window.__mail.key` call.
 //! - **Swipe.** A scroll-wheel monitor follows two-finger gestures by phase.
 //!   It owns the gesture — when it arms, the trackpad tick as it does, and
-//!   whether the release marks Done — while the page only draws the row or
-//!   thread under it following the fingers.
+//!   whether the release commits — while the page draws it and decides what
+//!   committing means there: Done on a row, back on the open thread.
 
 use std::cell::{OnceCell, RefCell};
 use std::ffi::CStr;

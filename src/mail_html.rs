@@ -144,6 +144,12 @@ pub fn html(keybindings_json: &str) -> String {
   /* A row's rounded corners: the track runs on under it. */
   .swipe-track.under { --swipe-under: 12px; --swipe-radius: 10px; }
   .swipe-track.swipe-armed { --swipe-fill: var(--ok); --swipe-check: 18px; }
+  /* On the open thread the same swipe means back: a neutral track, a chevron. */
+  .swipe-track.back {
+    --swipe-fill: var(--fill);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M8.5 3L4.5 7l4 4' fill='none' stroke='%238e8e93' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  .swipe-track.back.swipe-armed { --swipe-fill: var(--fill-hover); }
   .swiping.swipe-back { transition: --swipe 0.32s var(--spring); }
   .swipe-track.swipe-back { transition: --swipe 0.32s var(--spring), --swipe-fill var(--t-fast) var(--ease), background-size var(--t-pop) var(--spring); }
   .swiping.swipe-out { transition: --swipe 0.2s var(--ease); }
@@ -901,10 +907,10 @@ pub fn html(keybindings_json: &str) -> String {
   window.addEventListener('focus', syncFrameFocus);
   document.addEventListener('focusin', syncFrameFocus);
 
-  // ── Swipe right for Done (TRI-11) ───────────────────────────────────────
+  // ── Swipe right (TRI-11): Done on a row or group, back on the open thread ──
   // mail_patch.rs owns the gesture (travel, when it arms, whether the release
-  // marks Done); this draws it on the row or thread it began on. Timers, not
-  // transitionend: with reduced motion there are no transitions to end.
+  // commits); this draws it on what it began on. Timers, not transitionend:
+  // with reduced motion there are no transitions to end.
   const SWIPE_BACK_MS = 320, SWIPE_OUT_MS = 200, SWIPE_FOLD_MS = 180;
   let swipe = null;
   function swipeAt(x, y) {
@@ -923,7 +929,8 @@ pub fn html(keybindings_json: &str) -> String {
       });
       return { el: row, also: also, items: r.group.threads.map(function(t) { return { account: t.account, thread: t.thread }; }) };
     }
-    if (S.thread && detail.contains(el)) return { el: detail, also: [], items: [{ account: S.thread.account, thread: S.thread.thread }] };
+    // The open thread swipes back to the list, like its back button.
+    if (S.thread && detail.contains(el)) return { el: detail, also: [], back: true };
     return null;
   }
   function onSwipe(phase, a, b) {
@@ -956,7 +963,7 @@ pub fn html(keybindings_json: &str) -> String {
     const r = el.getBoundingClientRect(), clip = (el === detail ? detail : list).getBoundingClientRect();
     const top = Math.max(r.top, clip.top), bottom = Math.min(r.bottom, clip.bottom);
     const track = document.createElement('div');
-    track.className = 'swipe-track' + (el === detail ? '' : ' under');
+    track.className = 'swipe-track' + (s.back ? ' back' : ' under');
     track.style.left = (r.left - travel) + 'px';
     track.style.top = top + 'px';
     track.style.height = Math.max(0, bottom - top) + 'px';
@@ -992,17 +999,18 @@ pub fn html(keybindings_json: &str) -> String {
       if (s.el._track === s.track) endSwipe(s);
     }, SWIPE_BACK_MS);
   }
-  // The element leaves to the right; a row then folds away, its track with
-  // it, so the rows below glide up before the list redraws without it.
+  // The element leaves to the right. The thread is then closed; a row folds
+  // away, its track with it, so the rows below glide up before the list
+  // redraws without it.
   function swipeOut(s) {
     swipeClass(s, 'add', ['swipe-out']);
     s.also.forEach(function(el) { el.classList.add('swipe-out'); });
     s.track.classList.add('swipe-armed');
     setSwipe(s, s.el.clientWidth);
     setTimeout(function() {
-      if (s.el === detail) {
+      if (s.back) {
         endSwipe(s);
-        act('done', s.items);
+        closeThread();
         return;
       }
       const fold = [s.el].concat(s.also);
