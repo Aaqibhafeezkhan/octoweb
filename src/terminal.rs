@@ -188,7 +188,7 @@ impl Terminals {
         if let Some(shell) = self.shells.get(&id) {
             let stale = {
                 let mut pipe = shell.stream.pipe.lock().unwrap();
-                pipe.bytes = pipe.history.iter().copied().collect();
+                pipe.bytes = without_queries(&pipe.history.iter().copied().collect::<Vec<u8>>());
                 pipe.read.take()
             };
             shell.stream.drained.notify_all();
@@ -377,7 +377,8 @@ fn remember(history: &mut VecDeque<u8>, bytes: &[u8]) {
 /// A saved pane's output to replay above its new shell. A program that was
 /// still on the alternate screen (vim, less) is left, so the new prompt
 /// comes up under the scrollback.
-fn restored_replay(mut history: Vec<u8>) -> Vec<u8> {
+fn restored_replay(history: Vec<u8>) -> Vec<u8> {
+    let mut history = without_queries(&history);
     let last = |seq: &[u8]| history.windows(seq.len()).rposition(|w| w == seq);
     let on_alternate_screen = last(b"\x1b[?1049h") > last(b"\x1b[?1049l");
     if on_alternate_screen {
@@ -385,6 +386,75 @@ fn restored_replay(mut history: Vec<u8>) -> Vec<u8> {
     }
     history.extend_from_slice(RESTORED_MARK.as_bytes());
     history
+}
+
+/// Output to show again, with the terminal's questions taken out. A program
+/// asks for the terminal's colours, kind or cursor by printing a query, and the
+/// terminal types the answer back as input. Replayed, an old question would be
+/// answered into whatever reads the terminal now — a new shell's prompt then
+/// shows `10;rgb:…;2c`. Live output keeps its queries: only replays drop them.
+fn without_queries(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            if let Some(len) = query_len(&bytes[i..]) {
+                i += len;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Length of the reply-requesting sequence `s` starts with, if it is one.
+fn query_len(s: &[u8]) -> Option<usize> {
+    match *s.get(1)? {
+        // CSI: parameters 0x30–0x3F, intermediates 0x20–0x2F, then the final byte.
+        b'[' => {
+            let in_range = |lo: u8, hi: u8| move |b: &&u8| (lo..=hi).contains(*b);
+            let params_end = 2 + s[2..].iter().take_while(in_range(0x30, 0x3f)).count();
+            let inter_end = params_end
+                + s[params_end..]
+                    .iter()
+                    .take_while(in_range(0x20, 0x2f))
+                    .count();
+            let params = &s[2..params_end];
+            let query = match (*s.get(inter_end)?, &s[params_end..inter_end]) {
+                // Device attributes: primary, secondary, tertiary.
+                (b'c', b"") => matches!(params, b"" | b"0" | b">" | b">0" | b"=" | b"=0"),
+                // Status and cursor position reports.
+                (b'n', b"") => matches!(params, b"5" | b"6" | b"?6"),
+                // Mode report (DECRQM).
+                (b'p', b"$") => true,
+                // Terminal name and version (XTVERSION).
+                (b'q', b"") => matches!(params, b">" | b">0"),
+                _ => false,
+            };
+            query.then_some(inter_end + 1)
+        }
+        // OSC up to BEL or ST: a palette (4) or dynamic colour (10–19) asked for with `?`.
+        b']' => {
+            let body_end = 2 + s[2..].iter().position(|&b| b == 0x07 || b == 0x1b)?;
+            let end = match s[body_end] {
+                0x07 => body_end + 1,
+                _ if s.get(body_end + 1) == Some(&b'\\') => body_end + 2,
+                _ => return None,
+            };
+            let body = &s[2..body_end];
+            let number = body.split(|&b| b == b';').next()?;
+            let colour = number == b"4" || matches!(number, [b'1', d] if d.is_ascii_digit());
+            (colour && body.ends_with(b";?")).then_some(end)
+        }
+        // DCS up to ST: setting (DECRQSS) and capability (XTGETTCAP) requests.
+        b'P' if s[2..].starts_with(b"$q") || s[2..].starts_with(b"+q") => {
+            let st = s[2..].windows(2).position(|w| w == b"\x1b\\")?;
+            Some(2 + st + 2)
+        }
+        _ => None,
+    }
 }
 
 /// Move a shell's output into its stream until the shell and everything it
@@ -726,6 +796,50 @@ mod tests {
                 RESTORED_MARK.as_bytes()
             ]
             .concat()
+        );
+    }
+
+    #[test]
+    fn replays_drop_the_terminal_queries_programs_printed() {
+        // As `git diff` (through delta) left it in a saved pane: title, icon
+        // name, then the foreground and background colour queries.
+        let saved = b"diff\x1b]2;git diff\x07\x1b]1;git\x07\x1b]10;?\x07\x1b]11;?\x07\x1b[c\x1b=\r";
+        assert_eq!(
+            without_queries(saved),
+            b"diff\x1b]2;git diff\x07\x1b]1;git\x07\x1b=\r"
+        );
+
+        let queries: [&[u8]; 12] = [
+            b"\x1b[c",
+            b"\x1b[0c",
+            b"\x1b[>c",
+            b"\x1b[=0c",
+            b"\x1b[5n",
+            b"\x1b[6n",
+            b"\x1b[?2026$p",
+            b"\x1b[>q",
+            b"\x1b]11;?\x1b\\",
+            b"\x1b]4;1;?\x07",
+            b"\x1bP$qm\x1b\\",
+            b"\x1bP+q544e\x1b\\",
+        ];
+        for q in queries {
+            assert_eq!(without_queries(&[b"a", q, b"b"].concat()), b"ab", "{q:?}");
+        }
+
+        // Everything that only draws stays: colours, cursor moves, titles, and
+        // setting (not asking for) a colour.
+        let output =
+            b"\x1b[31mred\x1b[0m\x1b[2;5H\x1b[?1049h\x1b]2;title\x07\x1b]11;#ffffff\x07\x1b[?1;2c";
+        assert_eq!(without_queries(output), output);
+    }
+
+    #[test]
+    fn restored_replay_drops_queries_too() {
+        let replay = restored_replay(b"$ git diff\x1b]10;?\x07\x1b]11;?\x07\x1b[c\r\n$ ".to_vec());
+        assert_eq!(
+            replay,
+            [&b"$ git diff\r\n$ "[..], RESTORED_MARK.as_bytes()].concat()
         );
     }
 
