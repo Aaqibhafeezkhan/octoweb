@@ -158,14 +158,15 @@ enum AppEvent {
     // An MCP action navigated tab `.0`: answer `.1` once the destination has
     // settled, as `<.2 verb> → page navigated to …`.
     McpSettleNav(usize, McpReply, String),
-    Reload(bool),              // (hard) ⌘R / ⌘⇧R — hard skips the HTTP cache
-    Back,                      // ⌘[ — history back in the focused tab
-    Forward,                   // ⌘] — history forward in the focused tab
-    NewTab,                    // ⌘N — open the home page in a new foreground tab
-    ReopenTab,                 // ⌘⇧T — reopen the last tab closed in this workspace
-    FollowLink,                // ⌘⇧F — toggle the keyboard link-hint overlay
-    StopLoad,                  // ⌘. — stop the current load
-    MediaPlaying(usize, bool), // (tab_id, is_playing) — audio/video state changed
+    Reload(bool),                      // (hard) ⌘R / ⌘⇧R — hard skips the HTTP cache
+    Back,                              // ⌘[ — history back in the focused tab
+    Forward,                           // ⌘] — history forward in the focused tab
+    NewTab,                            // ⌘N — open the home page in a new foreground tab
+    ReopenTab,                         // ⌘⇧T — reopen the last tab closed in this workspace
+    FollowLink,                        // ⌘⇧F — toggle the keyboard link-hint overlay
+    StopLoad,                          // ⌘. — stop the current load
+    MediaPlaying(usize, String, bool), // (tab_id, frame, is_playing) — one frame's audio/video state changed
+    MediaReset(usize),                 // (tab_id) — top document replaced, no frame plays
     PageInfo(usize, u64, u64), // (tab_id, bytes, ms) — page load stats from PerformanceNavigationTiming
     RemoveHistory(String),     // URL to remove from history
     QuickSlotOpen(usize),      // ⌘1–⌘0 — open saved URL in slot 0–9
@@ -997,6 +998,9 @@ fn main() {
                 // Single merged script: page stats + favicon + URL tracking +
                 // media tracking + find-in-page. One JSC compile pass instead of five.
                 .with_initialization_script(webview_utils::COMBINED_SCRIPT)
+                // Embedded players (YouTube in Google results) play inside
+                // iframes that the main-frame-only script never sees.
+                .with_initialization_script_for_main_only(webview_utils::SUBFRAME_MEDIA_SCRIPT, false)
                 // Intercept navigation to external URL schemes (tg://, figma://, mailto:, etc.)
                 // and hand them off to macOS instead of loading them in the WebView.
                 .with_navigation_handler(|nav_url: String| {
@@ -1070,11 +1074,13 @@ fn main() {
                                     ));
                                 }
                             }
-                            Some("media:playing") => {
-                                let _ = p3.send_event(AppEvent::MediaPlaying(tab_id, true));
+                            Some(t @ ("media:playing" | "media:paused")) => {
+                                // Only subframes tag their reports; the top document is "top".
+                                let frame = v["frame"].as_str().unwrap_or("top").to_string();
+                                let _ = p3.send_event(AppEvent::MediaPlaying(tab_id, frame, t == "media:playing"));
                             }
-                            Some("media:paused") => {
-                                let _ = p3.send_event(AppEvent::MediaPlaying(tab_id, false));
+                            Some("media:reset") => {
+                                let _ = p3.send_event(AppEvent::MediaReset(tab_id));
                             }
                             Some("quickslot_open") => {
                                 if let Some(slot) = v["slot"].as_u64() {
@@ -11278,15 +11284,21 @@ fn main() {
             }
 
             // ── Media playing state changed ───────────────────────────────────
-            Event::UserEvent(AppEvent::MediaPlaying(tab_id, is_playing)) => {
-                if let Some(i) = workspace_manager.index_of_tab(tab_id) {
-                    workspace_manager.at(i).tabs.lock().unwrap().set_playing_audio(tab_id, is_playing);
-                }
-                if is_playing {
+            Event::UserEvent(AppEvent::MediaPlaying(tab_id, frame, is_playing)) => {
+                let tab_playing = workspace_manager.index_of_tab(tab_id).is_some_and(|i| {
+                    workspace_manager.at(i).tabs.lock().unwrap().set_frame_playing(tab_id, &frame, is_playing)
+                });
+                if tab_playing {
                     media_playing_tabs.insert(tab_id);
                 } else {
                     media_playing_tabs.remove(&tab_id);
                 }
+            }
+            Event::UserEvent(AppEvent::MediaReset(tab_id)) => {
+                if let Some(i) = workspace_manager.index_of_tab(tab_id) {
+                    workspace_manager.at(i).tabs.lock().unwrap().clear_playing(tab_id);
+                }
+                media_playing_tabs.remove(&tab_id);
             }
 
             // ── Page info (size + load time) from injected script ─────────────
@@ -13713,6 +13725,10 @@ mod chrome_js_syntax_tests {
         // capture, network capture, snapshots or navigate's readiness probe —
         // and the failure surfaces as a confusing MCP error, not a build break.
         assert_parses("combined_script", crate::webview_utils::COMBINED_SCRIPT);
+        assert_parses(
+            "subframe_media_script",
+            crate::webview_utils::SUBFRAME_MEDIA_SCRIPT,
+        );
         {
             use crate::link_hints_js::{script, Mode};
             for mode in [Mode::Once, Mode::On, Mode::Restore, Mode::Off] {

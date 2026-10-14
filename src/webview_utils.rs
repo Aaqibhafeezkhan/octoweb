@@ -464,11 +464,11 @@ pub const COMBINED_SCRIPT: &str = r#"
     }
 
     // A fresh document plays nothing. Rust only clears the tab's playing flag
-    // when it receives 'media:paused', and a navigation/reload reinjects this
-    // script with no event to send — so say it explicitly, or the previous
-    // page's flag sticks forever. Main frame only: a subframe load must not
-    // clear state the top document owns.
-    if (window.top === window) { _ipc({ type: 'media:paused' }); }
+    // when told to, and a navigation/reload reinjects this script with no
+    // event to send — so say it explicitly, or the previous page's flag sticks
+    // forever. Reset, not paused: the old page's iframes (tracked by
+    // SUBFRAME_MEDIA_SCRIPT) went away with it.
+    if (window.top === window) { _ipc({ type: 'media:reset' }); }
   }());
 
   // ── Autoplay blocking — strip autoplay + defer preload on media elements ──
@@ -893,6 +893,68 @@ pub const COMBINED_SCRIPT: &str = r#"
     _ipc({ type: 'open_new_tab', url: href });
   }, true);
 
+}());
+"#;
+
+/// Audio/video playback tracking for subframes, injected into every frame.
+///
+/// `COMBINED_SCRIPT` runs in the main frame only, so a player embedded in an
+/// iframe (YouTube in Google results, embeds in articles) never reached it
+/// and the tab never showed as playing. Each iframe document reports under
+/// its own random id; Rust counts the tab as playing while any frame does.
+/// Element events only: no natives are patched, so nothing here needs the
+/// `_mask` toString cover that captcha iframes would otherwise fingerprint.
+pub const SUBFRAME_MEDIA_SCRIPT: &str = r#"
+(function () {
+  'use strict';
+  if (window.top === window) return; // the top document is COMBINED_SCRIPT's
+  var handlers = window.webkit && window.webkit.messageHandlers;
+  if (!handlers || !handlers.ipc) return;
+  var ipc = handlers.ipc;
+  var frame = Math.random().toString(36).slice(2);
+  var nextId = 0;
+  var playing = new Map();    // id → WeakRef<Element>
+  var elToId  = new WeakMap();
+  var lastState = false;
+  var poll = null;
+  var POLL_MS = 15000;
+
+  function report(on) {
+    ipc.postMessage(JSON.stringify({ type: on ? 'media:playing' : 'media:paused', frame: frame }));
+  }
+  function audible(el) { return !el.paused && !el.ended && !el.muted && el.volume > 0; }
+  function sendState() {
+    playing.forEach(function (ref, id) {
+      var el = ref.deref();
+      if (!el || !audible(el)) playing.delete(id);
+    });
+    var nowPlaying = playing.size > 0;
+    if (nowPlaying !== lastState) {
+      lastState = nowPlaying;
+      report(nowPlaying);
+      if (nowPlaying) { poll = setInterval(sendState, POLL_MS); }
+      else { clearInterval(poll); poll = null; }
+    }
+  }
+  function sync(el) {
+    var t = el && el.tagName;
+    if (t !== 'VIDEO' && t !== 'AUDIO') return;
+    var id = elToId.get(el);
+    if (audible(el)) {
+      if (id === undefined) { id = nextId++; elToId.set(el, id); }
+      playing.set(id, new WeakRef(el));
+    } else if (id !== undefined) {
+      playing.delete(id);
+    }
+    sendState();
+  }
+  ['play', 'playing', 'pause', 'ended', 'emptied', 'volumechange'].forEach(function (t) {
+    document.addEventListener(t, function (e) { sync(e.target); }, true);
+  });
+  // An iframe removed or navigated mid-playback never fires `pause`.
+  window.addEventListener('pagehide', function () {
+    if (lastState) { lastState = false; report(false); }
+  });
 }());
 "#;
 

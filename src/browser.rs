@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -52,6 +52,10 @@ pub struct TabManager {
     active_id: Option<usize>,
     history: VecDeque<HistoryEntry>,
     max_history: usize,
+    /// Frames currently playing audible media, per tab. A tab plays while any
+    /// of its frames does — an embedded player (YouTube in Google results)
+    /// reports from its own iframe, separately from the top document.
+    playing_frames: HashMap<usize, HashSet<String>>,
 }
 
 impl TabManager {
@@ -61,6 +65,7 @@ impl TabManager {
             active_id: None,
             history: VecDeque::new(),
             max_history,
+            playing_frames: HashMap::new(),
         }
     }
 
@@ -163,6 +168,7 @@ impl TabManager {
     pub fn close(&mut self, id: usize) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == id) {
             self.tabs.remove(pos);
+            self.playing_frames.remove(&id);
             if self.active_id == Some(id) {
                 self.active_id = None;
             }
@@ -283,10 +289,28 @@ impl TabManager {
         &self.tabs
     }
 
-    /// Set the audio playback state for a tab.
-    pub fn set_playing_audio(&mut self, id: usize, playing: bool) {
+    /// Record one frame's audio playback state; returns whether the tab as a
+    /// whole is now playing.
+    pub fn set_frame_playing(&mut self, id: usize, frame: &str, playing: bool) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        let frames = self.playing_frames.entry(id).or_default();
+        if playing {
+            frames.insert(frame.to_string());
+        } else {
+            frames.remove(frame);
+        }
+        tab.is_playing_audio = !frames.is_empty();
+        tab.is_playing_audio
+    }
+
+    /// Forget every frame's playback state — the top document was replaced,
+    /// taking its subframes with it.
+    pub fn clear_playing(&mut self, id: usize) {
+        self.playing_frames.remove(&id);
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) {
-            tab.is_playing_audio = playing;
+            tab.is_playing_audio = false;
         }
     }
 
