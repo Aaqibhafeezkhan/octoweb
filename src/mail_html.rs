@@ -751,13 +751,13 @@ pub fn html(keybindings_json: &str) -> String {
   function openThread(acc, thread, fromNotes) {
     S.fromNotes = !!fromNotes;
     S.thread = { account: acc, thread: thread, loading: true };
-    S.composer = null; cancelDraft();
+    leaveComposer();
     panel.classList.add('detail');
     detail.innerHTML = '<div class="empty">Loading…</div>';
     ipc({ type: 'thread', account: acc, thread: thread });
   }
   function closeThread(keepFocus) {
-    S.thread = null; S.composer = null; cancelDraft();
+    leaveComposer(); S.thread = null;
     panel.classList.remove('detail');
     detail.innerHTML = '';
     if (S.fromNotes && !keepFocus) { S.fromNotes = false; ipc({ type: 'back_to_notes' }); return; }
@@ -1369,9 +1369,25 @@ pub fn html(keybindings_json: &str) -> String {
   function closeComposer() {
     const d = S.composer;
     S.composer = null;
-    cancelDraft();
+    // Another thread's writer keeps going in the background.
+    if (S.writer && d && S.writer.key === d.key) cancelDraft();
     if (d && d.thread) { const slot = $('reply-slot'); if (slot) slot.innerHTML = ''; }
     else if (!S.thread) { panel.classList.remove('detail'); detail.innerHTML = ''; list.focus(); }
+  }
+  // Leaving a thread keeps the reply its writer is on (AI-3): the text
+  // streams on, and the composer comes back with it when the thread opens.
+  function leaveComposer() {
+    const w = S.writer, d = S.composer;
+    S.composer = null;
+    if (w && d && w.key === d.key && (w.phase === 'writing' || w.phase === 'review')) w.draft = d;
+    else if (!w || !w.draft) cancelDraft();
+  }
+  // The composer a backgrounded writer keeps for the thread now open.
+  function resumeWriter() {
+    const w = S.writer, t = S.thread;
+    if (S.composer || !w || !w.draft || !t || w.item.account !== t.account || w.item.thread !== t.thread) return;
+    S.composer = w.draft;
+    w.draft = null;
   }
 
   // ── Writer (AI-3) ─────────────────────────────────────────────────────────
@@ -1459,9 +1475,10 @@ pub fn html(keybindings_json: &str) -> String {
   }
   function write(d, instruction, text) {
     cancelDraft();
-    S.writer = { key: d.key, phase: 'writing', text: '', request: { instruction: instruction, text: text } };
     // The conversation's account, not From: the reply belongs to the thread.
-    ipc({ type: 'ai', kind: 'draft', item: { account: S.thread.account, thread: d.thread }, text: instruction, body: text });
+    const item = { account: S.thread.account, thread: d.thread };
+    S.writer = { key: d.key, item: item, phase: 'writing', text: '', request: { instruction: instruction, text: text } };
+    ipc({ type: 'ai', kind: 'draft', item: item, text: instruction, body: text });
     renderComposer();
   }
   function closeWriter() {
@@ -1741,6 +1758,7 @@ pub fn html(keybindings_json: &str) -> String {
       if (!t || t.account !== data.account || t.thread !== data.thread) return;
       const keep = { open: t.open, shown: t.shown };
       S.thread = Object.assign(data, keep);
+      resumeWriter();
       renderThread();
       if (S._pendingReply) { const m = S._pendingReply; S._pendingReply = null; reply(m); }
       else if (data.draft && !S.composer) { S.composer = Object.assign({}, data.draft); renderComposer(); }
@@ -1790,7 +1808,9 @@ pub fn html(keybindings_json: &str) -> String {
       const w = S.writer;
       if (!w || w.key !== data.key || w.phase !== 'writing') return;
       w.text = data.text;
-      if (data.done) { w.phase = 'review'; renderComposer(); return; }
+      // Off screen it only keeps the text, for when its thread opens again.
+      const shown = S.composer && S.composer.key === w.key;
+      if (data.done) { w.phase = 'review'; if (shown) renderComposer(); return; }
       const el = $('w-draft');
       if (el) el.innerHTML = esc(data.text) + '<span class="caret"></span>';
     },
@@ -1799,7 +1819,7 @@ pub fn html(keybindings_json: &str) -> String {
       if (!w || w.key !== data.key || w.phase !== 'writing') return;
       w.phase = 'error';
       w.error = data.message;
-      renderComposer();
+      if (S.composer && S.composer.key === w.key) renderComposer();
     },
     show: function(data) { S.mode = 'show'; S.showTitle = data.title; S.showItems = data.items; S.focus = 0; closeThread(true); render(); },
     files: function(k, files) {

@@ -295,8 +295,10 @@ context already uses, so instructions inside an email are treated as data.
   conversation calls for). The reply shall stream into the body's place,
   lighter until kept; under it: **Keep** (↩), **Shorter**, **Friendlier**,
   **More formal**, **↻** and a line to ask for any other change; Esc
-  discards or stops. Keep shall put the reply in the body as one edit that
-  ⌘Z undoes. Nothing is ever sent by the AI.
+  discards or stops. Leaving the thread stops nothing: the reply keeps
+  coming, and the composer is back with it when the thread opens again.
+  Keep shall put the reply in the body as one edit that ⌘Z undoes.
+  Nothing is ever sent by the AI.
 - **AI-4** **Daily brief** — on request, or each morning where enabled — shall
   group the inbox into *Needs reply*, *Waiting on others*, *FYI* and *Can
   archive*, each item one line; the user shall be able to apply a group's
