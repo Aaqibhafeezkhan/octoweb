@@ -17,6 +17,7 @@
 //!   files(key, files), unread(n), fullscreen(on), focus()
 //!   key({key, shift}), swipe(phase, …), mailto(href) — native input (mail_patch.rs)
 //!   draftStream({key, text, done}), draftFailed({key, message}) — the reply writer (AI-3)
+//!   summaryStream({item, text, done}), summaryFailed({item, message}) — Summarise (AI-2)
 //!   window.__setShortcuts(data)
 
 pub fn html(keybindings_json: &str) -> String {
@@ -243,6 +244,9 @@ pub fn html(keybindings_json: &str) -> String {
   .ft.txt { background: #636366; }
   .quote-toggle { margin: 0 14px 12px; font-size: 11.5px; color: var(--label-2); }
   .summary { margin: 10px 12px 0; padding: 9px 12px; border-radius: var(--r-card); background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 12.5px; line-height: 1.45; }
+  .thread-summary { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .thread-summary .spark { color: var(--accent); }
+  .thread-summary.writing { color: var(--label-2); }
 
   /* Composer */
   .composer { margin: 10px 12px 16px; border-radius: var(--r-card); box-shadow: 0 0 0 0.5px var(--hairline), var(--shadow-float); background: var(--card); overflow: hidden; }
@@ -285,7 +289,7 @@ pub fn html(keybindings_json: &str) -> String {
   }
   /* Lighter while it streams, like any suggestion not yet kept. */
   .writer-draft.writing { color: var(--label-2); }
-  .writer-draft .caret {
+  .writer-draft .caret, .thread-summary .caret {
     display: inline-block; width: 7px; height: 1.1em; margin-left: 1px; vertical-align: text-bottom;
     border-radius: 2px; background: var(--accent); animation: writer-blink 1s steps(1) infinite;
   }
@@ -853,7 +857,8 @@ pub fn html(keybindings_json: &str) -> String {
       (row.class === 'other' ? '<button class="pill" type="button" data-act="important">Move sender to Important</button>' : '') +
       (row.class === 'important' ? '<button class="pill" type="button" data-act="other" title="Later mail from this sender goes to Other">Move sender to Other</button>' : '') +
       '</div></div>';
-    if (row.summary) html += '<div class="summary"><span style="color:var(--accent)">✦</span> ' + esc(row.summary) + '</div>';
+    if (row.summary) html += '<div class="summary" id="t-line"><span style="color:var(--accent)">✦</span> ' + esc(row.summary) + '</div>';
+    html += '<div id="t-summary" hidden></div>';
     const last = t.messages.length - 1;
     t.messages.forEach(function(m, i) {
       const open = i === last || !m.seen || t.open && t.open.has(i);
@@ -887,6 +892,7 @@ pub fn html(keybindings_json: &str) -> String {
     });
     html += '<div id="reply-slot"></div>';
     detail.innerHTML = html;
+    renderSummary();
     syncFrameFocus();
     detail.querySelectorAll('iframe.mail').forEach(function(f) {
       const i = Number(f.dataset.i), m = t.messages[i];
@@ -894,6 +900,21 @@ pub fn html(keybindings_json: &str) -> String {
       f.srcdoc = frameDoc(m.html, imagesOn(t, m, i));
     });
     if (S.composer) renderComposer();
+  }
+
+  // AI-2: the open conversation's summary, streamed in under its toolbar.
+  // It stays with its conversation when the user looks elsewhere.
+  function renderSummary() {
+    const slot = $('t-summary'), line = $('t-line'), s = S.tsum, t = S.thread;
+    if (!slot) return;
+    const mine = !!(s && t && s.account === t.account && s.thread === t.thread);
+    // It says more than the inbox line, which steps aside.
+    if (line) line.hidden = mine;
+    slot.hidden = !mine;
+    if (!mine) return;
+    slot.className = 'summary thread-summary' + (s.phase === 'writing' ? ' writing' : '');
+    slot.innerHTML = '<span class="spark">✦</span> ' + esc(s.phase === 'error' ? s.error : s.text || 'Summarising…') +
+      (s.phase === 'writing' ? '<span class="caret"></span>' : '');
   }
 
   function wireFrame(f) {
@@ -1199,8 +1220,12 @@ pub fn html(keybindings_json: &str) -> String {
       case 'back': closeThread(); break;
       case 'snooze': snooze(anchor); break;
       case 'reply': case 'all': case 'forward': reply(id); break;
-      case 'summarise': ipc({ type: 'ai', kind: 'summarise', item: item[0], text: '' }); showUndo('Asked the assistant', null, 2500); break;
-      case 'extract': ipc({ type: 'ai', kind: 'extract', item: item[0], text: '' }); showUndo('Asked the assistant', null, 2500); break;
+      case 'summarise':
+        S.tsum = { account: t.account, thread: t.thread, text: '', phase: 'writing' };
+        ipc({ type: 'ai', kind: 'summarise', item: item[0], text: '' });
+        renderSummary();
+        break;
+      case 'extract': ipc({ type: 'ai', kind: 'extract', item: item[0], text: '' }); showUndo('Finding tasks…', null, 2500); break;
       default: act(id, item);
     }
   }
@@ -1813,6 +1838,21 @@ pub fn html(keybindings_json: &str) -> String {
       if (data.done) { w.phase = 'review'; if (shown) renderComposer(); return; }
       const el = $('w-draft');
       if (el) el.innerHTML = esc(data.text) + '<span class="caret"></span>';
+    },
+    // The summary of conversation `item` so far (AI-2).
+    summaryStream: function(data) {
+      const s = S.tsum;
+      if (!s || s.account !== data.item.account || s.thread !== data.item.thread || s.phase !== 'writing') return;
+      s.text = data.text;
+      if (data.done) s.phase = 'done';
+      renderSummary();
+    },
+    summaryFailed: function(data) {
+      const s = S.tsum;
+      if (!s || s.account !== data.item.account || s.thread !== data.item.thread || s.phase !== 'writing') return;
+      s.phase = 'error';
+      s.error = data.message;
+      renderSummary();
     },
     draftFailed: function(data) {
       const w = S.writer;

@@ -30,6 +30,7 @@ mod mail;
 #[cfg(test)]
 mod mail_e2e;
 mod mail_html;
+mod mail_jobs;
 mod mail_oauth;
 mod mail_parse;
 mod mail_patch;
@@ -2845,20 +2846,10 @@ fn main() {
     // it (like session agents) since ControlFlow::Exit skips destructors and
     // would otherwise orphan a mid-run learning agent on every quit.
     let mut learning_pid: Option<u32> = None;
-    // Background mail summarizer (spec AI-1): `octoweb:mail-summarizer`, text
-    // in and out, and the conversations of its run, which the app saves
-    // summaries for itself.
-    let mut mail_ai_handle: Option<acp::AcpHandle> = None;
-    let mut mail_ai_pid: Option<u32> = None;
+    // One-shot mail AI (AI-1, AI-2, AI-3, AI-5): tool-less agents reading
+    // mail, and when the next background summaries run is due.
+    let mut mail_jobs = mail_jobs::Jobs::default();
     let mut mail_ai_due: Option<std::time::Instant> = None;
-    let mut mail_ai_run: Option<(Vec<String>, Vec<mail::Item>)> = None;
-    let mut mail_ai_response = String::new();
-    // The mail reply writer (AI-3): one run at a time, the composer draft key
-    // it writes for, and its response so far.
-    let mut mail_draft_handle: Option<acp::AcpHandle> = None;
-    let mut mail_draft_pid: Option<u32> = None;
-    let mut mail_draft_key: Option<String> = None;
-    let mut mail_draft_response = String::new();
     // Checked once a minute for the morning brief (AI-4).
     let mut mail_brief_check_at = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut learning_next_at: Option<std::time::Instant> = if cfg.proactive_learning {
@@ -5760,80 +5751,25 @@ fn main() {
             }
         }
 
-        // ── Mail AI: the reply writer (AI-3), streamed into the composer ──
-        let draft_events = mail_draft_handle.as_mut().map(|h| h.poll()).unwrap_or_default();
-        if !draft_events.is_empty() {
-            let mut ended: Option<Result<(), String>> = None;
-            for ev in draft_events {
-                match ev {
-                    acp::AgentEvent::ProcessPid(pid) => mail_draft_pid = Some(pid),
-                    acp::AgentEvent::Chunk(chunk) => mail_draft_response.push_str(&chunk),
-                    acp::AgentEvent::Done => ended = Some(Ok(())),
-                    acp::AgentEvent::Error(err) => ended = Some(Err(format!("The writer stopped: {err}"))),
-                    _ => {}
-                }
+        // ── Mail AI: one-shot jobs (AI-1, AI-2, AI-3, AI-5) ──
+        for progress in mail_jobs.poll() {
+            let o = mail_jobs::outcome(progress);
+            if let Some(script) = o.script {
+                let _ = mail_wv.evaluate_script(&script);
             }
-            let key = mail_draft_key.clone().unwrap_or_default();
-            let stream = |text: &str, done: bool| {
-                mail::script("draftStream", &serde_json::json!({ "key": key, "text": text, "done": done }))
-            };
-            let failed = |message: &str| {
-                mail::script("draftFailed", &serde_json::json!({ "key": key, "message": message }))
-            };
-            let call = match (&ended, mail::draft_text(&mail_draft_response)) {
-                (Some(Err(e)), _) => Some(failed(e)),
-                (Some(Ok(())), Some((text, _))) if !text.trim().is_empty() => {
-                    play_sound(&cfg, macos::Sound::DraftReady);
-                    Some(stream(text, true))
-                }
-                // No reply block: whatever it said instead (a question, a refusal) is the message.
-                (Some(Ok(())), _) => {
-                    let said: String = mail_draft_response.trim().chars().take(300).collect();
-                    Some(failed(if said.is_empty() { "The writer returned no reply." } else { &said }))
-                }
-                (None, Some((text, _))) => Some(stream(text, false)),
-                (None, None) => None,
-            };
-            if let Some(call) = call {
-                let _ = mail_wv.evaluate_script(&call);
+            if o.ready {
+                play_sound(&cfg, macos::Sound::DraftReady);
             }
-            if ended.is_some() {
-                tracing::info!(ok = matches!(ended, Some(Ok(()))), "mail writer run ended");
-                mail_draft_handle = None;
-                mail_draft_pid = None;
-                mail_draft_key = None;
-                mail_draft_response.clear();
+            if let (Some(command), Some(engine)) = (o.command, &mail_engine) {
+                engine.send(command);
+            }
+            if let Some(text) = o.toast {
+                toast!(text, "\u{2709}\u{FE0F}", "Mail");
             }
         }
-
-        // ── Mail AI: background summaries (AI-1) ──
-        if let Some(ref mut h) = mail_ai_handle {
-            for ev in h.poll() {
-                match ev {
-                    acp::AgentEvent::ProcessPid(pid) => mail_ai_pid = Some(pid),
-                    acp::AgentEvent::Chunk(chunk) => mail_ai_response.push_str(&chunk),
-                    acp::AgentEvent::Done => {
-                        if let (Some((accounts, items)), Some(engine)) = (mail_ai_run.take(), &mail_engine) {
-                            let summaries = mail::parse_summaries(&items, &mail_ai_response);
-                            tracing::info!(asked = items.len(), got = summaries.len(), "mail summaries run completed");
-                            engine.send(mail::Command::Summaries { accounts, summaries });
-                        }
-                        mail_ai_handle = None;
-                        mail_ai_pid = None;
-                        mail_ai_response.clear();
-                    }
-                    acp::AgentEvent::Error(err) => {
-                        tracing::warn!(error = %err, "mail summaries run failed");
-                        mail_ai_handle = None;
-                        mail_ai_pid = None;
-                        mail_ai_run = None;
-                        mail_ai_response.clear();
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if mail_ai_due.is_some_and(|due| std::time::Instant::now() >= due) && mail_ai_handle.is_none() {
+        if mail_ai_due.is_some_and(|due| std::time::Instant::now() >= due)
+            && !mail_jobs.running(|j| matches!(j, mail::Job::Summaries { .. }))
+        {
             mail_ai_due = None;
             if let Some(engine) = &mail_engine {
                 let accounts = mail::accounts_in(&cfg.mail_accounts, &workspace_manager.active().id);
@@ -10168,12 +10104,7 @@ fn main() {
                     }
                     mail::Pane::FrameFocus { focused } => mail_patch::set_frame_focused(focused),
                     mail::Pane::SwipeMiss => mail_patch::swipe_missed(),
-                    mail::Pane::DraftStop => {
-                        mail_draft_handle = None;
-                        mail_draft_pid = None;
-                        mail_draft_key = None;
-                        mail_draft_response.clear();
-                    }
+                    mail::Pane::DraftStop => mail_jobs.stop(|j| matches!(j, mail::Job::Draft { .. })),
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()
@@ -10242,54 +10173,32 @@ fn main() {
                     if accounts.iter().any(|a| here.contains(a)) {
                         let _ = mail_wv.evaluate_script("window.__mail && window.__mail.changed()");
                         // New mail may need summaries; wait for a quiet moment.
-                        if cfg.mail_ai && cfg.mail_ai_summaries && mail_ai_handle.is_none() {
+                        if cfg.mail_ai && cfg.mail_ai_summaries && !mail_jobs.running(|j| matches!(j, mail::Job::Summaries { .. })) {
                             mail_ai_due.get_or_insert(std::time::Instant::now() + MAIL_SUMMARY_DELAY);
                         }
                     }
                 }
-                mail::Event::Summarize { accounts, items, prompt } => {
-                    if mail_ai_handle.is_none() && cfg.mail_ai && cfg.mail_ai_summaries {
-                        // It reads mail nobody asked it to: no browser or mail
-                        // tools, so a message can't make it act.
-                        let wake = proxy.clone();
-                        mail_ai_handle = acp::AcpHandle::connect("octomind acp octoweb:mail-summarizer", None, move || {
-                            let _ = wake.send_event(AppEvent::LearningWake);
-                        })
-                        .ok()
-                        .filter(|h| h.send_prompt(prompt, vec![]));
-                        if mail_ai_handle.is_some() {
-                            mail_ai_run = Some((accounts, items));
-                            mail_ai_response.clear();
-                        }
-                    }
-                }
-                mail::Event::Draft { key, prompt } => {
-                    // A new request replaces a run still writing.
-                    mail_draft_handle = None;
-                    mail_draft_pid = None;
-                    mail_draft_response.clear();
-                    // Text in, text out: the writer gets no browser or mail tools.
+                // Background summaries skip a turn while off or still running.
+                mail::Event::Job { job: mail::Job::Summaries { .. }, .. }
+                    if !cfg.mail_ai_summaries || mail_jobs.running(|j| matches!(j, mail::Job::Summaries { .. })) => {}
+                mail::Event::Job { job, prompt } => {
+                    // Text in, text out: these agents get no browser or mail
+                    // tools, so nothing in a message can make them act.
                     let started = if cfg.mail_ai {
                         let wake = proxy.clone();
-                        acp::AcpHandle::connect("octomind acp octoweb:mail-writer", None, move || {
+                        mail_jobs.start(job.clone(), prompt, move || {
                             let _ = wake.send_event(AppEvent::LearningWake);
                         })
-                        .map_err(|e| format!("The writer could not start: {e}"))
                     } else {
                         Err("Mail AI is off in Settings → Mail.".to_string())
                     };
-                    match started {
-                        Ok(h) if h.send_prompt(prompt, vec![]) => {
-                            mail_draft_handle = Some(h);
-                            mail_draft_key = Some(key);
+                    if let Err(message) = started {
+                        let o = mail_jobs::failed(&job, message);
+                        if let Some(script) = o.script {
+                            let _ = mail_wv.evaluate_script(&script);
                         }
-                        started => {
-                            let message = started.err().unwrap_or_else(|| "The writer closed before it started.".into());
-                            let _ = mail_wv.evaluate_script(&mail::script(
-                                "draftFailed",
-                                &serde_json::json!({ "key": key, "message": message }),
-                            ));
-                            mail_draft_key = None;
+                        if let Some(text) = o.toast {
+                            toast!(text, "\u{2709}\u{FE0F}", "Mail");
                         }
                     }
                 }
@@ -10563,7 +10472,7 @@ fn main() {
                     &ai_prompt_history,
                     cfg.max_acp_session_messages,
                     cfg.max_history,
-                    learning_pid.into_iter().chain(mail_ai_pid).chain(mail_draft_pid).collect(),
+                    learning_pid.into_iter().chain(mail_jobs.pids()).collect(),
                     control_flow,
                 );
             }
@@ -11421,7 +11330,7 @@ fn main() {
                             &ai_prompt_history,
                             cfg.max_acp_session_messages,
                             cfg.max_history,
-                            learning_pid.into_iter().chain(mail_ai_pid).chain(mail_draft_pid).collect(),
+                            learning_pid.into_iter().chain(mail_jobs.pids()).collect(),
                             control_flow,
                         );
                     } else if window_id == chrome_win_id {

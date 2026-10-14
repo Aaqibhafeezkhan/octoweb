@@ -549,13 +549,20 @@ pub enum Command {
     },
     /// A notes task linking `item` was ticked or unticked (TRI-10).
     TaskToggled { item: Item, done: bool },
-    /// Build the background summarizer's input for `accounts` (AI-1);
-    /// answered with `Event::Summarize` when anything needs a summary.
+    /// Build the background summaries job for `accounts` (AI-1); answered
+    /// with `Event::Job` when anything needs a summary.
     SummaryPrompt { accounts: Vec<String> },
-    /// The summarizer's answer, from `parse_summaries`.
+    /// The answer of a `Job::Summaries`, from `parse_summaries`.
     Summaries {
         accounts: Vec<String>,
         summaries: Vec<(Item, String)>,
+    },
+    /// The answer of a `Job::Tasks`, from `parse_tasks`.
+    Tasks {
+        ws: String,
+        accounts: Vec<String>,
+        item: Item,
+        tasks: Vec<String>,
     },
 }
 
@@ -622,19 +629,46 @@ pub enum Event {
         text: String,
     },
     PaletteResults(String),
-    /// Input for the background summarizer (AI-1): `items` are the
-    /// conversations of `accounts` it numbers from 1, for `parse_summaries`.
-    Summarize {
+    /// A one-shot AI job to run on `job.agent()` with `prompt` (`mail_jobs.rs`).
+    Job {
+        job: Job,
+        prompt: String,
+    },
+}
+
+/// A one-shot AI job on mail: an agent with no tools reads it and answers in
+/// text, and the app acts on the answer (`mail_jobs.rs`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Job {
+    /// The reply for the composer with draft key `key` (AI-3), streamed in.
+    Draft { key: String },
+    /// One-line summaries for the inbox rows of `items`, numbered from 1
+    /// (AI-1), for `parse_summaries`.
+    Summaries {
         accounts: Vec<String>,
         items: Vec<Item>,
-        prompt: String,
     },
-    /// Input for the mail writer (AI-3), whose reply streams back into the
-    /// composer with draft key `key`.
-    Draft {
-        key: String,
-        prompt: String,
+    /// A few lines on the open conversation (AI-2), streamed in.
+    Summary { item: Item },
+    /// Tasks from a conversation for the notes of workspace `ws` (AI-5).
+    Tasks {
+        ws: String,
+        accounts: Vec<String>,
+        item: Item,
     },
+}
+
+impl Job {
+    pub fn agent(&self) -> &'static str {
+        match self {
+            Job::Draft { .. } => "octoweb:mail-writer",
+            _ => "octoweb:mail-reader",
+        }
+    }
+
+    pub fn same_kind(&self, other: &Job) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -849,10 +883,9 @@ async fn run(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Command>) {
                 ));
             }
             Command::SummaryPrompt { accounts } => {
-                if let Some((prompt, items)) = summary_prompt(&shared, &accounts) {
-                    shared.emit(Event::Summarize {
-                        accounts,
-                        items,
+                if let Some((prompt, items)) = summaries_prompt(&shared, &accounts) {
+                    shared.emit(Event::Job {
+                        job: Job::Summaries { accounts, items },
                         prompt,
                     });
                 }
@@ -863,6 +896,23 @@ async fn run(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Command>) {
             } => {
                 let n = save_summaries(&shared, &accounts, &summaries);
                 tracing::info!(n, "mail summaries saved");
+            }
+            Command::Tasks {
+                ws,
+                accounts,
+                item,
+                tasks,
+            } => {
+                let text = match add_tasks(&shared, ws, &accounts, &item, &tasks) {
+                    Ok(0) => "No tasks in this conversation.".to_string(),
+                    Ok(1) => "Added a task to notes.".to_string(),
+                    Ok(n) => format!("Added {n} tasks to notes."),
+                    Err(e) => e,
+                };
+                shared.emit(Event::Toast {
+                    title: "Mail".into(),
+                    text,
+                });
             }
             Command::TaskToggled { item, done } => {
                 let verb = if done { Verb::Done } else { Verb::Restore };
@@ -1876,7 +1926,10 @@ async fn page(shared: &Arc<Shared>, ws: String, accounts: Vec<String>, req: Page
             let attachments = attachments_text(shared, &item).await;
             let key = format!("reply:{}:{}", item.account, item.thread);
             match draft_prompt(shared, &item, &text, &body, &attachments) {
-                Some(prompt) => shared.emit(Event::Draft { key, prompt }),
+                Some(prompt) => shared.emit(Event::Job {
+                    job: Job::Draft { key },
+                    prompt,
+                }),
                 None => to_page(script(
                     "draftFailed",
                     &serde_json::json!({ "key": key, "message": "This conversation is not stored here." }),
@@ -1884,9 +1937,39 @@ async fn page(shared: &Arc<Shared>, ws: String, accounts: Vec<String>, req: Page
             }
         }
         PageRequest::Ai {
-            kind, item, text, ..
-        } => {
-            if let Some(prompt) = ai_prompt(shared, &kind, item.as_ref(), &text, &accounts) {
+            kind,
+            item: Some(item),
+            ..
+        } if kind == "summarise" && accounts.contains(&item.account) => {
+            match summary_prompt(shared, &item) {
+                Some(prompt) => shared.emit(Event::Job {
+                    job: Job::Summary { item },
+                    prompt,
+                }),
+                None => to_page(script(
+                    "summaryFailed",
+                    &serde_json::json!({ "item": item, "message": "This conversation is not stored here." }),
+                )),
+            }
+        }
+        PageRequest::Ai {
+            kind,
+            item: Some(item),
+            ..
+        } if kind == "extract" && accounts.contains(&item.account) => {
+            match tasks_prompt(shared, &item) {
+                Some(prompt) => shared.emit(Event::Job {
+                    job: Job::Tasks { ws, accounts, item },
+                    prompt,
+                }),
+                None => shared.emit(Event::Toast {
+                    title: "Mail".into(),
+                    text: "This conversation is not stored here.".into(),
+                }),
+            }
+        }
+        PageRequest::Ai { kind, text, .. } => {
+            if let Some(prompt) = ai_prompt(&kind, &text) {
                 shared.emit(Event::Ask { ws, prompt });
             }
         }
@@ -2888,10 +2971,10 @@ fn draft_prompt(
 const TEXT_OPEN: &str = "<text>";
 const TEXT_CLOSE: &str = "</text>";
 
-/// The reply inside the writer's `<text>…</text>` so far, and whether the
+/// The answer inside an agent's `<text>…</text>` so far, and whether the
 /// block is closed; `None` until it opens. A closing tag still arriving is
 /// left out, so streaming never flashes `</te`.
-pub fn draft_text(response: &str) -> Option<(&str, bool)> {
+pub fn text_block(response: &str) -> Option<(&str, bool)> {
     let start = response.find(TEXT_OPEN)? + TEXT_OPEN.len();
     let rest = response[start..].trim_start_matches(['\r', '\n']);
     if let Some(end) = rest.find(TEXT_CLOSE) {
@@ -2904,31 +2987,10 @@ pub fn draft_text(response: &str) -> Option<(&str, bool)> {
     Some((&rest[..rest.len() - partial], false))
 }
 
-fn ai_prompt(
-    shared: &Shared,
-    kind: &str,
-    item: Option<&Item>,
-    text: &str,
-    accounts: &[String],
-) -> Option<String> {
-    let item = item.filter(|i| accounts.contains(&i.account));
-    let context = || item.and_then(|i| thread_text(shared, i));
+/// The assistant's prompt for the mail asks that need its tools: the brief
+/// (AI-4) and a plain-language search (AI-6). They read no message body.
+fn ai_prompt(kind: &str, text: &str) -> Option<String> {
     Some(match kind {
-        "summarise" => format!(
-            "Summarise this email conversation in a few lines: what it is about, what is asked of me, and any dates or deadlines.\n\n{}",
-            context()?
-        ),
-        "extract" => {
-            let item = item?;
-            format!(
-                "Turn the requests and deadlines in this email conversation into short tasks. \
-                 Add them to my notes by calling mail_add_tasks with account=\"{}\", thread=\"{}\" and the task lines \
-                 (each a short imperative, with the deadline if any). Then list what you added.\n\n{}",
-                item.account,
-                item.thread,
-                context()?
-            )
-        }
         "brief" => "Give me my mail brief. Call mail_list_inbox, then group the conversations into Needs reply, \
              Waiting on others, FYI and Can archive, one line each. Then call mail_show with each group's \
              conversations and the group name as title, so I can act on them in the mail panel. \
@@ -2944,16 +3006,61 @@ fn ai_prompt(
     })
 }
 
+/// The reader's input (agent `octoweb:mail-reader`): what to do, from the
+/// app, then the mail it works on.
+fn reader_prompt(task: &str, mail: &str) -> String {
+    format!("<task>\n{task}\n</task>\n\n{mail}")
+}
+
+/// The reader's input for a summary of `item` (AI-2).
+fn summary_prompt(shared: &Shared, item: &Item) -> Option<String> {
+    Some(reader_prompt(
+        "Summarise this email conversation in a few lines: what it is about, what is asked of me, \
+         and any dates or deadlines.",
+        &thread_text(shared, item)?,
+    ))
+}
+
+/// The reader's input for the tasks in `item` (AI-5).
+fn tasks_prompt(shared: &Shared, item: &Item) -> Option<String> {
+    Some(reader_prompt(
+        "Turn the requests and deadlines in this email conversation into tasks for me: one per line, \
+         each a short imperative with its deadline if any, starting with \"- \". \
+         Leave the answer empty when nothing is asked of me.",
+        &thread_text(shared, item)?,
+    ))
+}
+
+/// The tasks in the reader's answer block: at most `MAX_TASKS`, list
+/// markers gone.
+pub fn parse_tasks(response: &str) -> Vec<String> {
+    let Some((body, _)) = text_block(response) else {
+        return Vec::new();
+    };
+    body.lines()
+        .map(|l| {
+            let l = l.trim().trim_start_matches(['-', '*', '•']).trim_start();
+            let l = l.strip_prefix("[ ]").unwrap_or(l).trim();
+            l.chars().take(TASK_CHARS).collect::<String>()
+        })
+        .filter(|l| !l.is_empty())
+        .take(MAX_TASKS)
+        .collect()
+}
+
+const MAX_TASKS: usize = 20;
+const TASK_CHARS: usize = 200;
+
 /// Conversations summarized per background run, so one run stays short.
 const SUMMARY_BATCH: usize = 8;
 
-/// The summarizer's input (AI-1, agent `octoweb:mail-summarizer`): the
-/// Important conversations of `accounts` that have no summary yet, numbered
-/// from 1 in the order returned; `None` when all have one.
-fn summary_prompt(shared: &Shared, accounts: &[String]) -> Option<(String, Vec<Item>)> {
+/// The reader's input for inbox summaries (AI-1): the Important
+/// conversations of `accounts` that have no summary yet, numbered from 1 in
+/// the order returned; `None` when all have one.
+fn summaries_prompt(shared: &Shared, accounts: &[String]) -> Option<(String, Vec<Item>)> {
     let refs = shared.refs_for(accounts);
     let rows = shared.store().inbox(&refs, now()).important;
-    let mut prompt = String::new();
+    let mut mail = String::new();
     let mut items = Vec::new();
     for r in rows.into_iter().filter(|r| r.summary.is_none()) {
         if items.len() == SUMMARY_BATCH {
@@ -2965,20 +3072,20 @@ fn summary_prompt(shared: &Shared, accounts: &[String]) -> Option<(String, Vec<I
         };
         if let Some(text) = thread_text(shared, &item) {
             items.push(item);
-            prompt.push_str(&format!("Conversation {}:\n{text}\n\n", items.len()));
+            mail.push_str(&format!("Conversation {}:\n{text}\n\n", items.len()));
         }
     }
-    (!items.is_empty()).then(|| (prompt.trim_end().to_string(), items))
+    let task =
+        "For each numbered conversation below write one line under 90 characters: who wants what, \
+                and any date or deadline. One line per conversation, as \"N: summary\".";
+    (!items.is_empty()).then(|| (reader_prompt(task, mail.trim_end()), items))
 }
 
-/// The summaries in the summarizer's answer, by their number in `items`.
+/// The summaries in the reader's answer, by their number in `items`.
 /// Lines naming no conversation of the run are dropped: whatever a message
 /// talked the model into, it can only label the conversations it was given.
 pub fn parse_summaries(items: &[Item], response: &str) -> Vec<(Item, String)> {
-    let body = response
-        .split_once("<summaries>")
-        .map_or(response, |(_, rest)| rest);
-    let body = body.split_once("</summaries>").map_or(body, |(b, _)| b);
+    let body = text_block(response).map_or(response, |(t, _)| t);
     let mut out: Vec<(Item, String)> = Vec::new();
     for line in body.lines() {
         let Some((n, summary)) = line.trim().split_once(':') else {
@@ -3017,6 +3124,48 @@ fn save_summaries(shared: &Shared, accounts: &[String], summaries: &[(Item, Stri
     drop(store);
     changed(shared, accounts.to_vec());
     n
+}
+
+/// Add `tasks` to the notes of workspace `ws`, each linking `item` (AI-5);
+/// how many were added.
+fn add_tasks(
+    shared: &Shared,
+    ws: String,
+    accounts: &[String],
+    item: &Item,
+    tasks: &[String],
+) -> Result<usize, String> {
+    let refs = shared.refs_for(accounts);
+    let account = refs
+        .iter()
+        .find(|a| a.key == item.account)
+        .ok_or("No such conversation in this workspace.")?;
+    let row = shared
+        .store()
+        .thread_row(account, &item.thread, false)
+        .ok_or("No such conversation.")?;
+    let link = notes_entry(&row);
+    // `- [ ] [Subject — Sender](url)` → the link part, after each task.
+    let link = link.trim_start_matches("- [ ] ");
+    let entry: Vec<String> = tasks
+        .iter()
+        // No brackets: a task can't turn into a link that hides where it goes.
+        .map(|t| {
+            t.replace('\n', " ")
+                .replace(['[', ']'], "")
+                .trim()
+                .to_string()
+        })
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("- [ ] {t} — {link}"))
+        .collect();
+    if !entry.is_empty() {
+        shared.emit(Event::ToNotes {
+            ws,
+            entry: entry.join("\n"),
+        });
+    }
+    Ok(entry.len())
 }
 
 async fn mcp(
@@ -3098,38 +3247,12 @@ async fn mcp(
             Ok(format!("Saved {n} summaries."))
         }
         McpRequest::AddTasks { item, tasks } => {
-            if !allowed(&item) {
-                return Err("No such conversation in this workspace.".into());
+            match add_tasks(shared, ws, &accounts, &item, &tasks)? {
+                0 => Err("No tasks given.".into()),
+                n => Ok(format!(
+                    "Added {n} tasks to the workspace notes, each linking the conversation."
+                )),
             }
-            let account = refs
-                .iter()
-                .find(|a| a.key == item.account)
-                .expect("allowed");
-            let row = shared
-                .store()
-                .thread_row(account, &item.thread, false)
-                .ok_or("No such conversation.")?;
-            let link = notes_entry(&row);
-            // `- [ ] [Subject — Sender](url)` → the link part, after each task.
-            let link = link.trim_start_matches("- [ ] ");
-            let clean = |t: &str| t.replace('\n', " ").trim().to_string();
-            let entry: Vec<String> = tasks
-                .iter()
-                .map(|t| clean(t))
-                .filter(|t| !t.is_empty())
-                .map(|t| format!("- [ ] {t} — {link}"))
-                .collect();
-            if entry.is_empty() {
-                return Err("No tasks given.".into());
-            }
-            let n = entry.len();
-            shared.emit(Event::ToNotes {
-                ws,
-                entry: entry.join("\n"),
-            });
-            Ok(format!(
-                "Added {n} tasks to the workspace notes, each linking the conversation."
-            ))
         }
         McpRequest::Show { items, title } => {
             let store = shared.store();
@@ -3679,8 +3802,8 @@ mod tests {
             thread: t.into(),
         };
         let items = [item("a"), item("b")];
-        let answer = "Sure!\n<summaries>\n1: Anna: confirm the report by 31 Oct\n\
-                      3: forged\n0: forged\nx: no\n2:   \n1: again\n</summaries>\n9: after";
+        let answer = "Sure!\n<text>\n1: Anna: confirm the report by 31 Oct\n\
+                      3: forged\n0: forged\nx: no\n2:   \n1: again\n</text>\n9: after";
         assert_eq!(
             parse_summaries(&items, answer),
             vec![(item("a"), "Anna: confirm the report by 31 Oct".to_string())]
@@ -3692,6 +3815,22 @@ mod tests {
             SUMMARY_CHARS
         );
         assert!(parse_summaries(&items, "done").is_empty());
+    }
+
+    #[test]
+    fn tasks_come_one_per_line_without_list_marks() {
+        let answer = "<text>\n- Send the PTR report by 31 Oct\n* [ ] Book the call\n\n• Pay HKD 4200\n</text>\nignored";
+        assert_eq!(
+            parse_tasks(answer),
+            vec![
+                "Send the PTR report by 31 Oct",
+                "Book the call",
+                "Pay HKD 4200"
+            ]
+        );
+        assert!(parse_tasks("<text>\n</text>").is_empty());
+        let many = format!("<text>\n{}</text>", "- x\n".repeat(50));
+        assert_eq!(parse_tasks(&many).len(), MAX_TASKS);
     }
 
     #[test]
@@ -3766,23 +3905,23 @@ mod tests {
     }
 
     #[test]
-    fn draft_text_streams_only_the_reply() {
-        assert_eq!(draft_text("thinking…"), None);
+    fn text_block_streams_only_the_answer() {
+        assert_eq!(text_block("thinking…"), None);
         assert_eq!(
-            draft_text("<text>\nHi Anna,\nTues"),
+            text_block("<text>\nHi Anna,\nTues"),
             Some(("Hi Anna,\nTues", false))
         );
         // A closing tag still arriving never shows.
         assert_eq!(
-            draft_text("<text>\nHi Anna,</te"),
+            text_block("<text>\nHi Anna,</te"),
             Some(("Hi Anna,", false))
         );
         assert_eq!(
-            draft_text("<text>\nHi Anna,\n<"),
+            text_block("<text>\nHi Anna,\n<"),
             Some(("Hi Anna,\n", false))
         );
         assert_eq!(
-            draft_text("<text>\nHi Anna,\nTuesday works.\n</text>\n"),
+            text_block("<text>\nHi Anna,\nTuesday works.\n</text>\n"),
             Some(("Hi Anna,\nTuesday works.", true))
         );
     }

@@ -268,20 +268,24 @@ are joined by links, not merged into one list.
 
 ## AI
 
-The AI is the sidebar assistant (ACP). Mail reaches it only as context for a
-request the user makes, or through the background brief the user opts into.
-All mail text is passed inside the untrusted-content wrapper the browser
-context already uses, so instructions inside an email are treated as data.
+Jobs that read mail are one-shot and run on specialists with no tools — text
+in, text out — and the app acts on their answer itself: `octoweb:mail-reader`
+summarises and lists tasks, `octoweb:mail-writer` writes replies. Mail comes
+from anyone, so nothing in it reaches an agent that can browse, read tabs or
+touch the mailbox. The sidebar assistant (ACP) only gets mail for the asks
+that need its tools — the brief and plain-language search. All mail text is
+passed inside the untrusted-content wrapper the browser context already uses,
+and a message cannot close that wrapper early.
 
 - **AI-1** Where AI summaries are on, each Important conversation shall get a
   one-line summary, shown in the inbox row instead of the preview; summaries
-  shall be generated on arrival and cached. The `octoweb:mail-summarizer`
-  specialist — text in, text out, no tools — writes them for numbered
-  conversations, and the app saves each one to the conversation of its
-  number: mail arrives unasked, so nothing in it may reach an agent that can
-  act.
+  shall be generated on arrival and cached. The reader writes them for
+  numbered conversations, and the app saves each one to the conversation of
+  its number.
 - **AI-2** Opening a thread shall offer **Summarise** — a short summary with
-  what is asked of the user and any dates.
+  what is asked of the user and any dates, streamed in under the toolbar in
+  place of the inbox line. It stays with its conversation while the user
+  looks elsewhere.
 - **AI-3** In a reply composer, a labelled **✦ Write with AI** button beside
   Send (or **⌘J**) shall open the writer right under the text, with one line
   for what to say. The button draws the eye once as the reply opens. With
@@ -304,7 +308,8 @@ context already uses, so instructions inside an email are treated as data.
   archive*, each item one line; the user shall be able to apply a group's
   suggested action with one key, and nothing is applied otherwise.
 - **AI-5** **Extract tasks** shall turn a thread's requests and deadlines into
-  `- [ ]` lines in the workspace notes, each linking the conversation.
+  `- [ ]` lines in the workspace notes, each linking the conversation. The
+  reader lists them; the app adds them and says how many.
 - **AI-6** The assistant shall be able to search mail in plain language and
   show the matching conversations in the mail panel.
 - **AI-7** MCP shall expose `mail_search`, `mail_read_thread`,
