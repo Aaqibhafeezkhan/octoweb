@@ -2692,6 +2692,8 @@ fn thread_text(shared: &Shared, item: &Item) -> Option<String> {
 const VOICE_SAMPLES: usize = 3;
 
 /// The user's latest messages to the other side of `item`, as voice samples.
+/// In an XML block: octomind strips those before matching a message against
+/// capability triggers, so old mail (quotes included) can't switch tools on.
 fn past_replies(shared: &Shared, item: &Item) -> String {
     let store = shared.store();
     let me = shared
@@ -2711,8 +2713,9 @@ fn past_replies(shared: &Shared, item: &Item) -> String {
     if samples.is_empty() {
         return String::new();
     }
-    let mut out =
-        String::from("\n\nHow I usually write to them (match the tone, not the content):");
+    let mut out = String::from(
+        "\n\n<my-past-emails>\nHow I usually write to them (match the tone, not the content):",
+    );
     for s in samples {
         let mine: String = s
             .lines()
@@ -2724,6 +2727,7 @@ fn past_replies(shared: &Shared, item: &Item) -> String {
             mine.trim().chars().take(600).collect::<String>()
         ));
     }
+    out.push_str("\n</my-past-emails>");
     out
 }
 
@@ -3591,6 +3595,9 @@ mod tests {
         let thread = store
             .insert("acc", INBOX, Some(1), false, true, &parsed)
             .thread;
+        let sent = "Message-ID: <s@x>\r\nFrom: Don <don@muvon.io>\r\nTo: tax@x.hk\r\nSubject: Earlier\r\n\r\nThanks, all good.\r\n";
+        let sent = mail_parse::parse(sent.as_bytes(), "s").unwrap();
+        store.insert("acc", SENT, Some(2), true, true, &sent);
         let shared = shared(store);
         let mut me = Account::resolve(
             &MailAccount {
@@ -3642,6 +3649,9 @@ mod tests {
             conversation < attached && attached < me && me < signature && signature < instruction
         );
         assert!(p.ends_with("\n\n<text>\nok with numbers\nask filing date\n</text>"));
+        // Past emails sit in an XML block, out of reach of capability triggers.
+        assert!(p.contains("<my-past-emails>\nHow I usually write to them"));
+        assert!(p.contains("\n---\nThanks, all good.\n</my-past-emails>"));
 
         let bare = draft_prompt(&shared, &item, "", "  ", "").unwrap();
         assert!(!bare.contains("Instruction:"));
