@@ -264,8 +264,9 @@ context already uses, so instructions inside an email are treated as data.
   shall be generated on arrival and cached.
 - **AI-2** Opening a thread shall offer **Summarise** — a short summary with
   what is asked of the user and any dates.
-- **AI-3** In a reply composer, **⌘J** or the **✦** in the body's corner
-  shall open the writer right under the text, with one line for what to say.
+- **AI-3** In a reply composer, a labelled **✦ Write with AI** button beside
+  Send (or **⌘J**) shall open the writer right under the text, with one line
+  for what to say. The button draws the eye once as the reply opens.
   The `octoweb:mail-writer` specialist — text in, text out, no tools —
   writes the reply in the user's voice from the thread, the text of its PDF
   and plain-text attachments, the user's past replies to that sender, and

@@ -258,13 +258,16 @@ pub fn html(keybindings_json: &str) -> String {
   .file { background: var(--fill); border-radius: var(--r-capsule); padding: 3px 10px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
   .file button { border: none; background: none; cursor: pointer; color: var(--label-3); padding: 0; }
   /* AI-3: the writer lives in the composer, right under the text it writes. */
-  .body-wrap { position: relative; }
-  .spark-btn {
-    position: absolute; right: 10px; bottom: 8px; width: 26px; height: 26px; border: none; border-radius: 50%;
-    background: var(--fill); color: var(--accent); font-size: 13px; cursor: pointer; opacity: 0.75;
-    transition: opacity var(--t-fast), background var(--t-fast);
+  /* Labelled, beside Send: an unlabelled sparkle is not read as a button. */
+  .btn.write { position: relative; overflow: hidden; color: var(--accent); font-weight: 600; background: color-mix(in srgb, var(--accent) 12%, var(--fill)); }
+  .btn.write:hover { background: color-mix(in srgb, var(--accent) 20%, var(--fill)); }
+  .btn.write .kbd { color: var(--accent); opacity: .6; }
+  /* One sweep of light when a reply opens, then still. */
+  .btn.write.intro::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.65) 50%, transparent 70%);
+    transform: translateX(-100%); animation: write-sweep 1.1s var(--ease) 0.35s 1;
   }
-  .spark-btn:hover { opacity: 1; background: var(--fill-hover); }
   .writer-draft {
     min-height: 160px; padding: 12px 14px; white-space: pre-wrap; overflow-wrap: anywhere;
     font: 13px/1.55 var(--font-text); color: var(--label);
@@ -333,6 +336,7 @@ pub fn html(keybindings_json: &str) -> String {
   @keyframes pv-fade { from { opacity: 0; } }
   @keyframes pv-pop { from { opacity: 0; transform: scale(0.96); } }
   @keyframes writer-blink { 50% { opacity: 0; } }
+  @keyframes write-sweep { to { transform: translateX(100%); } }
 </style>
 </head>
 <body>
@@ -1224,6 +1228,9 @@ pub fn html(keybindings_json: &str) -> String {
     const showCc = d.cc || d.bcc || d._cc;
     const w = S.writer && S.writer.key === d.key ? S.writer : null;
     const drafted = w && (w.phase === 'writing' || w.phase === 'review');
+    // The button's light sweeps once per composer, not on every redraw.
+    const intro = canWrite(d) && !d._writeSeen;
+    if (intro) d._writeSeen = true;
     slot.innerHTML = '<div class="composer' + (d.thread ? '' : ' standalone') + '" id="composer">' +
       '<div class="title">' + esc(title) + (d._saved ? '<span class="draft">Draft saved</span>' : '') + '</div>' +
       '<div class="field"><label>From</label><select id="c-from">' + from + '</select></div>' +
@@ -1234,9 +1241,8 @@ pub fn html(keybindings_json: &str) -> String {
       '<div class="field"><label>Subject</label><input id="c-subject" value="' + esc(d.subject) + '"></div>' +
       (drafted ? '<div class="writer-draft' + (w.phase === 'writing' ? ' writing' : '') + '" id="w-draft">' + esc(w.text) +
           (w.phase === 'writing' ? '<span class="caret"></span>' : '') + '</div>' :
-        '<div class="body-wrap"><textarea id="c-body" placeholder="' +
-          (canWrite(d) ? 'Write — or ⌘J to draft it with AI' : 'Write…  **bold**, *italic*, - lists, [links](https://…)') + '">' + esc(d.body) + '</textarea>' +
-          (canWrite(d) ? '<button class="spark-btn" type="button" id="c-spark" title="Write with AI (⌘J)" aria-label="Write with AI">✦</button>' : '') + '</div>') +
+        '<textarea id="c-body" placeholder="' +
+          (canWrite(d) ? 'Write — or ⌘J to draft it with AI' : 'Write…  **bold**, *italic*, - lists, [links](https://…)') + '">' + esc(d.body) + '</textarea>') +
       (w ? writerBar(d, w) : '') +
       '<div class="files" id="c-files">' + (d.attachments || []).map(function(f, i) {
         return '<span class="file">' + esc(f.name) + ' <span class="size">' + fmtSize(Math.floor(f.data.length * 3 / 4)) + '</span><button type="button" data-rm="' + i + '" aria-label="Remove">✕</button></span>';
@@ -1245,6 +1251,7 @@ pub fn html(keybindings_json: &str) -> String {
       '<div class="actions"><button class="btn primary" type="button" id="c-send">Send<span class="kbd">⌘↩</span></button>' +
       '<button class="btn" type="button" id="c-later">Send later</button>' +
       '<button class="btn' + (d._remind ? ' set' : '') + '" type="button" id="c-remind">' + (d._remind ? 'Remind: ' + esc(d._remindLabel) : 'Remind me') + '</button>' +
+      (canWrite(d) && !w ? '<button class="btn write' + (intro ? ' intro' : '') + '" type="button" id="c-write" title="Draft the reply from this conversation and your notes">✦ Write with AI<span class="kbd">⌘J</span></button>' : '') +
       '<span class="spacer"></span>' +
       '<button class="icon-btn" type="button" id="c-attach" title="Attach files" aria-label="Attach files">' + I.clip + '</button>' +
       '<button class="icon-btn" type="button" id="c-discard" title="Discard draft" aria-label="Discard draft">' + I.trash + '</button></div></div>';
@@ -1370,8 +1377,8 @@ pub fn html(keybindings_json: &str) -> String {
         closeWriter();
       }
     });
-    const spark = $('c-spark');
-    if (spark) spark.addEventListener('click', function() { openWriter(d); });
+    const button = $('c-write');
+    if (button) button.addEventListener('click', function() { openWriter(d); });
     if (!w) return;
     const bar = $('writer');
     bar.addEventListener('click', function(e) {
