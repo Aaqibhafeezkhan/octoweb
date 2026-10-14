@@ -10,7 +10,7 @@
 //! MCP server (see `mcp.rs`), so there is nothing to install for it.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Octoweb's internal data root, and the cwd + `--sandbox` root the agent
 /// runs inside. Derived from `~/.local/share` to match the project's existing
@@ -40,23 +40,50 @@ pub fn prepare() {
     link_user_tools();
 }
 
-/// Versions before `render_ui` moved onto the MCP server dropped a bash
-/// script here and watched a file queue. Left in place it would still be
-/// discovered as a local tool, shadow `octoweb:render_ui`, and block forever
-/// polling a file nothing writes to. Delete it and its queue on first launch.
+/// Versions before `render_ui` moved onto the MCP server installed it as a
+/// bash script polling a file queue — first at `~/.agents/tools/render_ui`,
+/// later in this workspace's tools dir. Left in place, `link_user_tools`
+/// mirrors the home copy in, octomind discovers it as a local tool next to
+/// `octoweb:render_ui`, and the agent fails bootstrap on the duplicate tool
+/// name. Delete every copy and both queues. A user's own `render_ui` is kept:
+/// ours is recognised by its content.
 fn remove_legacy_render_ui() {
-    let script = tools_dir().join("render_ui");
-    // Only ours — a symlink here is the user's own tool, mirrored by
-    // `link_user_tools`, and theirs to keep.
-    if script.is_file() && !script.is_symlink() {
+    let home = dirs::home_dir();
+    // Workspace entry first: it may be a symlink to the home copy, which is
+    // only recognisable through the link while the target still exists.
+    let scripts = [
+        Some(tools_dir().join("render_ui")),
+        home.as_ref()
+            .map(|h| h.join(".agents").join("tools").join("render_ui")),
+    ];
+    for script in scripts.into_iter().flatten() {
+        if !is_legacy_render_ui(&script) {
+            continue;
+        }
         match fs::remove_file(&script) {
-            Ok(()) => {
-                tracing::info!("removed legacy render_ui script — superseded by octoweb:render_ui")
-            }
-            Err(e) => tracing::warn!(error = %e, "legacy render_ui script could not be removed"),
+            Ok(()) => tracing::info!(
+                path = %script.display(),
+                "removed legacy render_ui script — superseded by octoweb:render_ui"
+            ),
+            Err(e) => tracing::warn!(
+                path = %script.display(),
+                error = %e,
+                "legacy render_ui script could not be removed"
+            ),
         }
     }
     let _ = fs::remove_dir_all(workspace_dir().join("a2ui"));
+    if let Some(home) = home {
+        let _ = fs::remove_dir_all(home.join(".local").join("share").join("a2ui"));
+    }
+}
+
+/// Every shipped version of the legacy script carried both markers: the A2UI
+/// v0.9 description and a queue under `~/.local/share/`.
+fn is_legacy_render_ui(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|script| {
+        script.contains("A2UI v0.9") && script.contains("queue=\"${HOME}/.local/share/")
+    })
 }
 
 /// Symlink `~/.agents/tools/*` into the workspace tools dir. Skips entries
