@@ -3525,15 +3525,31 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
   window.addEventListener('blur', () => window.ipc.postMessage(JSON.stringify({ type: 'panel_blur' })));
 
   // Rust-driven session lifecycle
+  // Pending queues of sessions unmounted by a workspace switch, by sid. The
+  // queue lives only here, so it is parked on unmount and handed back when
+  // the workspace's sessions are pushed again.
+  const parkedQueues = new Map();
   window.__addSession = function(sid, title, tag, status) {
     if (sessions.has(sid)) return;
     const s = makeSession(sid, title, tag, status);
     sessions.set(sid, s);
     refreshAddBtn();
+    const parked = parkedQueues.get(sid);
+    if (parked) {
+      parkedQueues.delete(sid);
+      s.msgQueue = parked;
+      // The turn may have finished while the workspace was away. Rust replays
+      // an in-flight turn (restoring `busy`) right after this call, so drain
+      // only once those scripts have run.
+      setTimeout(() => {
+        if (sessions.get(sid) === s) drainQueueForSession(s);
+      }, 80);
+    }
   };
-  window.__removeSession = function(sid) {
+  window.__removeSession = function(sid, keepQueue) {
     const s = sessions.get(sid);
     if (!s) return;
+    if (keepQueue && s.msgQueue.length) parkedQueues.set(sid, s.msgQueue);
     if (s.activityTimer) clearInterval(s.activityTimer);
     if (s.container.parentNode === messagesHost) messagesHost.removeChild(s.container);
     if (s.tab.parentNode === sessionStrip) sessionStrip.removeChild(s.tab);

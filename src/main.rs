@@ -4629,18 +4629,21 @@ fn main() {
     /// `push_acp_sessions_to_sidebar!`. Takes a `&Workspace` (the OUTGOING
     /// one) rather than reading `workspace_manager.active()` itself, since
     /// callers invoke this BEFORE `workspace_manager.switch()`/`.create()`/
-    /// `.remove()` changes which workspace is active.
+    /// `.remove()` changes which workspace is active. `$keep_queue` parks each
+    /// session's pending prompts in the sidebar until the workspace is pushed
+    /// again; false when the workspace is being deleted.
     macro_rules! teardown_acp_sessions_from_sidebar {
-        ($ws:expr) => {{
+        ($ws:expr, $keep_queue:expr) => {{
             // Unconditional, matching `push_acp_sessions_to_sidebar!` — the
             // sidebar WKWebView keeps its DOM/JS state while hidden, so
             // skipping this when `!sidebar_visible` would leave the outgoing
             // workspace's tabs mounted forever (ToggleSidebar's open path
             // doesn't rebuild the strip, only `SidebarReady`/these macros do).
+            let keep_queue: bool = $keep_queue;
             for s in $ws.acp_sessions.iter() {
                 let sid = s.id;
                 let _ = sidebar_wv.evaluate_script(&format!(
-                    "window.__removeSession && window.__removeSession({sid})"
+                    "window.__removeSession && window.__removeSession({sid},{keep_queue})"
                 ));
             }
         }};
@@ -7359,7 +7362,7 @@ fn main() {
                 if let Some(wv) = workspace_manager.active().webviews.get(&active_wv_id) {
                     let _ = wv.set_visible(false);
                 }
-                teardown_acp_sessions_from_sidebar!(workspace_manager.active());
+                teardown_acp_sessions_from_sidebar!(workspace_manager.active(), true);
                 reset_cross_workspace_ui_state!();
                 if !workspace_manager.switch(&id) {
                     return; // unknown id
@@ -7408,7 +7411,7 @@ fn main() {
                 if let Some(wv) = workspace_manager.active().webviews.get(&active_wv_id) {
                     let _ = wv.set_visible(false);
                 }
-                teardown_acp_sessions_from_sidebar!(workspace_manager.active());
+                teardown_acp_sessions_from_sidebar!(workspace_manager.active(), true);
                 reset_cross_workspace_ui_state!();
                 let name = format!("Workspace {}", workspace_manager.list().len() + 1);
                 let color =
@@ -7539,7 +7542,7 @@ fn main() {
                     if let Some(wv) = workspace_manager.active().webviews.get(&active_wv_id) {
                         let _ = wv.set_visible(false);
                     }
-                    teardown_acp_sessions_from_sidebar!(workspace_manager.active());
+                    teardown_acp_sessions_from_sidebar!(workspace_manager.active(), false);
                     reset_cross_workspace_ui_state!();
                     // Kill any live octomind subprocesses for this workspace
                     // before dropping it — Drop alone doesn't terminate them
