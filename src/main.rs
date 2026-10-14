@@ -5775,7 +5775,10 @@ fn main() {
             };
             let call = match (&ended, mail::draft_text(&mail_draft_response)) {
                 (Some(Err(e)), _) => Some(failed(e)),
-                (Some(Ok(())), Some((text, _))) if !text.trim().is_empty() => Some(stream(text, true)),
+                (Some(Ok(())), Some((text, _))) if !text.trim().is_empty() => {
+                    play_sound(&cfg, macos::Sound::DraftReady);
+                    Some(stream(text, true))
+                }
                 // No reply block: whatever it said instead (a question, a refusal) is the message.
                 (Some(Ok(())), _) => {
                     let said: String = mail_draft_response.trim().chars().take(300).collect();
@@ -7933,7 +7936,7 @@ fn main() {
                         }
                     }
                     "mail_ai_summaries" => cfg.mail_ai_summaries = val == "true",
-                    "mail_sounds" => cfg.mail_sounds = val == "true",
+                    "sounds" => cfg.sounds = val == "true",
                     "mail_brief_morning" => cfg.mail_brief_morning = val == "true",
                     "proxies" => match serde_json::from_str::<Vec<config::ProxyRule>>(&val) {
                         Ok(mut rules) => {
@@ -10201,9 +10204,11 @@ fn main() {
                         toast!("Turn on mail AI in Settings → Mail first.", "\u{2709}\u{FE0F}", "Mail");
                         return;
                     }
-                    // The moment Send is pressed, as Spark does; Send later stays quiet.
-                    if cfg.mail_sounds && matches!(req, mail::PageRequest::Send { send_at: None, .. }) {
-                        macos::play_mail_sent();
+                    match &req {
+                        // The moment Send is pressed, as Spark does; Send later stays quiet.
+                        mail::PageRequest::Send { send_at: None, .. } => play_sound(&cfg, macos::Sound::Sent),
+                        mail::PageRequest::Act { verb: mail::Verb::Done, .. } => play_sound(&cfg, macos::Sound::Done),
+                        _ => {}
                     }
                     let ws = workspace_manager.active().id.clone();
                     let accounts = mail::accounts_in(&cfg.mail_accounts, &ws);
@@ -10348,6 +10353,10 @@ fn main() {
                     };
                     let active = workspace_manager.active().id.clone();
                     let here = scoped.contains(&active);
+                    // Only while Octoweb is in front: elsewhere the notification speaks.
+                    if is_app_active() {
+                        play_sound(&cfg, macos::Sound::NewMail);
+                    }
                     if here && mail_visible && is_app_active() {
                         return;
                     }
@@ -12532,6 +12541,12 @@ fn is_app_active() -> bool {
     }
 }
 
+/// One of the app's few sounds, unless Settings → General → Sounds is off.
+fn play_sound(cfg: &Config, sound: macos::Sound) {
+    if cfg.sounds {
+        macos::play(sound);
+    }
+}
 /// Whether the key window's first responder is `view` or a view inside it.
 fn key_focus_in(view: usize) -> bool {
     use objc2::runtime::AnyObject;

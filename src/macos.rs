@@ -27,37 +27,75 @@ pub fn pick_files() -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-const MAIL_SENT_SOUND: &[u8] = include_bytes!("../assets/sounds/mail-sent.wav");
+/// The few moments that make a sound (spec SND-1); everything else is silent.
+#[derive(Clone, Copy, Debug)]
+pub enum Sound {
+    Sent,
+    Done,
+    DraftReady,
+    NewMail,
+}
+
+impl Sound {
+    fn wav(self) -> &'static [u8] {
+        match self {
+            Sound::Sent => include_bytes!("../assets/sounds/mail-sent.wav"),
+            Sound::Done => include_bytes!("../assets/sounds/done.wav"),
+            Sound::DraftReady => include_bytes!("../assets/sounds/draft-ready.wav"),
+            Sound::NewMail => include_bytes!("../assets/sounds/new-mail.wav"),
+        }
+    }
+}
+
+type Loaded = std::cell::OnceCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>>;
 
 thread_local! {
     // Kept for the app's life: a sound released mid-play goes quiet.
-    static MAIL_SENT: std::cell::OnceCell<Option<objc2::rc::Retained<objc2::runtime::AnyObject>>> =
-        const { std::cell::OnceCell::new() };
+    static SOUNDS: [Loaded; 4] = const { [const { std::cell::OnceCell::new() }; 4] };
 }
 
-/// The whoosh of a message being sent (WRT-10). Main thread only.
-pub fn play_mail_sent() {
+/// Play `sound`, unless macOS has "Play user interface sound effects" off.
+/// Main thread only.
+pub fn play(sound: Sound) {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
     use objc2_foundation::NSData;
 
-    MAIL_SENT.with(|cell| {
-        let sound = cell.get_or_init(|| unsafe {
-            let data = NSData::with_bytes(MAIL_SENT_SOUND);
-            let sound: *mut AnyObject = msg_send![class!(NSSound), alloc];
-            let sound: *mut AnyObject = msg_send![sound, initWithData: &*data];
-            objc2::rc::Retained::from_raw(sound)
+    if !ui_sounds_enabled() {
+        return;
+    }
+    SOUNDS.with(|sounds| {
+        let loaded = sounds[sound as usize].get_or_init(|| unsafe {
+            let data = NSData::with_bytes(sound.wav());
+            let player: *mut AnyObject = msg_send![class!(NSSound), alloc];
+            let player: *mut AnyObject = msg_send![player, initWithData: &*data];
+            objc2::rc::Retained::from_raw(player)
         });
-        let Some(sound) = sound else {
-            tracing::warn!("mail sent sound did not load");
+        let Some(player) = loaded else {
+            tracing::warn!(?sound, "sound did not load");
             return;
         };
         unsafe {
-            // Sends in quick succession restart it rather than overlap.
-            let _: bool = msg_send![&**sound, stop];
-            let _: bool = msg_send![&**sound, play];
+            // A repeat restarts it rather than overlapping.
+            let _: bool = msg_send![&**player, stop];
+            let _: bool = msg_send![&**player, play];
         }
     });
+}
+
+/// System Settings → Sound → "Play user interface sound effects". macOS
+/// writes the key only once it is turned off.
+fn ui_sounds_enabled() -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        let key = NSString::from_str("com.apple.sound.uiaudio.enabled");
+        let value: *mut AnyObject = msg_send![&*defaults, objectForKey: &*key];
+        value.is_null() || msg_send![&*value, boolValue]
+    }
 }
 
 #[link(name = "PDFKit", kind = "framework")]
@@ -710,6 +748,24 @@ mod tests {
             .bytes(),
         );
         out
+    }
+
+    #[test]
+    fn every_sound_decodes() {
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_foundation::NSData;
+
+        for sound in [Sound::Sent, Sound::Done, Sound::DraftReady, Sound::NewMail] {
+            let data = NSData::with_bytes(sound.wav());
+            let seconds: f64 = unsafe {
+                let player: *mut AnyObject = msg_send![class!(NSSound), alloc];
+                let player: *mut AnyObject = msg_send![player, initWithData: &*data];
+                let player = objc2::rc::Retained::from_raw(player).expect("NSSound decodes it");
+                msg_send![&*player, duration]
+            };
+            assert!(seconds > 0.1 && seconds < 1.0, "{sound:?}: {seconds}s");
+        }
     }
 
     #[test]

@@ -482,6 +482,13 @@ pub fn html() -> String {
       </div>
       <div class="row with-hint">
         <div class="row-label-stack">
+          <label class="row-label" id="sounds_label" for="sounds">Sounds</label>
+          <span class="row-hint">Only for what matters: mail sent, marked done, an AI draft ready, new Important mail. Off is silent; macOS's interface sound setting is respected too.</span>
+        </div>
+        <button class="toggle" id="sounds" data-key="sounds" role="switch" aria-checked="true" aria-labelledby="sounds_label"></button>
+      </div>
+      <div class="row with-hint">
+        <div class="row-label-stack">
           <label class="row-label" for="home_page">Home page</label>
           <span class="row-hint">Loads on launch when there's no previous session to restore.</span>
         </div>
@@ -676,16 +683,6 @@ pub fn html() -> String {
             <span class="row-hint">Senders can't see when you open their mail. Show images per message or always for a sender.</span>
           </div>
           <button class="toggle" id="mail_block_images" data-key="mail_block_images" role="switch" aria-checked="false" aria-labelledby="mail_block_images_label"></button>
-        </div>
-      </div>
-      <div class="section">
-        <div class="section-title">Sound</div>
-        <div class="row with-hint">
-          <div class="row-label-stack">
-            <label class="row-label" id="mail_sounds_label" for="mail_sounds">Play a sound when mail is sent</label>
-            <span class="row-hint">A short whoosh the moment you press Send.</span>
-          </div>
-          <button class="toggle" id="mail_sounds" data-key="mail_sounds" role="switch" aria-checked="true" aria-labelledby="mail_sounds_label"></button>
         </div>
       </div>
       <div class="section">

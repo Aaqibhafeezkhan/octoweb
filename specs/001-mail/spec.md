@@ -229,8 +229,16 @@ are joined by links, not merged into one list.
 - **WRT-8** Sent mail shall be stored in the account's Sent folder, unless the
   server does so itself (Gmail).
 - **WRT-9** Attachments shall be added by drag and drop or a file picker.
-- **WRT-10** Pressing **Send** shall play a short sent sound, like Spark;
-  Send later shall not. Settings → Mail turns it off; it is on by default.
+
+## Sound
+
+- **SND-1** Only four moments shall make a sound, each short and soft:
+  pressing **Send** (not Send later), marking a conversation **Done** (any
+  way), an **AI draft** ready in the composer, and **new Important mail**
+  while Octoweb is the active app. Nothing else — navigation, typing,
+  opening mail — makes a sound.
+- **SND-2** Settings → General → **Sounds** (on by default) silences them
+  all, and so does macOS's "Play user interface sound effects" being off.
 
 ## Search
 
