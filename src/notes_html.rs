@@ -331,9 +331,11 @@ pub fn html(keybindings_json: &str) -> String {
       ipc({ type: 'hide' });
       return;
     }
+    // Tab and ⇧Tab switch to Mail, as Tab cycles the assistant's sessions:
+    // the pane is two tabs, not a form.
     if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      document.execCommand('insertText', false, '  ');
+      ipc({ type: 'tab', tab: 'mail' });
       return;
     }
     if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey) return;
@@ -473,6 +475,12 @@ pub fn html(keybindings_json: &str) -> String {
   window.__notesFlush = save;
 
   document.getElementById('tab-mail').addEventListener('click', function() { ipc({ type: 'tab', tab: 'mail' }); });
+  // Tab from anywhere else in the pane too (the text's own handler runs first).
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Tab' || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    ipc({ type: 'tab', tab: 'mail' });
+  });
 
   window.__paneUnread = function(n) {
     document.getElementById('unread').textContent = n ? String(n) : '';

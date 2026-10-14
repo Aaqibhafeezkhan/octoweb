@@ -1837,6 +1837,14 @@ pub fn html(keybindings_json: &str) -> String {
       return;
     }
     if (help.classList.contains('open') && (e.key === 'Escape' || e.key === '?')) { e.preventDefault(); help.classList.remove('open'); return; }
+    // Tab and ⇧Tab switch to Notes, as Tab cycles the assistant's sessions:
+    // the pane is two tabs. Only the composer, a form, keeps Tab for its fields.
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.target && e.target.closest && e.target.closest('#composer')) return;
+      e.preventDefault();
+      ipc({ type: 'tab', tab: 'notes' });
+      return;
+    }
     // ⌘↩ sends, and ⇧⌘D as in Apple Mail.
     if (e.metaKey && S.composer && (e.key === 'Enter' || (e.shiftKey && e.key.toLowerCase() === 'd'))) { e.preventDefault(); send(null); return; }
     if (e.metaKey && (e.key === 'z' || e.key === 'Z') && !typing(e) && S.undo) { e.preventDefault(); undo(); return; }

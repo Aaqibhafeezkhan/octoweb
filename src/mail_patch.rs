@@ -307,6 +307,7 @@ pub fn frame_key(event: *mut AnyObject, keycode: u16, shift: bool) -> Option<Str
         49 | 116 | 121 | 115 | 119 => return None,
         53 => "Escape".to_string(),
         36 | 76 => "Enter".to_string(),
+        48 => "Tab".to_string(),
         123 => "ArrowLeft".to_string(),
         124 => "ArrowRight".to_string(),
         125 => "ArrowDown".to_string(),
