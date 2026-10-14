@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.18.0] - 2026-10-14
+
+### 📋 Release Summary
+
+Mail now preloads adjacent threads, animates updates, supports inline AI drafting, mail link menus, swipe-to-done, and configurable notification sounds, including sounds for immediate sends. Fixes preserve AI drafts, secure mail content and attachments, refine history, menu, summary, removal, swipe, sender-group, and HTML behavior, and correct audio playback, Tab navigation, and terminal replay filtering.
+
+### ✨ New Features & Enhancements
+
+- **mail**: preload adjacent threads and animate updates `905a7513`
+- **sounds**: support configurable notification sounds `3aa315bc`
+- **mail**: play a sound for immediate sends `adccf091`
+- **mail**: enable inline AI mail drafting `59fe2583`
+- **mail**: support mail link menus and swipe-to-done `fa82af06`
+
+### 🔧 Improvements & Optimizations
+
+- **mail**: centralize mail AI job handling `ced5767b`
+- **html**: compact mail and notes toolbars `138f503e`
+- **mail**: rework mail interaction handling natively `5812cc06`
+- **tests**: recognize mail tools in MCP test sets `ddaa0d31`
+
+### 🐛 Bug Fixes & Stability
+
+- **media**: track audio playback across frames `09e908d1`
+- **keyboard**: switch panes with Tab navigation `bc3aa857`
+- **mail**: block history navigation and hide menu actions `6fdac6e0`
+- **mail**: preserve AI drafts when leaving threads `f9530bbf`
+- **mail**: route mail summaries through tool-free agent `cb4acfc9`
+- **security**: harden mail content and attachments `7bc5dfae`
+- **terminal**: filter terminal queries from replayed output `3e86b655`
+- **mail**: open next conversation after removal `0b7091e7`
+- **mail**: isolate past emails from tool triggers `58c012aa`
+- **mail**: make open-thread swipe navigate back `845e7948`
+- **mail**: move and label AI writing control `cddf3213`
+- **mail**: mark sender groups done with swipe `2fe93670`
+- **mail**: fix mail swipe gesture tracking `5bab3e30`
+- **mail-html**: align group chevrons consistently `ac30d464`
+
 ## [0.17.0] - 2026-10-13
 
 ### 📋 Release Summary
