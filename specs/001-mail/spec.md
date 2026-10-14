@@ -165,8 +165,11 @@ are joined by links, not merged into one list.
 - **TRI-2** Done shall archive on the server: on Gmail, remove the `Inbox`
   label; elsewhere, move to the folder with the `\Archive` special use, or to
   the archive folder chosen in the account settings.
-- **TRI-3** After any action that removes a conversation from the list, focus
-  shall move to the next conversation, so a run of `e e e` clears the inbox.
+- **TRI-3** After any action that removes a conversation from the list, the
+  next conversation shall take over, so a run of `e e e` clears the inbox: in
+  the open thread the next one (below, else above) opens in its place; in the
+  list it takes focus. With none left, the list shows. A thread opened from
+  notes returns as before.
 - **TRI-4** Snooze shall offer: later today, this evening, tomorrow morning,
   this weekend, next week, and a custom date; times shall be local.
 - **TRI-5** A snoozed conversation shall leave the inbox until its time, then

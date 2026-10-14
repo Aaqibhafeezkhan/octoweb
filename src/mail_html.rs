@@ -538,14 +538,30 @@ pub fn html(keybindings_json: &str) -> String {
     const label = (LABEL[verb] || verb) + (n ? ' · ' + n : '') + (verb === 'snooze' && until ? ' until ' + fmtTime(until, true) : '');
     showUndo(label, inverse ? undo : null);
     if (REMOVES[verb]) {
-      // TRI-3: the next conversation takes focus.
+      // TRI-3: the next conversation takes over — in the open thread it opens
+      // in its place, in the list it takes focus.
       const keys = new Set(items.map(key));
       const thread = S.thread && keys.has(key(S.thread));
+      const next = thread && !S.fromNotes ? nextAfter(keys) : null;
       S.view && dropRows(keys);
       S.selected.clear();
       if (thread) closeThread(true);
+      if (next) openThread(next.account, next.thread, false);
       render();
+      if (next) {
+        const i = S.rows.findIndex(function(r) { return r.thread && key(r.thread) === key(next); });
+        if (i >= 0 && i !== S.focus) { S.focus = i; render(); }
+      }
     }
+  }
+  // The conversation below the open one, else above, that `keys` leaves.
+  function nextAfter(keys) {
+    const here = S.rows.findIndex(function(r) { return r.thread && key(r.thread) === key(S.thread); });
+    if (here < 0) return null;
+    const left = function(j) { const r = S.rows[j]; return r && r.thread && !keys.has(key(r.thread)); };
+    for (let j = here + 1; j < S.rows.length; j++) if (left(j)) return S.rows[j].thread;
+    for (let j = here - 1; j >= 0; j--) if (left(j)) return S.rows[j].thread;
+    return null;
   }
   function undo() {
     const u = S.undo;
