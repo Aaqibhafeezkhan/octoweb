@@ -9639,6 +9639,22 @@ fn main() {
                         vec![],
                         Some(a2ui_click_label(&resolution)),
                     ));
+                    return;
+                }
+                // The click marked the session busy until the turn's Done. A
+                // surface from an autonomous turn — one octomind began itself,
+                // after a tap-run reply was injected — has no Done coming, so
+                // the session would stay busy until the user pressed Stop.
+                let in_prompt = workspace_manager
+                    .at(ws_idx)
+                    .acp_sessions
+                    .iter()
+                    .any(|s| s.id == pending.sid && s.prompt_in_flight);
+                if !in_prompt {
+                    let _ = sidebar_wv.evaluate_script(&format!(
+                        "window.__setThinking && window.__setThinking({},false)",
+                        pending.sid
+                    ));
                 }
             }
             // ── A2UI renderer function result ───────────────────────────────

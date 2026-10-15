@@ -121,6 +121,7 @@ eq(a2uiToStr('line\\nbreak'), 'line\\nbreak', 'toStr preserves literal backslash
 eq(a2uiRenderMarkdown('### Head').indexOf('<h3>Head</h3>') >= 0, true, 'markdown heading');
 eq(a2uiRenderMarkdown('<img src=x onerror=1>').indexOf('<img') < 0, true, 'markdown escapes html');
 eq(a2uiRenderMarkdown('**bold**').indexOf('<strong>bold</strong>') >= 0, true, 'markdown bold');
+eq(a2uiRenderMarkdown('1. a\n\n2. b').indexOf('<ol start="2"><li>b</li></ol>') >= 0, true, 'markdown loose list keeps numbering');
 
 if (failures) { console.log(failures + ' FAILURES'); process.exit(1); }
 console.log('a2ui core: all assertions passed');

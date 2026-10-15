@@ -509,7 +509,10 @@ pub const CORE: &str = r##"
     });
     s = s.replace(/(?:^\d+\.\s.+(?:\n|$))+/gm, m => {
       const items = m.trim().split('\n').map(l => l.replace(/^\d+\.\s+/, ''));
-      return '<ol>' + items.map(i => '<li>' + i + '</li>').join('') + '</ol>';
+      // Keep the author's numbering: a list split by a blank line, or across
+      // two Text components, would otherwise restart at 1 each time.
+      const start = parseInt(m, 10);
+      return '<ol' + (start > 1 ? ' start="' + start + '"' : '') + '>' + items.map(i => '<li>' + i + '</li>').join('') + '</ol>';
     });
     s = s.split(/\n{2,}/).map(p => {
       const t = p.trim();
