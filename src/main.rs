@@ -10119,7 +10119,7 @@ fn main() {
                     }
                     mail::Pane::FrameFocus { focused } => mail_patch::set_frame_focused(focused),
                     mail::Pane::SwipeMiss => mail_patch::swipe_missed(),
-                    mail::Pane::DraftStop => mail_jobs.stop(|j| matches!(j, mail::Job::Draft { .. })),
+                    mail::Pane::DraftStop { key } => mail_jobs.stop(|j| matches!(j, mail::Job::Draft { key: k } if *k == key)),
                     mail::Pane::PickFiles { key } => {
                         let files: Vec<serde_json::Value> = macos::pick_files()
                             .into_iter()

@@ -462,7 +462,7 @@ pub fn html(keybindings_json: &str) -> String {
     view: null, scheduled: [], drafts: [],
     mode: 'inbox', query: '', hits: [], showTitle: '', showItems: [],
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
-    thread: null, fromNotes: false, composer: null, composerError: '', writer: null,
+    thread: null, fromNotes: false, composer: null, composerError: '', writers: new Map(),
     undo: null, sending: new Map(), fullscreen: false, chords: {},
     gone: new Map(), enter: '', focusKey: null,
   };
@@ -1559,7 +1559,7 @@ pub fn html(keybindings_json: &str) -> String {
       return '<option value="' + esc(a.key) + '"' + (a.key === d.account ? ' selected' : '') + '>' + esc((a.name ? a.name + ' <' + a.address + '>' : a.address)) + '</option>';
     }).join('');
     const showCc = d.cc || d.bcc || d._cc;
-    const w = S.writer && S.writer.key === d.key ? S.writer : null;
+    const w = S.writers.get(d.key) || null;
     const drafted = w && (w.phase === 'writing' || w.phase === 'review');
     // The button's light sweeps once per composer, not on every redraw.
     const intro = canWrite(d) && !d._writeSeen;
@@ -1649,14 +1649,15 @@ pub fn html(keybindings_json: &str) -> String {
   // The body grows with its text; the thread scrolls, not the textarea.
   function grow(el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
 
-  let draftTimer = 0;
+  let draftTimer = 0, draftPending = null;
   function cleanDraft(d) {
     return { key: d.key, account: d.account, mode: d.mode, thread: d.thread, message: d.message, to: d.to, cc: d.cc, bcc: d.bcc, subject: d.subject, body: d.body, attachments: d.attachments || [] };
   }
   function scheduleDraftSave() {
     clearTimeout(draftTimer);
-    const d = S.composer;
+    const d = draftPending = S.composer;
     draftTimer = setTimeout(function() {
+      draftPending = null;
       if (!d || S.composer !== d) return;
       ipc({ type: 'save_draft', draft: cleanDraft(d) });
       d._saved = true;
@@ -1676,25 +1677,38 @@ pub fn html(keybindings_json: &str) -> String {
   function closeComposer() {
     const d = S.composer;
     S.composer = null;
-    // Another thread's writer keeps going in the background.
-    if (S.writer && d && S.writer.key === d.key) cancelDraft();
+    // Other threads' writers keep going in the background.
+    if (d) stopWriter(d.key);
     if (d && d.thread) { const slot = $('reply-slot'); if (slot) slot.innerHTML = ''; }
     else if (!S.thread) { panel.classList.remove('detail'); detail.innerHTML = ''; list.focus(); }
   }
   // Leaving a thread keeps the reply its writer is on (AI-3): the text
   // streams on, and the composer comes back with it when the thread opens.
+  // Each reply has its own writer, so several can draft at once.
   function leaveComposer() {
-    const w = S.writer, d = S.composer;
+    const d = S.composer;
     S.composer = null;
-    if (w && d && w.key === d.key && (w.phase === 'writing' || w.phase === 'review')) w.draft = d;
-    else if (!w || !w.draft) cancelDraft();
+    if (!d) return;
+    // Words typed just before leaving are kept, not lost to the debounce.
+    if (draftPending === d) {
+      clearTimeout(draftTimer);
+      draftPending = null;
+      ipc({ type: 'save_draft', draft: cleanDraft(d) });
+    }
+    const w = S.writers.get(d.key);
+    if (w && (w.phase === 'writing' || w.phase === 'review')) w.draft = d;
+    else stopWriter(d.key);
   }
   // The composer a backgrounded writer keeps for the thread now open.
   function resumeWriter() {
-    const w = S.writer, t = S.thread;
-    if (S.composer || !w || !w.draft || !t || w.item.account !== t.account || w.item.thread !== t.thread) return;
-    S.composer = w.draft;
-    w.draft = null;
+    const t = S.thread;
+    if (S.composer || !t) return;
+    for (const w of S.writers.values()) {
+      if (!w.draft || w.item.account !== t.account || w.item.thread !== t.thread) continue;
+      S.composer = w.draft;
+      w.draft = null;
+      return;
+    }
   }
 
   // ── Writer (AI-3) ─────────────────────────────────────────────────────────
@@ -1733,13 +1747,13 @@ pub fn html(keybindings_json: &str) -> String {
   function wireWriter(d, w, box) {
     // Ahead of the page's keys: Esc here closes the writer, not the composer.
     box.addEventListener('keydown', function(e) {
-      const mine = S.writer && S.writer.key === d.key;
+      const mine = S.writers.has(d.key);
       if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'j' && canWrite(d)) {
         e.preventDefault(); e.stopPropagation();
-        if (mine) closeWriter(); else openWriter(d);
+        if (mine) closeWriter(d); else openWriter(d);
       } else if (e.key === 'Escape' && mine) {
         e.preventDefault(); e.stopPropagation();
-        closeWriter();
+        closeWriter(d);
       }
     });
     const button = $('c-write');
@@ -1752,9 +1766,9 @@ pub fn html(keybindings_json: &str) -> String {
       // Before any reply exists the tunes work on what the body holds.
       if (b.dataset.tune) write(d, b.dataset.tune, w.phase === 'ask' ? d.body : w.text);
       else if (b.dataset.w === 'improve') write(d, '', d.body);
-      else if (b.dataset.w === 'keep') keepWriting();
+      else if (b.dataset.w === 'keep') keepWriting(d);
       else if (b.dataset.w === 'retry') write(d, w.request.instruction, w.request.text);
-      else closeWriter();
+      else closeWriter(d);
     });
     const input = $('w-input');
     if (input) {
@@ -1765,7 +1779,7 @@ pub fn html(keybindings_json: &str) -> String {
         const said = input.value.trim();
         if (w.phase === 'ask') write(d, said, d.body);
         else if (said) write(d, said, w.text);
-        else keepWriting();
+        else keepWriting(d);
       });
       input.focus();
     } else {
@@ -1776,27 +1790,27 @@ pub fn html(keybindings_json: &str) -> String {
     bar.scrollIntoView({ block: 'nearest' });
   }
   function openWriter(d) {
-    cancelDraft();
-    S.writer = { key: d.key, phase: 'ask' };
+    stopWriter(d.key);
+    S.writers.set(d.key, { key: d.key, phase: 'ask' });
     renderComposer();
   }
   function write(d, instruction, text) {
-    cancelDraft();
+    stopWriter(d.key);
     // The conversation's account, not From: the reply belongs to the thread.
     const item = { account: S.thread.account, thread: d.thread };
-    S.writer = { key: d.key, item: item, phase: 'writing', text: '', request: { instruction: instruction, text: text } };
+    S.writers.set(d.key, { key: d.key, item: item, phase: 'writing', text: '', request: { instruction: instruction, text: text } });
     ipc({ type: 'ai', kind: 'draft', item: item, text: instruction, body: text });
     renderComposer();
   }
-  function closeWriter() {
-    cancelDraft();
+  function closeWriter(d) {
+    stopWriter(d.key);
     renderComposer();
     const body = $('c-body');
     if (body) body.focus();
   }
-  function keepWriting() {
-    const text = S.writer.text;
-    S.writer = null;
+  function keepWriting(d) {
+    const text = S.writers.get(d.key).text;
+    S.writers.delete(d.key);
     renderComposer();
     // One native edit: the field's own ⌘Z brings back what it held.
     const body = $('c-body');
@@ -1804,9 +1818,10 @@ pub fn html(keybindings_json: &str) -> String {
     body.select();
     document.execCommand('insertText', false, text);
   }
-  function cancelDraft() {
-    if (S.writer && S.writer.phase === 'writing') ipc({ type: 'draft_stop' });
-    S.writer = null;
+  function stopWriter(k) {
+    const w = S.writers.get(k);
+    if (w && w.phase === 'writing') ipc({ type: 'draft_stop', key: k });
+    S.writers.delete(k);
   }
   function discard() {
     const d = S.composer;
@@ -2053,7 +2068,7 @@ pub fn html(keybindings_json: &str) -> String {
       panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
-        S.view = null; S.thread = null; S.composer = null; cancelDraft(); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
+        S.view = null; S.thread = null; S.composer = null; Array.from(S.writers.keys()).forEach(stopWriter); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
         S.gone.clear(); threads.clear(); asked.clear();
         panel.classList.remove('detail'); detail.innerHTML = ''; detail._k = null; search.value = '';
       } else if (images) renderThread();
@@ -2134,12 +2149,13 @@ pub fn html(keybindings_json: &str) -> String {
     openDraft: function(draft) { draft.attachments = draft.attachments || []; openComposer(draft); showUndo('Draft ready — review and send', null, 4000); },
     // The writer's reply so far for the composer with draft key `key`.
     draftStream: function(data) {
-      const w = S.writer;
-      if (!w || w.key !== data.key || w.phase !== 'writing') return;
+      const w = S.writers.get(data.key);
+      if (!w || w.phase !== 'writing') return;
       w.text = data.text;
       // Off screen it only keeps the text, for when its thread opens again.
       const shown = S.composer && S.composer.key === w.key;
       if (data.done) { w.phase = 'review'; if (shown) renderComposer(); return; }
+      if (!shown) return;
       const el = $('w-draft');
       if (el) el.innerHTML = esc(data.text) + '<span class="caret"></span>';
     },
@@ -2159,8 +2175,8 @@ pub fn html(keybindings_json: &str) -> String {
       renderSummary();
     },
     draftFailed: function(data) {
-      const w = S.writer;
-      if (!w || w.key !== data.key || w.phase !== 'writing') return;
+      const w = S.writers.get(data.key);
+      if (!w || w.phase !== 'writing') return;
       w.phase = 'error';
       w.error = data.message;
       if (S.composer && S.composer.key === w.key) renderComposer();

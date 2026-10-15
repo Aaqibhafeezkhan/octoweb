@@ -473,8 +473,10 @@ pub enum Pane {
     },
     /// Nothing to swipe under the gesture that began (`mail_patch`).
     SwipeMiss,
-    /// Stop the drafting run the composer started (AI-3).
-    DraftStop,
+    /// Stop the drafting run for the composer with draft key `key` (AI-3).
+    DraftStop {
+        key: String,
+    },
     /// Choose files to attach with the system picker.
     PickFiles {
         key: String,
@@ -672,8 +674,13 @@ impl Job {
         }
     }
 
-    pub fn same_kind(&self, other: &Job) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(other)
+    /// Whether a run of `other` replaces a run of `self`: one per kind, but
+    /// one per reply for drafts, so several replies can be written at once.
+    pub fn same_slot(&self, other: &Job) -> bool {
+        match (self, other) {
+            (Job::Draft { key: a }, Job::Draft { key: b }) => a == b,
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
     }
 }
 

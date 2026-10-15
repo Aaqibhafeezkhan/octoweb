@@ -4,8 +4,8 @@
 //! or touch the mailbox — the assistant only ever gets what the user types.
 //!
 //! The engine (`mail.rs`) builds the prompt and names the job; this runs it on
-//! the main thread and reports its text as it grows. One run per kind: a new
-//! one replaces a run still going.
+//! the main thread and reports its text as it grows. One run per kind (per
+//! reply for drafts): a new one replaces a run still going.
 
 use crate::acp::{AcpHandle, AgentEvent};
 use crate::mail::{self, Job};
@@ -31,14 +31,14 @@ pub struct Jobs {
 }
 
 impl Jobs {
-    /// Start `job` on its agent with `prompt`, in place of any run of its kind.
+    /// Start `job` on its agent with `prompt`, in place of any run in its slot.
     pub fn start(
         &mut self,
         job: Job,
         prompt: String,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<(), String> {
-        self.stop(|j| j.same_kind(&job));
+        self.stop(|j| j.same_slot(&job));
         let handle = AcpHandle::connect(&format!("octomind acp {}", job.agent()), None, wake)
             .map_err(|e| format!("The AI could not start: {e}"))?;
         if !handle.send_prompt(prompt, vec![]) {
@@ -218,6 +218,21 @@ mod tests {
             response: response.into(),
             ended,
         })
+    }
+
+    #[test]
+    fn drafts_for_different_replies_run_side_by_side() {
+        let draft = |k: &str| Job::Draft { key: k.into() };
+        assert!(draft("reply:a:1").same_slot(&draft("reply:a:1")));
+        assert!(!draft("reply:a:1").same_slot(&draft("reply:a:2")));
+        let summary = |t: &str| Job::Summary {
+            item: Item {
+                account: "a".into(),
+                thread: t.into(),
+            },
+        };
+        assert!(summary("1").same_slot(&summary("2")));
+        assert!(!draft("reply:a:1").same_slot(&summary("1")));
     }
 
     #[test]
