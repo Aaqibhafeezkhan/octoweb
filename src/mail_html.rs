@@ -227,6 +227,8 @@ pub fn html(keybindings_json: &str) -> String {
   .msg-text a, .linkish { color: var(--accent); }
   /* Shown once it has its height: no white box flashing, then jumping. */
   iframe.mail { width: 100%; border: none; display: block; background: #fff; border-radius: 10px; min-height: 40px; opacity: 0; transition: opacity 0.16s var(--ease); }
+  iframe.mail.plain, iframe.mail.adaptive { background: transparent; }
+  iframe.mail.plain { border-radius: 0; }
   iframe.mail.fitted { opacity: 1; }
   .images-bar { margin: 2px 14px 8px; padding: 5px 6px 5px 12px; border-radius: var(--r-capsule); background: var(--fill); font-size: 12px; color: var(--label-2); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .images-bar span { flex: 1; }
@@ -971,15 +973,46 @@ pub fn html(keybindings_json: &str) -> String {
 
   const REMOTE = /(?:src|background|srcset)\s*=\s*["']?\s*https?:|url\(\s*["']?\s*https?:/i;
 
-  function frameDoc(html, remote) {
+  // How a mail meets the card, as Apple Mail does it. One that ships its own
+  // dark design gets it ('adaptive'). One that paints no background is just
+  // text: it reads on the card in the app's colours, as a plain-text one does
+  // ('plain'). Any other keeps the white sheet it was designed on ('sheet').
+  const DARK_READY = /prefers-color-scheme\s*:\s*dark|color-schemes?["']?\s+content\s*=\s*["'][^"']*dark|color-scheme\s*:[^;}"'<]*dark/i;
+  const PAINTED = /\bbgcolor\s*=|\bbackground\s*=|background(?:-color|-image)?\s*:(?!\s*(?:transparent|none|inherit|initial|unset)\b)/i;
+  function frameKind(html) { return DARK_READY.test(html) ? 'adaptive' : PAINTED.test(html) ? 'sheet' : 'plain'; }
+
+  function frameDoc(html, remote, kind) {
     const csp = "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:" + (remote ? ' https: http:' : '');
+    // The frame's scheme matches the pane's, or WebKit paints it opaque; the
+    // mail's own meta can't set it, as it lands in the body.
+    const sheet = kind === 'sheet'
+      ? 'html,body{background:#fff}body{padding:10px 12px;color:#1d1d1f}'
+      : ':root{color-scheme:light dark}html,body{background:transparent}body{padding:0;color:rgba(0,0,0,.85)}a{color:#0a84ff}' +
+        '@media (prefers-color-scheme:dark){body{color:rgba(255,255,255,.85)}a{color:#409cff}}';
     return '<!DOCTYPE html><html><head><meta charset="utf-8">' +
       '<meta http-equiv="Content-Security-Policy" content="' + csp + '">' +
-      '<style>html{margin:0;padding:0;background:#fff}body{margin:0;padding:10px 12px;display:flow-root;background:#fff;color:#1d1d1f;font:13px/1.5 -apple-system,Helvetica,sans-serif;overflow-wrap:anywhere}' +
+      '<style>html{margin:0;padding:0}body{margin:0;display:flow-root;font:13px/1.5 -apple-system,Helvetica,sans-serif;overflow-wrap:anywhere}' + sheet +
       'img{max-width:100%;height:auto}table{max-width:100%}' +
       '.gmail_quote,blockquote[type=cite],#divRplyFwdMsg,#appendonsend~*{display:none}' +
       'body.quotes .gmail_quote,body.quotes blockquote[type=cite],body.quotes #divRplyFwdMsg,body.quotes #appendonsend~*{display:block}</style></head><body>' +
       html + '</body></html>';
+  }
+
+  // On the dark card, text the sender set dark (Gmail's #222, Outlook's
+  // black) turns light: same hue, lightness mirrored.
+  function readableInDark(doc) {
+    if (!window.matchMedia('(prefers-color-scheme: dark)').matches) return;
+    const view = doc.defaultView;
+    doc.querySelectorAll('[style*="color" i], font[color]').forEach(function(el) {
+      const c = (view.getComputedStyle(el).color.match(/[\d.]+/g) || []).map(Number);
+      if (c.length < 3) return;
+      const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
+      if (l >= 0.5) return;
+      const d = max - min, s = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+      const h = !d ? 0 : max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      el.style.setProperty('color', 'hsl(' + Math.round(h * 60) + ',' + Math.round(s * 100) + '%,' + Math.round(Math.min(1 - l, 0.85) * 100) + '%)', 'important');
+    });
   }
 
   function textHtml(text) {
@@ -1072,7 +1105,7 @@ pub fn html(keybindings_json: &str) -> String {
     }
     // No scripts in the frame; mail_patch.rs handles its links, keys and
     // swipes. allow-popups lets target=_blank links reach it.
-    html += '<div class="msg-body">' + (m.html ? '<iframe class="mail" sandbox="allow-same-origin allow-popups" data-i="' + i + '" title="Message"></iframe>' :
+    html += '<div class="msg-body">' + (m.html ? '<iframe class="mail ' + frameKind(m.html) + '" sandbox="allow-same-origin allow-popups" data-i="' + i + '" title="Message"></iframe>' :
       '<div class="msg-text">' + textHtml(m.text || (m.body_loaded ? '' : 'Loading…')) + '</div>') + '</div>';
     if (hasQuote(m)) html += '<button class="pill quote-toggle" type="button" data-quotes="' + i + '">Show quoted text</button>';
     if (m.attachments && m.attachments.length) {
@@ -1159,7 +1192,7 @@ pub fn html(keybindings_json: &str) -> String {
       const i = Number(f.dataset.i), m = t.messages[i];
       if (heights[i]) f.style.height = heights[i];
       f.addEventListener('load', function() { wireFrame(f); });
-      f.srcdoc = frameDoc(m.html, imagesOn(t, m, i));
+      f.srcdoc = frameDoc(m.html, imagesOn(t, m, i), frameKind(m.html));
     });
   }
   // A fresh copy of the open thread: only what changed is redrawn.
@@ -1192,6 +1225,7 @@ pub fn html(keybindings_json: &str) -> String {
     f.classList.add('fitted');
     const doc = f.contentDocument;
     if (!doc || !doc.body) return;
+    if (f.classList.contains('plain')) readableInDark(doc);
     // The body's own height: the document's is at least the frame's, so it
     // would never shrink below the iframe default.
     const fit = function() { f.style.height = Math.ceil(doc.body.getBoundingClientRect().height) + 'px'; };
