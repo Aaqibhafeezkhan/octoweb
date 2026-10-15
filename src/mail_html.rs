@@ -578,9 +578,9 @@ pub fn html(keybindings_json: &str) -> String {
   $('undo-btn').addEventListener('click', function() { const a = undoAction; hideUndo(); if (a) a(); });
 
   // ── Triage ──────────────────────────────────────────────────────────────────
-  const INVERSE = { done: 'restore', snooze: 'unsnooze', pin: 'unpin', mute: 'unmute', block: 'unblock', to_notes: 'undo_notes', mark_unread: 'mark_read', mark_read: 'mark_unread', unpin: 'pin', accept: 'unaccept', important: 'unclass', other: 'unclass' };
-  const LABEL = { done: 'Done', snooze: 'Snoozed', pin: 'Pinned', unpin: 'Unpinned', mute: 'Muted', block: 'Sender blocked', to_notes: 'Added to notes', mark_unread: 'Marked unread', mark_read: 'Marked read', accept: 'Sender accepted', important: 'Moved to Important', other: 'Moved to Other' };
-  const REMOVES = { done: 1, snooze: 1, mute: 1, block: 1, to_notes: 1 };
+  const INVERSE = { done: 'restore', snooze: 'unsnooze', pin: 'unpin', mute: 'unmute', block: 'unblock', spam: 'unspam', to_notes: 'undo_notes', mark_unread: 'mark_read', mark_read: 'mark_unread', unpin: 'pin', accept: 'unaccept', important: 'unclass', other: 'unclass' };
+  const LABEL = { done: 'Done', snooze: 'Snoozed', pin: 'Pinned', unpin: 'Unpinned', mute: 'Muted', block: 'Sender blocked', spam: 'Reported as spam', to_notes: 'Added to notes', mark_unread: 'Marked unread', mark_read: 'Marked read', accept: 'Sender accepted', important: 'Moved to Important', other: 'Moved to Other' };
+  const REMOVES = { done: 1, snooze: 1, mute: 1, block: 1, spam: 1, to_notes: 1 };
 
   function act(verb, items, until) {
     if (!items.length) return;
@@ -1023,6 +1023,7 @@ pub fn html(keybindings_json: &str) -> String {
     pin: '<svg viewBox="0 0 14 14" fill="none"><path d="M5 2h4l-.6 3.5L10.5 8h-7L5.6 5.5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M7 8v4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
     mute: '<svg viewBox="0 0 14 14" fill="none"><path d="M3 5.5h2l3-2.5v8L5 8.5H3z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M10 5.5l2.5 3M12.5 5.5L10 8.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
     block: '<svg viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="4.6" stroke="currentColor" stroke-width="1.2"/><path d="M3.8 10.2l6.4-6.4" stroke="currentColor" stroke-width="1.2"/></svg>',
+    spam: '<svg viewBox="0 0 14 14" fill="none"><path d="M5 1.8h4L12.2 5v4L9 12.2H5L1.8 9V5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/><path d="M7 4.3v3.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="7" cy="9.6" r=".75" fill="currentColor"/></svg>',
     notes: '<svg viewBox="0 0 14 14" fill="none"><rect x="2.5" y="2" width="9" height="10" rx="1.5" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 5.5l1 1 2-2M8.5 6h1M4.5 9h5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>',
     unread: '<svg viewBox="0 0 14 14" fill="none"><rect x="2" y="3.5" width="10" height="7" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 4l4.5 3.3L11.5 4" stroke="currentColor" stroke-width="1.1"/></svg>',
     reply: '<svg viewBox="0 0 14 14" fill="none"><path d="M5.5 4L2.5 7l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 7h5a3.5 3.5 0 013.5 3.5V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
@@ -1047,7 +1048,7 @@ pub fn html(keybindings_json: &str) -> String {
       '<div class="toolbar">' +
       group(btn('done', 'Done', 'e', I.done) + btn('snooze', 'Snooze', 'h', I.snooze) +
         btn(row.pinned ? 'unpin' : 'pin', row.pinned ? 'Unpin' : 'Pin', 'p', I.pin) + btn('to_notes', 'To notes', 't', I.notes)) +
-      group(btn('mute', 'Mute', 'm', I.mute) + btn('block', 'Block sender', 'b', I.block) + btn('mark_unread', 'Mark unread', 'u', I.unread)) +
+      group(btn('mute', 'Mute', 'm', I.mute) + btn('block', 'Block sender', 'b', I.block) + btn('spam', 'Report spam', '!', I.spam) + btn('mark_unread', 'Mark unread', 'u', I.unread)) +
       group(btn('reply', 'Reply', 'r', I.reply) + btn('all', 'Reply all', 'a', I.all) + btn('forward', 'Forward', 'f', I.forward)) +
       (S.ai ? group(btn('summarise', 'Summarise with AI', 's', I.spark) + btn('extract', 'Extract tasks with AI', '', I.tasks)) : '') +
       (row.class === 'other' ? '<button class="pill" type="button" data-act="important">Move sender to Important</button>' : '') +
@@ -1468,7 +1469,7 @@ pub fn html(keybindings_json: &str) -> String {
   selbar.innerHTML = '<span id="sel-count"></span>' +
     iconBtn('data-sel', 'done', 'Done', 'e', I.done) + iconBtn('data-sel', 'snooze', 'Snooze', 'h', I.snooze) +
     iconBtn('data-sel', 'mark_read', 'Mark read', '', I.read) + iconBtn('data-sel', 'pin', 'Pin', 'p', I.pin) +
-    iconBtn('data-sel', 'to_notes', 'To notes', 't', I.notes) + iconBtn('data-sel', 'clear', 'Clear selection', 'Esc', I.close);
+    iconBtn('data-sel', 'to_notes', 'To notes', 't', I.notes) + iconBtn('data-sel', 'spam', 'Report spam', '!', I.spam) + iconBtn('data-sel', 'clear', 'Clear selection', 'Esc', I.close);
   selbar.addEventListener('click', function(e) {
     const b = e.target.closest('[data-sel]');
     if (!b) return;
@@ -1903,6 +1904,7 @@ pub fn html(keybindings_json: &str) -> String {
       }
       case 'm': act('mute', targets()); break;
       case 'b': act('block', targets()); break;
+      case '!': act('spam', targets()); break;
       case 't': act('to_notes', targets()); break;
       case 'u': act('mark_unread', targets()); break;
       case 'x': toggleSelect(); break;
@@ -1941,7 +1943,7 @@ pub fn html(keybindings_json: &str) -> String {
   function renderHelp() {
     const keys = [
       ['j / k', 'Next / previous'], ['↩', 'Open'], ['Esc', 'Back'], ['e', 'Done'], ['h', 'Snooze'], ['p', 'Pin'],
-      ['m', 'Mute'], ['b', 'Block sender'], ['t', 'To notes'], ['u', 'Mark unread'], ['r', 'Reply'], ['a', 'Reply all'],
+      ['m', 'Mute'], ['b', 'Block sender'], ['!', 'Report spam'], ['t', 'To notes'], ['u', 'Mark unread'], ['r', 'Reply'], ['a', 'Reply all'],
       ['f', 'Forward'], ['c', 'Compose'], ['/', 'Search'], ['x', 'Select'], ['⌘Z', 'Undo'], ['⌘↩', 'Send'],
       ['⌘R ⇧⌘R', 'Reply / all'], ['⇧⌘F', 'Forward'], ['⌘N', 'Compose'], ['⌃⌘A', 'Done'], ['⇧⌘U', 'Mark unread'], ['⇧⌘D', 'Send'],
     ];

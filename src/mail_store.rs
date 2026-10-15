@@ -22,6 +22,8 @@ const SUBJECT_THREAD_WINDOW_SECS: i64 = 30 * 24 * 3600;
 pub const INBOX: &str = "inbox";
 pub const SENT: &str = "sent";
 pub const ARCHIVE: &str = "archive";
+/// Reported as spam: on the server's Junk folder, out of the inbox and search.
+pub const JUNK: &str = "junk";
 
 /// One account as the views need it.
 #[derive(Debug, Clone)]
@@ -599,7 +601,7 @@ impl Store {
                     continue;
                 }
                 match self.gate(&account.key, &row.from_addr).as_deref() {
-                    Some("blocked") => continue,
+                    Some("blocked" | "spam") => continue,
                     None if account.gatekeeper && row.from_addr != account.address => {
                         view.new_senders.push(row);
                         continue;
@@ -781,6 +783,7 @@ impl Store {
         if q.attachment {
             sql.push_str(" AND m.attachments != '[]'");
         }
+        sql.push_str(" AND m.folder != 'junk'");
         if q.unread {
             sql.push_str(" AND m.seen = 0");
         }
@@ -1108,7 +1111,7 @@ impl Store {
         self.set_sender(account, addr, "class", class);
     }
 
-    /// `accepted` or `blocked` (GK-2, TRI-7).
+    /// `accepted`, `blocked` or `spam` (GK-2, TRI-7).
     pub fn gate(&self, account: &str, addr: &str) -> Option<String> {
         self.sender(account, addr, "gate")
     }
@@ -1688,6 +1691,26 @@ mod tests {
         let v = s.inbox(&[acct(false)], 101);
         let row = v.important.iter().find(|t| t.thread == "s1").unwrap();
         assert_eq!(row.returned.as_deref(), Some("reminder"));
+    }
+
+    #[test]
+    fn spam_leaves_inbox_and_search() {
+        let s = Store::in_memory();
+        s.insert(
+            "a",
+            INBOX,
+            Some(1),
+            false,
+            true,
+            &msg("m1", &[], "spam@z", "Cheap pills", 10, false),
+        );
+        s.move_local("a", &["m1".to_string()], JUNK);
+        assert!(s.inbox(&[acct(false)], 100).important.is_empty());
+        assert!(s.search(&[acct(false)], "pills", 10).is_empty());
+        s.move_local("a", &["m1".to_string()], INBOX);
+        assert_eq!(s.search(&[acct(false)], "pills", 10).len(), 1);
+        s.set_gate("a", "spam@z", Some("spam"));
+        assert!(s.inbox(&[acct(false)], 100).important.is_empty());
     }
 
     #[test]

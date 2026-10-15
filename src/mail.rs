@@ -21,7 +21,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::config::{MailAccount, MailAuth, MailProvider, SmtpSecurity};
 use crate::mail_parse::{self, Parsed};
-use crate::mail_store::{AccountRef, MessageView, ServerRef, Store, ARCHIVE, INBOX, SENT};
+use crate::mail_store::{AccountRef, MessageView, ServerRef, Store, ARCHIVE, INBOX, JUNK, SENT};
 
 const KEYCHAIN_SERVICE: &str = "octoweb.mail";
 /// Spec SYN-2: how far back the first sync reaches.
@@ -329,6 +329,9 @@ pub enum Verb {
     Unmute,
     Block,
     Unblock,
+    /// Move to the server's Junk folder, as later mail from the sender (TRI-7).
+    Spam,
+    Unspam,
     Accept,
     Unaccept,
     MarkRead,
@@ -1025,6 +1028,8 @@ async fn connect(account: &Account) -> Result<Session, String> {
 #[derive(Clone, Debug)]
 struct Folders {
     archive: String,
+    /// Where spam goes; reported spam is archived without one.
+    junk: Option<String>,
     sent: Option<String>,
     can_move: bool,
 }
@@ -1045,6 +1050,7 @@ async fn folders(session: &mut Session, account: &Account) -> Result<Folders, St
                         NameAttribute::All => "all".to_string(),
                         NameAttribute::Archive => "archive".to_string(),
                         NameAttribute::Sent => "sent".to_string(),
+                        NameAttribute::Junk => "junk".to_string(),
                         NameAttribute::NoSelect => "noselect".to_string(),
                         _ => String::new(),
                     })
@@ -1070,6 +1076,17 @@ async fn folders(session: &mut Session, account: &Account) -> Result<Folders, St
     };
     let sent =
         with("sent").or_else(|| named(&["Sent", "Sent Messages", "Sent Items", "INBOX.Sent"]));
+    let junk = with("junk").or_else(|| {
+        named(&[
+            "Junk",
+            "Spam",
+            "Junk E-mail",
+            "Junk Email",
+            "Bulk Mail",
+            "INBOX.Junk",
+            "INBOX.Spam",
+        ])
+    });
     let archive = if !account.archive_folder.is_empty() {
         account.archive_folder.clone()
     } else if account.provider == MailProvider::Gmail {
@@ -1085,6 +1102,7 @@ async fn folders(session: &mut Session, account: &Account) -> Result<Folders, St
     let caps = timed("CAPABILITY", session.capabilities()).await?;
     Ok(Folders {
         archive,
+        junk,
         sent,
         can_move: caps.has_str("MOVE"),
     })
@@ -1321,6 +1339,14 @@ async fn run_actions(
             "restore" => {
                 move_refs(session, folders, &action.refs, &folders.archive, INBOX_NAME).await
             }
+            "spam" => {
+                let to = folders.junk.as_ref().unwrap_or(&folders.archive);
+                move_refs(session, folders, &action.refs, INBOX_NAME, to).await
+            }
+            "unspam" => {
+                let from = folders.junk.as_ref().unwrap_or(&folders.archive);
+                move_refs(session, folders, &action.refs, from, INBOX_NAME).await
+            }
             "seen" | "unseen" => flag_refs(session, &action.refs, action.kind == "seen").await,
             other => Err(format!("unknown action {other}")),
         };
@@ -1373,7 +1399,13 @@ async fn move_refs(
     to: &str,
 ) -> Result<(), String> {
     timed("SELECT", session.select(from)).await.map_err(conn)?;
-    let local = if from == INBOX_NAME { INBOX } else { ARCHIVE };
+    let local = if from == INBOX_NAME {
+        INBOX
+    } else if folders.junk.as_deref() == Some(from) {
+        JUNK
+    } else {
+        ARCHIVE
+    };
     let uids = locate(session, refs, local).await?;
     if uids.is_empty() {
         return Ok(());
@@ -1512,29 +1544,35 @@ async fn session_loop(shared: &Shared, account: &Account, wake: &Notify) -> Resu
     }
 }
 
-/// On-arrival rules for new inbox mail: mute and block archive it, the rest
-/// may notify (TRI-6, TRI-7, NTF-1, NTF-2).
+/// On-arrival rules for new inbox mail: mute and block archive it, spam goes
+/// to Junk, the rest may notify (TRI-6, TRI-7, NTF-1, NTF-2).
 fn arrive(shared: &Shared, account: &Account, arrivals: Vec<Arrival>) {
     let key = &account.key;
     let aref = account.as_ref();
     let store = shared.store();
     let mut archive: Vec<ServerRef> = Vec::new();
+    let mut junk: Vec<ServerRef> = Vec::new();
     let mut seen: Vec<ServerRef> = Vec::new();
     let mut notify = Vec::new();
     for a in arrivals {
         let state = store.thread_state(key, &a.thread);
         let from = &a.parsed.from.addr;
-        let blocked = store.gate(key, from).as_deref() == Some("blocked");
+        let gate = store.gate(key, from);
         let r = ServerRef {
             uid: None,
             folder: INBOX.into(),
             message_id: a.parsed.message_id.clone(),
         };
-        if state.muted || blocked {
+        let spam = gate.as_deref() == Some("spam");
+        if state.muted || spam || gate.as_deref() == Some("blocked") {
             if !a.seen {
                 seen.push(r.clone());
             }
-            archive.push(r);
+            if spam {
+                junk.push(r)
+            } else {
+                archive.push(r)
+            }
             continue;
         }
         if a.seen || *from == account.address {
@@ -1562,7 +1600,8 @@ fn arrive(shared: &Shared, account: &Account, arrivals: Vec<Arrival>) {
             a.parsed.subject.clone(),
         ));
     }
-    let ids: Vec<String> = archive.iter().map(|r| r.message_id.clone()).collect();
+    let ids =
+        |refs: &[ServerRef]| -> Vec<String> { refs.iter().map(|r| r.message_id.clone()).collect() };
     if !seen.is_empty() {
         store.set_seen(
             key,
@@ -1575,11 +1614,15 @@ fn arrive(shared: &Shared, account: &Account, arrivals: Vec<Arrival>) {
         store.queue_action(key, "seen", &seen);
     }
     if !archive.is_empty() {
-        store.move_local(key, &ids, ARCHIVE);
+        store.move_local(key, &ids(&archive), ARCHIVE);
         store.queue_action(key, "archive", &archive);
     }
+    if !junk.is_empty() {
+        store.move_local(key, &ids(&junk), JUNK);
+        store.queue_action(key, "spam", &junk);
+    }
     drop(store);
-    if !archive.is_empty() || !seen.is_empty() {
+    if !archive.is_empty() || !junk.is_empty() || !seen.is_empty() {
         shared.wake(key);
     }
     for (item, from, subject) in notify {
@@ -1616,6 +1659,9 @@ async fn fetch_raw(shared: &Shared, account: &Account, r: &ServerRef) -> Result<
         candidates.push((sent.clone(), SENT));
     }
     candidates.push((folders.archive.clone(), ARCHIVE));
+    if let Some(junk) = &folders.junk {
+        candidates.push((junk.clone(), JUNK));
+    }
     candidates.sort_by_key(|(_, local)| *local != r.folder);
     for (server, local) in candidates {
         timed("SELECT", session.select(&server)).await?;
@@ -2054,31 +2100,35 @@ fn act(shared: &Shared, ws: String, verb: Verb, items: &[Item], until: Option<i6
         };
         let (key, thread) = (&item.account, &item.thread);
         let store = shared.store();
-        let archive = |store: &Store| -> bool {
+        // Out of the inbox to `local`, as server action `kind`.
+        let out = |store: &Store, local: &str, kind: &str| -> bool {
             let refs = store.inbox_refs(key, thread);
             let ids: Vec<String> = refs.iter().map(|r| r.message_id.clone()).collect();
-            store.move_local(key, &ids, ARCHIVE);
+            store.move_local(key, &ids, local);
             // Done on a thread already out of the inbox keeps the record of
             // what the last Done moved, so undo can still bring it back.
             if !ids.is_empty() {
                 store.set_done(key, thread, &ids);
             }
             store.clear_reminder(key, thread);
-            store.queue_action(key, "archive", &refs);
+            store.queue_action(key, kind, &refs);
             !refs.is_empty()
         };
-        let restore = |store: &Store| -> bool {
+        // What the last `out` moved to `local`, back to the inbox.
+        let back = |store: &Store, local: &str, kind: &str| -> bool {
             let ids = store.done_ids(key, thread);
             let refs: Vec<ServerRef> = store
                 .refs(key, thread)
                 .into_iter()
-                .filter(|r| ids.contains(&r.message_id) && r.folder == ARCHIVE)
+                .filter(|r| ids.contains(&r.message_id) && r.folder == local)
                 .collect();
             let moving: Vec<String> = refs.iter().map(|r| r.message_id.clone()).collect();
             store.move_local(key, &moving, INBOX);
-            store.queue_action(key, "restore", &refs);
+            store.queue_action(key, kind, &refs);
             !refs.is_empty()
         };
+        let archive = |store: &Store| out(store, ARCHIVE, "archive");
+        let restore = |store: &Store| back(store, ARCHIVE, "restore");
         let sender = store
             .thread_row(&account.as_ref(), thread, false)
             .map(|r| r.from_addr)
@@ -2113,6 +2163,14 @@ fn act(shared: &Shared, ws: String, verb: Verb, items: &[Item], until: Option<i6
             Verb::Unblock => {
                 store.set_gate(key, &sender, None);
                 restore(&store)
+            }
+            Verb::Spam => {
+                store.set_gate(key, &sender, Some("spam"));
+                out(&store, JUNK, "spam")
+            }
+            Verb::Unspam => {
+                store.set_gate(key, &sender, None);
+                back(&store, JUNK, "unspam")
             }
             Verb::Accept => {
                 store.set_gate(key, &sender, Some("accepted"));
