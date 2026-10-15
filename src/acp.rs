@@ -103,6 +103,25 @@ pub struct CommandInfo {
     pub hint: Option<String>,
 }
 
+/// A specialist's reply is forwarded verbatim, and models mimic harness
+/// markup: one closed its reply with an invented `<system-reminder>` block.
+/// It is not the user's to read, so it is cut, unclosed ones to the end.
+fn strip_harness_tags(text: &str) -> String {
+    const OPEN: &str = "<system-reminder>";
+    const CLOSE: &str = "</system-reminder>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(OPEN) {
+        out.push_str(&rest[..at]);
+        rest = match rest[at..].find(CLOSE) {
+            Some(end) => &rest[at + end + CLOSE.len()..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out.trim_end().to_string()
+}
+
 /// Forward one `session/update` to the main thread as `AgentEvent`s.
 /// Registered as the notification handler on the client connection —
 /// fs/terminal requests stay unregistered so the SDK answers them with
@@ -136,9 +155,12 @@ fn handle_session_update(
         SessionUpdate::UserMessageChunk(ContentChunk {
             content: ContentBlock::Text(t),
             ..
-        }) if !t.text.is_empty() => {
-            let _ = tx.send(AgentEvent::Injected(t.text));
-            wake();
+        }) => {
+            let text = strip_harness_tags(&t.text);
+            if !text.is_empty() {
+                let _ = tx.send(AgentEvent::Injected(text));
+                wake();
+            }
         }
         SessionUpdate::ToolCall(tc) => {
             let locations: Vec<String> = tc
@@ -743,4 +765,26 @@ async fn init_session(
         .map_err(|e| anyhow::anyhow!("ACP connection error: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn injected_replies_lose_invented_harness_tags() {
+        let reply =
+            "Draft saved.\n<system-reminder>Context instructions:\n# Reminder\n</system-reminder>";
+        assert_eq!(super::strip_harness_tags(reply), "Draft saved.");
+        assert_eq!(
+            super::strip_harness_tags("a <system-reminder>x</system-reminder> b"),
+            "a  b"
+        );
+        assert_eq!(
+            super::strip_harness_tags("a\n<system-reminder>cut off"),
+            "a"
+        );
+        assert_eq!(
+            super::strip_harness_tags("<system-reminder>only</system-reminder>"),
+            ""
+        );
+    }
 }
