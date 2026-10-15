@@ -3307,7 +3307,10 @@ mod tests {
     /// input (no input would only show the definition), the query on one line.
     #[test]
     fn ai_prompts_are_workflow_commands() {
-        assert_eq!(ai_prompt("brief", "").as_deref(), Some("/workflow mail-brief all"));
+        assert_eq!(
+            ai_prompt("brief", "").as_deref(),
+            Some("/workflow mail-brief all")
+        );
         assert_eq!(
             ai_prompt("search", "  the invoice\nAnna sent  ").as_deref(),
             Some("/workflow mail-search the invoice Anna sent")

@@ -661,12 +661,14 @@ pub fn html(keybindings_json: &str) -> String {
     S.gone.forEach(function(until, k) { if (until > t) keys.add(k); else S.gone.delete(k); });
     if (keys.size) dropRows(keys);
   }
-  // Selected rows, else the focused one, else the open thread.
+  // Selected rows, else the focused one (a sender group: all its
+  // conversations, as its swipe), else the open thread.
   function targets() {
     if (S.selected.size) return Array.from(S.selected).map(function(k) { const p = k.split('\u0000'); return { account: p[0], thread: p[1] }; });
     if (S.thread && panel.classList.contains('detail') && !S.fullscreen) return [{ account: S.thread.account, thread: S.thread.thread }];
     const r = S.rows[S.focus];
     if (r && r.thread) return [{ account: r.thread.account, thread: r.thread.thread }];
+    if (r && r.group) return r.group.threads.map(function(t) { return { account: t.account, thread: t.thread }; });
     if (S.thread) return [{ account: S.thread.account, thread: S.thread.thread }];
     return [];
   }
