@@ -2999,21 +2999,22 @@ pub fn text_block(response: &str) -> Option<(&str, bool)> {
     Some((&rest[..rest.len() - partial], false))
 }
 
-/// The assistant's prompt for the mail asks that need its tools: the brief
-/// (AI-4) and a plain-language search (AI-6). They read no message body.
+/// The assistant's ask for the mail tasks that need its tools: the brief
+/// (AI-4) and a plain-language search (AI-6). Both are tap workflows
+/// (`tap/workflows/mail-*.toml`), so the chat shows one command line, not the
+/// instructions. `/workflow <name>` with no input only shows the definition,
+/// hence the brief's `all`. They read no message body.
 fn ai_prompt(kind: &str, text: &str) -> Option<String> {
     Some(match kind {
-        "brief" => "Give me my mail brief. Call mail_list_inbox, then group the conversations into Needs reply, \
-             Waiting on others, FYI and Can archive, one line each. Then call mail_show with each group's \
-             conversations and the group name as title, so I can act on them in the mail panel. \
-             Do not archive or send anything yourself."
-            .to_string(),
-        "search" => format!(
-            "Find this in my mail: \"{}\". Use mail_search (it understands from:, to:, has:attachment, is:unread, \
-             before:YYYY-MM-DD, after:YYYY-MM-DD and words), try a few queries if needed, then call mail_show with \
-             the matching conversations and a short title.",
-            text.replace('"', "'")
-        ),
+        "brief" => "/workflow mail-brief all".to_string(),
+        "search" => {
+            // The input is the rest of one command line.
+            let query = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if query.is_empty() {
+                return None;
+            }
+            format!("/workflow mail-search {query}")
+        }
         _ => return None,
     })
 }
@@ -3300,6 +3301,19 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).await.unwrap();
         line.trim_end().to_string()
+    }
+
+    /// The brief and search run as tap workflows: one command line each, with
+    /// input (no input would only show the definition), the query on one line.
+    #[test]
+    fn ai_prompts_are_workflow_commands() {
+        assert_eq!(ai_prompt("brief", "").as_deref(), Some("/workflow mail-brief all"));
+        assert_eq!(
+            ai_prompt("search", "  the invoice\nAnna sent  ").as_deref(),
+            Some("/workflow mail-search the invoice Anna sent")
+        );
+        assert_eq!(ai_prompt("search", " \n "), None);
+        assert_eq!(ai_prompt("other", "x"), None);
     }
 
     /// Sign-in, refresh and XOAUTH2 for IMAP and SMTP, against local mocks of
