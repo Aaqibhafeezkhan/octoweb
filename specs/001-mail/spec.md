@@ -267,6 +267,12 @@ are joined by links, not merged into one list.
   conversation.
 - **NTF-2** Other, muted, blocked and gatekept mail shall never notify.
 - **NTF-3** The workspace dot shall show the unread Important count.
+- **NTF-4** The new-mail toast shall stay long enough to read (2 s plus 60 ms
+  a character, 6–10 s), hold while the pointer or keyboard focus is on it, and
+  open its mail from the whole toast or its Open button. Mail arriving for the
+  same workspace while it is up shall join it ("3 new messages", latest
+  senders and subject); clicking it then opens the conversation if all of it
+  landed in one, otherwise the inbox.
 
 ## AI
 

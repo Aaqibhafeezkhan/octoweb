@@ -315,6 +315,75 @@ pub struct Item {
     pub thread: String,
 }
 
+/// The new-mail toast on screen (NTF-1, NTF-4). Mail landing while it is up
+/// joins it rather than replacing it, so a burst reads as one toast.
+pub struct Burst {
+    /// Workspace the toast opens.
+    pub ws: String,
+    items: Vec<Item>,
+    senders: Vec<String>,
+    subject: String,
+}
+
+impl Burst {
+    pub fn new(ws: String, item: Item, from: String, subject: String) -> Self {
+        Self {
+            ws,
+            items: vec![item],
+            senders: vec![from],
+            subject,
+        }
+    }
+
+    pub fn push(&mut self, item: Item, from: String, subject: String) {
+        self.items.push(item);
+        // Latest sender first; each named once.
+        self.senders.retain(|s| *s != from);
+        self.senders.insert(0, from);
+        self.subject = subject;
+    }
+
+    /// The conversation to open: the one all of it landed in, if just one.
+    pub fn thread(&self) -> Option<&Item> {
+        let first = &self.items[0];
+        self.items.iter().all(|i| i == first).then_some(first)
+    }
+
+    pub fn title(&self) -> String {
+        match self.items.len() {
+            1 => "New mail".into(),
+            n => format!("{n} new messages"),
+        }
+    }
+
+    /// Senders, latest first (two named, the rest counted), then the latest subject.
+    pub fn text(&self) -> String {
+        let mut who = self
+            .senders
+            .iter()
+            .take(2)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if self.senders.len() > 2 {
+            who += &format!(" +{}", self.senders.len() - 2);
+        }
+        let subject = if self.subject.trim().is_empty() {
+            "(no subject)"
+        } else {
+            &self.subject
+        };
+        format!("{who} — {subject}")
+    }
+
+    /// Long enough to read: 2 s plus 60 ms a character, kept to 6–10 s.
+    /// The toast pauses it while the pointer or focus is on it.
+    pub fn dismiss_ms(&self) -> u64 {
+        let chars = (self.title().chars().count() + self.text().chars().count()) as u64;
+        (2000 + 60 * chars).clamp(6000, 10_000)
+    }
+}
+
 /// Triage verbs and their inverses (TRI-1: every action can be undone).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -3366,6 +3435,32 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).await.unwrap();
         line.trim_end().to_string()
+    }
+
+    fn item(thread: &str) -> Item {
+        Item {
+            account: "a".into(),
+            thread: thread.into(),
+        }
+    }
+
+    #[test]
+    fn burst_groups_new_mail() {
+        let mut b = Burst::new("ws".into(), item("1"), "Stas".into(), "Day off".into());
+        assert_eq!(
+            (b.title().as_str(), b.text().as_str()),
+            ("New mail", "Stas — Day off")
+        );
+        assert_eq!(b.dismiss_ms(), 6000);
+        b.push(item("1"), "Stas".into(), "Re: Day off".into());
+        assert_eq!(b.thread(), Some(&item("1")));
+        b.push(item("2"), "Anna".into(), "".into());
+        b.push(item("3"), "Ivan".into(), "Release".into());
+        assert_eq!(b.title(), "4 new messages");
+        assert_eq!(b.text(), "Ivan, Anna +1 — Release");
+        assert_eq!(b.thread(), None);
+        let long = Burst::new("ws".into(), item("1"), "x".repeat(200), "y".into());
+        assert_eq!(long.dismiss_ms(), 10_000);
     }
 
     /// The brief and search run as tap workflows: one command line each, with

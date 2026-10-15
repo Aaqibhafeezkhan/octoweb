@@ -253,6 +253,7 @@ enum AppEvent {
     NoteCaptureRequest,            // ⌥⌘J — add the page, or quote the selection, to notes
     Notes(notes::Request),         // message from the notes panel page
     ToggleInbox,                   // ⌘⇧I — show/hide the pane on Mail
+    ShowInbox,                     // the pane on Mail, if not already (a new-mail toast)
     Mail(mail::Event),             // from the mail engine
     MailPage(mail::Message),       // message from the mail page
     OpenMailThread(mail::Item, bool), // open a conversation in the mail tab; true when from notes
@@ -3057,8 +3058,8 @@ fn main() {
         let configured = cfg.mail_accounts.iter().map(|a| mail::hex(&a.id)).collect();
         engine.send(mail::Command::SetAccounts { ready, configured });
     }
-    // A notification click opens this conversation in its workspace.
-    let mut mail_notif_origin: Option<(String, mail::Item)> = None;
+    // The new-mail toast on screen: a click opens its mail in its workspace.
+    let mut mail_toast: Option<mail::Burst> = None;
     // The panel holding the keyboard in chrome_win and its own title (see `panel_focus!`).
     let mut chrome_title_panel: Option<&'static str> = None;
     let mut chrome_panel_title = String::new();
@@ -4751,7 +4752,7 @@ fn main() {
         ($text:expr, $icon:expr, $title:expr) => {{
             let escaped = webview_utils::escape_js_template(&$text);
             notif_origin = None;
-            mail_notif_origin = None;
+            mail_toast = None;
             if !notification_visible {
                 let _ = notification_wv.set_visible(true);
                 notification_visible = true;
@@ -8461,12 +8462,16 @@ fn main() {
             // Queued in order, so the session switch runs once the workspace
             // it lives in is active.
             Event::UserEvent(AppEvent::OpenNotifiedSession) => {
-                // A mail toast opens its conversation in its workspace (NTF-1).
-                if let Some((ws_id, item)) = mail_notif_origin.take() {
-                    if ws_id != workspace_manager.active().id {
-                        let _ = proxy.send_event(AppEvent::SwitchWorkspace(ws_id));
+                // A mail toast opens its conversation in its workspace (NTF-1),
+                // or the inbox when it gathered several (NTF-4).
+                if let Some(burst) = mail_toast.take() {
+                    if burst.ws != workspace_manager.active().id {
+                        let _ = proxy.send_event(AppEvent::SwitchWorkspace(burst.ws.clone()));
                     }
-                    let _ = proxy.send_event(AppEvent::OpenMailThread(item, false));
+                    let _ = proxy.send_event(match burst.thread() {
+                        Some(item) => AppEvent::OpenMailThread(item.clone(), false),
+                        None => AppEvent::ShowInbox,
+                    });
                     return;
                 }
                 if let Some((ws_id, sid)) = notif_origin.take() {
@@ -9898,6 +9903,11 @@ fn main() {
                     show_mail!();
                 }
             }
+            Event::UserEvent(AppEvent::ShowInbox) => {
+                if !mail_visible {
+                    show_mail!();
+                }
+            }
             Event::UserEvent(AppEvent::OpenMailThread(item, from_notes)) => {
                 show_mail!();
                 let _ = mail_wv.evaluate_script(&format!(
@@ -10296,9 +10306,26 @@ fn main() {
                         return;
                     }
                     let target = if here { active } else { first.clone() };
-                    let subject = if subject.trim().is_empty() { "(no subject)".to_string() } else { subject };
-                    toast!(format!("{from} — {subject}"), "\u{2709}\u{FE0F}", "New mail");
-                    mail_notif_origin = Some((target, item));
+                    // Joins the toast still up for this workspace (NTF-4).
+                    let burst = match mail_toast.take() {
+                        Some(mut b) if notification_visible && b.ws == target => {
+                            b.push(item, from, subject);
+                            b
+                        }
+                        _ => mail::Burst::new(target, item, from, subject),
+                    };
+                    notif_origin = None;
+                    if !notification_visible {
+                        let _ = notification_wv.set_visible(true);
+                        notification_visible = true;
+                    }
+                    let _ = notification_wv.evaluate_script(&format!(
+                        "window.__show && window.__show(`{}`, `\u{2709}\u{FE0F}`, `{}`, {}, {{ open: 'Open' }})",
+                        webview_utils::escape_js_template(&burst.text()),
+                        webview_utils::escape_js_template(&burst.title()),
+                        burst.dismiss_ms(),
+                    ));
+                    mail_toast = Some(burst);
                 }
                 mail::Event::Counts(counts) => {
                     mail_unread = counts;
