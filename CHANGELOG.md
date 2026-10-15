@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.18.1] - 2026-10-15
+
+### 📋 Release Summary
+
+Mail now supports spam-folder actions and routes mail actions through workflows. Existing behavior now handles concurrent draft writers, targets all conversations in a focused sender group, removes legacy render_ui files based on their contents, and preserves queued prompts when switching workspaces.
+
+### ✨ New Features & Enhancements
+
+- **mail**: support spam folder actions `0ba96bb6`
+- **mail**: route mail actions through workflows `2fdadd18`
+
+### 🐛 Bug Fixes & Stability
+
+- **mail**: support concurrent draft writers `4b47960d`
+- **mail**: target all conversations in focused sender group `a327561a`
+- **workspace**: remove legacy render_ui files by content `2ca3cf67`
+- **sidebar**: preserve queued prompts across workspace switches `493dbf1d`
+
 ## [0.18.0] - 2026-10-14
 
 ### 📋 Release Summary
