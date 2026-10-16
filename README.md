@@ -120,6 +120,14 @@ The agent tag in the sidebar header defaults to `octoweb:assistant`. You can typ
 
 Shipped tags include `octoweb:assistant` (sidebar chat), `octoweb:editor` (inline text transformation, used by `⌘⇧E`), `octoweb:learning` (background learning), and `octoweb:trend` (live social trend research) — see the [tap registry](https://github.com/muvon/octomind-tap).
 
+The `octoweb:assistant` agent uses a stable working directory per browser workspace.
+Default keeps `~/.local/share/octoweb`; other workspaces use
+`~/.local/share/octoweb-workspaces/octoweb-<workspace-id>`. Renaming a workspace
+keeps its directory and Octomind lesson scope. Each directory has the same local
+tools and links to Default's `.env` and `AGENTS.md` when present; existing
+workspace-specific files are kept. Existing lessons stay in Default's scope.
+Other agent roles continue using the shared directory.
+
 No data leaves your machine unless your agent sends it somewhere. The AI provider call is made by octomind, not by the browser.
 
 ### Agent-rendered UI (A2UI)

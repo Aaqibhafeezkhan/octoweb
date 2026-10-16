@@ -39,8 +39,13 @@ impl Jobs {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.stop(|j| j.same_slot(&job));
-        let handle = AcpHandle::connect(&format!("octomind acp {}", job.agent()), None, wake)
-            .map_err(|e| format!("The AI could not start: {e}"))?;
+        let handle = AcpHandle::connect(
+            &format!("octomind acp {}", job.agent()),
+            crate::workspace::DEFAULT_WORKSPACE_ID,
+            None,
+            wake,
+        )
+        .map_err(|e| format!("The AI could not start: {e}"))?;
         if !handle.send_prompt(prompt, vec![]) {
             return Err("The AI closed before it started.".into());
         }

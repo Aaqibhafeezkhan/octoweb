@@ -2672,10 +2672,6 @@ fn main() {
         }
     };
 
-    // Agents run with CWD = this dir (see `acp.rs`); mirror the user's own
-    // local tools in so running sandboxed doesn't hide them. A2UI needs
-    // nothing here — `render_ui` is a tool on our MCP server.
-    agent_workspace::prepare();
     // A2UI surfaces still blocked on a click, keyed by the call id the sidebar
     // echoes back in `a2ui_resolve`. Entries live only as long as the agent
     // waits; a restart drops them and the surface replays as a ghost.
@@ -2766,6 +2762,7 @@ fn main() {
                         };
                         acp::AcpHandle::connect(
                             &cmd,
+                            &ws.id,
                             mcp_handle
                                 .as_ref()
                                 .map(|h| h.register_session(&ws.id, snap.id)),
@@ -2812,6 +2809,7 @@ fn main() {
                     handle: if is_startup_active_ws {
                         acp::AcpHandle::connect(
                             "octomind acp octoweb:assistant",
+                            &ws.id,
                             mcp_handle.as_ref().map(|h| h.register_session(&ws.id, id)),
                             make_wake(acp_proxy.clone()),
                         )
@@ -5603,6 +5601,7 @@ fn main() {
                             if let Some(stop) = login_pollers.remove(&sid) {
                                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                                 let mcp_token = session_mcp_token!(sid);
+                                let workspace_id = workspace_manager.at(ws_idx).id.clone();
                                 if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                                     s.retry_count = 0;
                                     s.reconnect_gen += 1;
@@ -5610,7 +5609,7 @@ fn main() {
                                         Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
                                         None => format!("octomind acp {}", s.tag),
                                     };
-                                    s.handle = acp::AcpHandle::connect(&cmd, mcp_token.clone(), make_wake(acp_proxy.clone())).ok();
+                                    s.handle = acp::AcpHandle::connect(&cmd, &workspace_id, mcp_token.clone(), make_wake(acp_proxy.clone())).ok();
                                     let _ = sidebar_wv.evaluate_script(&format!(
                                         "window.__setSessionStatus && window.__setSessionStatus({sid},'connecting')"
                                     ));
@@ -8577,6 +8576,7 @@ fn main() {
                         .into_iter()
                         .map(|id| (id, session_mcp_token!(id)))
                         .collect();
+                    let workspace_id = workspace_manager.active().id.clone();
                     for s in workspace_manager.active_mut().acp_sessions.iter_mut() {
                         if s.handle.is_none() {
                             s.retry_count = 0;
@@ -8591,6 +8591,7 @@ fn main() {
                             };
                             s.handle = acp::AcpHandle::connect(
                                 &cmd,
+                                &workspace_id,
                                 session_tokens.remove(&s.id).flatten(),
                                 make_wake(acp_proxy.clone()),
                             )
@@ -8765,6 +8766,7 @@ fn main() {
                 }
                 let mut should_persist = false;
                 let mcp_token = session_spawn_token!(sid);
+                let workspace_id = workspace_manager.active().id.clone();
                 if let Some(s) = workspace_manager.active_mut().acp_sessions.iter_mut().find(|s| s.id == sid) {
                     // Inbox-driven turns stream with no terminal Done — commit any
                     // response still buffered so it lands before this user message.
@@ -8794,6 +8796,7 @@ fn main() {
                         };
                         s.handle = acp::AcpHandle::connect(
                             &cmd,
+                            &workspace_id,
                             mcp_token.clone(),
                             make_wake(acp_proxy.clone()),
                         )
@@ -8853,6 +8856,7 @@ fn main() {
                     .map(|t| now.duration_since(t) < std::time::Duration::from_secs(12))
                     .unwrap_or(false);
                 let mcp_token = recent.then(|| session_mcp_token!(sid)).flatten();
+                let workspace_id = workspace_manager.active().id.clone();
                 if let Some(s) = workspace_manager.active_mut().acp_sessions.iter_mut().find(|s| s.id == sid) {
                     if recent {
                         let tag = s.tag.clone();
@@ -8866,6 +8870,7 @@ fn main() {
                         };
                         s.handle = acp::AcpHandle::connect(
                             &cmd,
+                            &workspace_id,
                             mcp_token.clone(),
                             make_wake(acp_proxy.clone()),
                         )
@@ -8900,6 +8905,7 @@ fn main() {
             // ── ACP set agent for an existing session (kills + respawns its handle) ──
             Event::UserEvent(AppEvent::AcpSetAgent(sid, tag)) => {
                 let mut should_persist = false;
+                let workspace_id = workspace_manager.active().id.clone();
                 // The chat log is cleared below, taking every surface with it.
                 pending_a2ui.retain(|_, p| p.sid != sid);
                 let mcp_token = session_mcp_token!(sid);
@@ -8911,6 +8917,7 @@ fn main() {
                     s.handle = None; // drop old (kills subprocess)
                     s.handle = acp::AcpHandle::connect(
                         &format!("octomind acp {}", tag),
+                        &workspace_id,
                         mcp_token.clone(),
                         make_wake(acp_proxy.clone()),
                     )
@@ -8940,6 +8947,7 @@ fn main() {
             // ── ACP clear session (same agent, fresh chat) ────────────────────────
             Event::UserEvent(AppEvent::AcpClearSession(sid)) => {
                 let mut should_persist = false;
+                let workspace_id = workspace_manager.active().id.clone();
                 // The chat log is cleared below, taking every surface with it.
                 pending_a2ui.retain(|_, p| p.sid != sid);
                 let mcp_token = session_mcp_token!(sid);
@@ -8950,6 +8958,7 @@ fn main() {
                     s.handle = None; // drop old (kills subprocess)
                     s.handle = acp::AcpHandle::connect(
                         &format!("octomind acp {}", s.tag),
+                        &workspace_id,
                         mcp_token.clone(),
                         make_wake(acp_proxy.clone()),
                     )
@@ -8986,6 +8995,7 @@ fn main() {
                     let sid = next_acp_session_id();
                     let handle = acp::AcpHandle::connect(
                         &format!("octomind acp {}", tag),
+                        &workspace_manager.active().id,
                         session_mcp_token!(sid),
                         make_wake(acp_proxy.clone()),
                     )
@@ -9064,6 +9074,7 @@ fn main() {
                 // Lazy-spawn: if this session has no live handle (persisted
                 // but not yet connected this run), bring it up now.
                 let mcp_token = session_spawn_token!(sid);
+                let workspace_id = workspace_manager.active().id.clone();
                 if let Some(s) = workspace_manager.active_mut().acp_sessions.iter_mut().find(|s| s.id == sid) {
                     if s.handle.is_none() {
                         let cmd = match &s.acp_session_id {
@@ -9072,6 +9083,7 @@ fn main() {
                         };
                         s.handle = acp::AcpHandle::connect(
                             &cmd,
+                            &workspace_id,
                             mcp_token.clone(),
                             make_wake(acp_proxy.clone()),
                         )
@@ -9704,6 +9716,7 @@ fn main() {
                     let lp = proxy.clone();
                     learning_handle = acp::AcpHandle::connect(
                         "octomind acp octoweb:learning",
+                        &workspace_manager.active().id,
                         workspace_manager.active().mcp_token.clone(),
                         move || { let _ = lp.send_event(AppEvent::LearningWake); },
                     ).ok();
@@ -9725,10 +9738,13 @@ fn main() {
                 // The backoff timer doesn't know which workspace is on screen
                 // when it fires — find the session where it actually lives.
                 let session = match workspace_manager.index_of_session(sid) {
-                    Some(i) => workspace_manager.at_mut(i).acp_sessions.iter_mut().find(|s| s.id == sid),
+                    Some(i) => {
+                        let ws = workspace_manager.at_mut(i);
+                        ws.acp_sessions.iter_mut().find(|s| s.id == sid).map(|s| (&ws.id, s))
+                    },
                     None => None,
                 };
-                if let Some(s) = session {
+                if let Some((workspace_id, s)) = session {
                     // Ignore stale timers from a previous error cycle — the user may
                     // have manually reconnected (AcpSetAgent / AcpClearSession) in the
                     // meantime, which already bumped this session's reconnect_gen.
@@ -9743,6 +9759,7 @@ fn main() {
                         };
                         s.handle = acp::AcpHandle::connect(
                             &cmd,
+                            workspace_id,
                             mcp_token.clone(),
                             make_wake(acp_proxy.clone()),
                         )
@@ -11145,6 +11162,7 @@ fn main() {
                 inline_edit_response.clear();
                 let start_error = match acp::AcpHandle::connect(
                     "octomind acp octoweb:editor",
+                    &workspace_manager.active().id,
                     workspace_manager.active().mcp_token.clone(),
                     { let p = acp_proxy.clone(); move || { let _ = p.send_event(AppEvent::AcpWake); } }
                 ) {

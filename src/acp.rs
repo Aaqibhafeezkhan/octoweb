@@ -239,8 +239,11 @@ impl AcpHandle {
     /// (learning, inline edit) get a workspace-only token. `None` means tool
     /// calls land on the default workspace, matching how it behaved before
     /// workspaces existed.
+    /// `workspace_id` selects the assistant's working directory independently
+    /// of MCP availability and remains stable across reconnects.
     pub fn connect(
         cmd: &str,
+        workspace_id: &str,
         mcp_token: Option<String>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> anyhow::Result<Self> {
@@ -257,10 +260,14 @@ impl AcpHandle {
             .ok_or_else(|| anyhow::anyhow!("empty agent command"))?
             .to_string();
         let mut args: Vec<String> = parts.map(str::to_string).collect();
+        if args.get(1).is_none() {
+            anyhow::bail!("Agent command must specify an ACP role");
+        }
         // Sandbox every agent to its workspace cwd (set in init_session) so its
         // filesystem writes can't escape octoweb's internal dir. Injected here,
         // centrally, instead of at each `octomind acp …` call site.
         args.push("--sandbox".to_string());
+        let workspace_id = workspace_id.to_string();
 
         // Spawn a dedicated OS thread with a current_thread runtime + LocalSet.
         // ClientSideConnection is !Send, so it must live entirely on one thread.
@@ -282,6 +289,7 @@ impl AcpHandle {
                     mcp_token,
                     program,
                     args,
+                    workspace_id,
                 )
                 .await
                 {
@@ -475,6 +483,7 @@ async fn init_session(
     mcp_token: Option<String>,
     program: String,
     args: Vec<String>,
+    workspace_id: String,
 ) -> anyhow::Result<()> {
     let SessionInbox {
         mut prompt_rx,
@@ -484,8 +493,8 @@ async fn init_session(
     // Run the agent inside octoweb's internal workspace dir (not the user's
     // home). Combined with `--sandbox` (injected in `connect`), this confines
     // all of the agent's filesystem writes to this dir.
-    let workspace = crate::agent_workspace::workspace_dir();
-    let _ = std::fs::create_dir_all(&workspace);
+    let role = &args[1];
+    let workspace = crate::agent_workspace::prepare(&workspace_id, role)?;
 
     ensure_octomind(&program);
 
