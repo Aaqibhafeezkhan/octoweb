@@ -581,7 +581,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     padding: 0;
     transition: background var(--t-fast), color var(--t-fast);
   }
-  #session-add-btn svg, #fullscreen-btn svg, #close-btn svg {
+  #session-add-btn svg, #routines-btn svg, #fullscreen-btn svg, #close-btn svg {
     width: 14px;
     height: 14px;
   }
@@ -2829,7 +2829,14 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
         <path d="M5 1v8M1 5h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
       </svg>
     </button>
-    <button id="routines-btn" class="hidden" type="button" title="Scheduled routines — click to list" aria-label="Scheduled routines">⏱<span id="routines-count"></span></button>
+    <button id="routines-btn" class="hidden" type="button" title="Scheduled routines — click to list" aria-label="Scheduled routines">
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+        <circle cx="5" cy="6" r="3" stroke="currentColor" stroke-width="1.4"/>
+        <path d="M4 1h2M5 1v2M5 4.5V6l1 .75"
+              stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span id="routines-count"></span>
+    </button>
     <button id="fullscreen-btn" type="button" title="Toggle fullscreen" aria-label="Toggle assistant fullscreen">
       <svg class="ic-enter" width="10" height="10" viewBox="0 0 10 10" fill="none">
         <path d="M1 4V1h3M9 4V1H6M1 6v3h3M9 6v3H6"
