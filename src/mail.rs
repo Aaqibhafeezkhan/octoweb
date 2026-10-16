@@ -2958,7 +2958,7 @@ fn thread_text(shared: &Shared, item: &Item) -> Option<String> {
 
 /// `text` in the untrusted wrapper. A sender can't close it early and write on
 /// outside it: every `</untrusted` inside, in any case, loses its meaning.
-fn untrusted(text: &str) -> String {
+pub(crate) fn untrusted(text: &str) -> String {
     const CLOSE: &str = "</untrusted";
     let mut out = String::from("<untrusted>\n");
     let mut last = 0;
