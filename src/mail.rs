@@ -859,6 +859,7 @@ impl Mail {
 
 async fn run(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Command>) {
     let mut tasks: HashMap<String, (Account, tokio::task::JoinHandle<()>)> = HashMap::new();
+    let mut searches: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     tokio::spawn(clock(shared.clone()));
     while let Some(command) = rx.recv().await {
         match command {
@@ -949,7 +950,18 @@ async fn run(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<Command>) {
             }
             Command::Page { ws, accounts, req } => {
                 let shared = shared.clone();
-                tokio::spawn(async move { page(&shared, ws, accounts, req).await });
+                if matches!(req, PageRequest::Search { server: true, .. }) {
+                    if let Some(previous) = searches.remove(&ws) {
+                        previous.abort();
+                    }
+                    let key = ws.clone();
+                    searches.insert(
+                        key,
+                        tokio::spawn(async move { page(&shared, ws, accounts, req).await }),
+                    );
+                } else {
+                    tokio::spawn(async move { page(&shared, ws, accounts, req).await });
+                }
             }
             Command::Mcp {
                 ws,
@@ -1775,9 +1787,41 @@ async fn fetch_raw(shared: &Shared, account: &Account, r: &ServerRef) -> Result<
 /// Messages a server search brings in at most, newest first.
 const SERVER_SEARCH_LIMIT: usize = 30;
 
-/// Search the server for `text` and store matches the local window does not
-/// hold (SYN-2). Returns how many were added.
-async fn server_search(shared: &Shared, account: &Account, text: &str) -> Result<usize, String> {
+fn server_search_query(query: &crate::mail_store::SearchQuery) -> String {
+    let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    let mut terms = Vec::new();
+    for word in &query.words {
+        terms.push(format!("TEXT {}", quote(word)));
+    }
+    if let Some(from) = &query.from {
+        terms.push(format!("FROM {}", quote(from)));
+    }
+    if let Some(to) = &query.to {
+        terms.push(format!("OR TO {0} CC {0}", quote(to)));
+    }
+    if query.unread {
+        terms.push("UNSEEN".into());
+    }
+    if let Some(before) = query.before {
+        terms.push(format!("SENTBEFORE {}", imap_date(before)));
+    }
+    if let Some(after) = query.after {
+        terms.push(format!("SENTSINCE {}", imap_date(after)));
+    }
+    // IMAP has no attachment predicate; the local query checks fetched MIME parts.
+    if terms.is_empty() {
+        terms.push("ALL".into());
+    }
+    terms.join(" ")
+}
+
+/// Search the server for `query` and store matches the local window does not
+/// hold (SYN-2).
+async fn server_search(
+    shared: &Shared,
+    account: &Account,
+    query: &crate::mail_store::SearchQuery,
+) -> Result<(), String> {
     let folders = shared
         .folders
         .lock()
@@ -1786,7 +1830,7 @@ async fn server_search(shared: &Shared, account: &Account, text: &str) -> Result
         .cloned()
         .ok_or("Not connected yet")?;
     let mut session = connect(account).await?;
-    let quoted = text.replace(['"', '\\'], " ");
+    let criteria = server_search_query(query);
     // Gmail's All Mail holds everything; elsewhere the archive, inbox and sent.
     let mut places = vec![(folders.archive.clone(), ARCHIVE)];
     if account.provider != MailProvider::Gmail {
@@ -1795,12 +1839,9 @@ async fn server_search(shared: &Shared, account: &Account, text: &str) -> Result
             places.push((sent.clone(), SENT));
         }
     }
-    let mut added = 0;
     for (server, local) in places {
-        if timed("SELECT", session.select(&server)).await.is_err() {
-            continue;
-        }
-        let mut uids: Vec<u32> = timed("SEARCH", session.uid_search(format!("TEXT \"{quoted}\"")))
+        timed("SELECT", session.select(&server)).await?;
+        let mut uids: Vec<u32> = timed("SEARCH", session.uid_search(&criteria))
             .await?
             .into_iter()
             .collect();
@@ -1818,7 +1859,8 @@ async fn server_search(shared: &Shared, account: &Account, text: &str) -> Result
             stream.collect().await
         };
         let store = shared.store();
-        for f in fetched.into_iter().filter_map(Result::ok) {
+        for fetched in fetched {
+            let f = fetched.map_err(|e| format!("FETCH: {e}"))?;
             let (Some(uid), Some(raw)) = (f.uid, f.body()) else {
                 continue;
             };
@@ -1835,11 +1877,10 @@ async fn server_search(shared: &Shared, account: &Account, text: &str) -> Result
             // Only inbox and sent UIDs are tracked; archived mail is found by Message-ID.
             let uid = (local != ARCHIVE).then_some(uid);
             store.insert(&account.key, local, uid, seen, true, &parsed);
-            added += 1;
         }
     }
     let _ = session.logout().await;
-    Ok(added)
+    Ok(())
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -1915,29 +1956,33 @@ async fn page(shared: &Arc<Shared>, ws: String, accounts: Vec<String>, req: Page
             let hits = shared.store().search(&refs, &query, SEARCH_LIMIT);
             to_page(script(
                 "search",
-                &serde_json::json!({ "query": query, "hits": hits }),
+                &serde_json::json!({ "query": query, "hits": hits, "searching": server, "error": null }),
             ));
-            let words = crate::mail_store::SearchQuery::parse(&query).words;
-            if !server || words.is_empty() {
+            if !server {
                 return;
             }
-            let mut found = false;
+            let parsed = crate::mail_store::SearchQuery::parse(&query);
+            let mut errors = Vec::new();
             for key in &accounts {
                 let Some(account) = shared.account(key) else {
                     continue;
                 };
-                match server_search(shared, &account, &words.join(" ")).await {
-                    Ok(n) => found |= n > 0,
-                    Err(e) => tracing::warn!(account = %key, error = %e, "server search failed"),
+                if let Err(e) = server_search(shared, &account, &parsed).await {
+                    tracing::warn!(account = %key, error = %e, "server search failed");
+                    errors.push(format!("{}: {e}", account.address));
                 }
             }
-            if found {
-                let hits = shared.store().search(&refs, &query, SEARCH_LIMIT);
-                to_page(script(
-                    "search",
-                    &serde_json::json!({ "query": query, "hits": hits }),
-                ));
-            }
+            let error = (!errors.is_empty()).then(|| {
+                format!(
+                    "Some mail could not be searched. Showing available results. {}",
+                    errors.join("; ")
+                )
+            });
+            let hits = shared.store().search(&refs, &query, SEARCH_LIMIT);
+            to_page(script(
+                "search",
+                &serde_json::json!({ "query": query, "hits": hits, "searching": false, "error": error }),
+            ));
         }
         PageRequest::Thread {
             account,
@@ -4049,6 +4094,163 @@ mod tests {
             clock: Notify::new(),
             sink: Box::new(|_| {}),
         }
+    }
+
+    #[test]
+    fn server_search_combines_words_and_filters() {
+        let parse = crate::mail_store::SearchQuery::parse;
+        assert_eq!(
+            server_search_query(&parse("budget review from:Anna to:me is:unread before:2026-10-16 after:2026-10-13")),
+            "TEXT \"budget\" TEXT \"review\" FROM \"anna\" OR TO \"me\" CC \"me\" UNSEEN SENTBEFORE 16-Oct-2026 SENTSINCE 13-Oct-2026"
+        );
+        assert_eq!(server_search_query(&parse("from:Anna")), "FROM \"anna\"");
+        assert_eq!(server_search_query(&parse("has:attachment")), "ALL");
+        assert_eq!(
+            server_search_query(&parse(r#"from:a"b\c"#)),
+            r#"FROM "a\"b\\c""#
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fetches_uncached_done_mail_without_free_words() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let (read, mut write) = socket.into_split();
+            let mut read = tokio::io::BufReader::new(read);
+            write.write_all(b"* OK ready\r\n").await.unwrap();
+            let raw = "From: Anna <anna@example.com>\r\nTo: me@example.com\r\nSubject: Old budget\r\nMessage-ID: <archived@example.com>\r\nDate: Tue, 1 Oct 2024 12:00:00 +0000\r\n\r\nArchived long before the sync window.\r\n";
+            let mut folder = String::new();
+            let mut searched = Vec::new();
+            loop {
+                let line = read_line(&mut read).await;
+                let (tag, command) = line.split_once(' ').expect("IMAP command");
+                let reply = if command.starts_with("LOGIN ") {
+                    format!("{tag} OK logged in\r\n")
+                } else if command.starts_with("SELECT ") {
+                    folder = command
+                        .trim_start_matches("SELECT ")
+                        .trim_matches('"')
+                        .into();
+                    format!("* 1 EXISTS\r\n* OK [UIDVALIDITY 1] valid\r\n{tag} OK selected\r\n")
+                } else if command.starts_with("UID SEARCH ") {
+                    assert_eq!(command, "UID SEARCH FROM \"anna\"");
+                    searched.push(folder.clone());
+                    if folder == "Archive" {
+                        format!("* SEARCH 7\r\n{tag} OK searched\r\n")
+                    } else {
+                        format!("* SEARCH\r\n{tag} OK searched\r\n")
+                    }
+                } else if command.starts_with("UID FETCH ") {
+                    assert_eq!(folder, "Archive");
+                    assert!(command.ends_with("(UID FLAGS BODY.PEEK[])"));
+                    format!("* 1 FETCH (UID 7 FLAGS (\\Seen) BODY[] {{{}}}\r\n{raw})\r\n{tag} OK fetched\r\n", raw.len())
+                } else {
+                    assert_eq!(command, "LOGOUT");
+                    write
+                        .write_all(format!("* BYE closing\r\n{tag} OK logout\r\n").as_bytes())
+                        .await
+                        .unwrap();
+                    break;
+                };
+                write.write_all(reply.as_bytes()).await.unwrap();
+            }
+            searched
+        });
+        let account = Account {
+            key: "a".into(),
+            provider: MailProvider::Other,
+            address: "me@example.com".into(),
+            name: String::new(),
+            signature: String::new(),
+            gatekeeper: false,
+            imap_host: "127.0.0.1".into(),
+            imap_port: port,
+            imap_tls: false,
+            imap_logins: vec!["me@example.com".into()],
+            smtp_host: String::new(),
+            smtp_port: 0,
+            smtp_security: SmtpSecurity::Plain,
+            smtp_login: String::new(),
+            archive_folder: String::new(),
+            password: "secret".into(),
+            oauth: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut shared = shared(Store::in_memory());
+        shared.sink = Box::new(move |event| tx.send(event).unwrap());
+        shared.accounts.lock().unwrap().insert("a".into(), account);
+        shared.folders.lock().unwrap().insert(
+            "a".into(),
+            Folders {
+                archive: "Archive".into(),
+                sent: Some("Sent".into()),
+                junk: Some("Junk".into()),
+                can_move: true,
+            },
+        );
+        let shared = Arc::new(shared);
+        page(
+            &shared,
+            "work".into(),
+            vec!["a".into()],
+            PageRequest::Search {
+                query: "from:anna".into(),
+                server: true,
+            },
+        )
+        .await;
+        assert_eq!(mock.await.unwrap(), vec!["Archive", "INBOX", "Sent"]);
+        let replies: Vec<serde_json::Value> = rx
+            .try_iter()
+            .map(|event| {
+                let Event::ToPage { ws, script } = event else {
+                    panic!("search reply")
+                };
+                assert_eq!(ws, "work");
+                let json = script
+                    .strip_prefix("window.__mail && window.__mail.search(")
+                    .unwrap()
+                    .strip_suffix(')')
+                    .unwrap();
+                serde_json::from_str(json).unwrap()
+            })
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["searching"], true);
+        assert_eq!(replies[0]["hits"], serde_json::json!([]));
+        assert_eq!(replies[1]["searching"], false);
+        assert!(replies[1]["error"].is_null());
+        assert_eq!(replies[1]["hits"][0]["subject"], "Old budget");
+        let store = shared.store();
+        let messages = store.thread("a", "archived@example.com");
+        assert_eq!(messages[0].folder, ARCHIVE);
+        assert!(store
+            .inbox(&shared.refs_for(&["a".into()]), now())
+            .important
+            .is_empty());
+        drop(store);
+
+        shared.folders.lock().unwrap().clear();
+        page(
+            &shared,
+            "work".into(),
+            vec!["a".into()],
+            PageRequest::Search {
+                query: "from:anna".into(),
+                server: true,
+            },
+        )
+        .await;
+        let Event::ToPage { script, .. } = rx.try_iter().last().unwrap() else {
+            panic!("search reply")
+        };
+        assert!(script.contains("Not connected yet"));
+        assert!(script.contains("Old budget"));
+        assert!(script.contains(r#""searching":false"#));
     }
 
     #[test]

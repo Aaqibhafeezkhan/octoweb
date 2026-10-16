@@ -249,7 +249,10 @@ are joined by links, not merged into one list.
 ## Search
 
 - **SRCH-1** Search shall cover sender, recipients, subject and body of all
-  synced mail of the workspace's accounts, ranked newest first.
+  synced mail of the workspace's accounts, including Done (archived) mail,
+  ranked newest first. Typing shall also search the server's archive, inbox
+  and sent mail for uncached matches, without requiring Enter. Local results
+  shall appear first, with progress and any server error shown in the panel.
 - **SRCH-2** Search shall understand `from:`, `to:`, `has:attachment`,
   `is:unread`, `before:` and `after:`.
 - **SRCH-3** The command palette's `/query` shall include mail results beside

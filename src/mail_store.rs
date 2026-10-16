@@ -1621,6 +1621,7 @@ mod tests {
         );
         s.move_local("a", &["m1".to_string()], ARCHIVE);
         assert!(s.inbox(&[acct(false)], 100).important.is_empty());
+        assert_eq!(s.search(&[acct(false)], "from:anna", 10)[0].thread, "m1");
         s.move_local("a", &["m1".to_string()], INBOX);
         assert_eq!(s.inbox(&[acct(false)], 100).important.len(), 1);
     }

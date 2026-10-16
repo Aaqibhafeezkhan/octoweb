@@ -52,14 +52,29 @@ function checkSearch(html) {
   function type(query) {
     search.value = query; search.fire('input');
     for (const [id, fn] of timers) { timers.delete(id); fn(); }
-    mail.search({ query, hits: [] });
+    mail.search({ query, hits: [], searching: false, error: null });
   }
   function ask() { nodes.get('ask-ai').fire('click'); return last(); }
   function ready(request, query = 'from:Anna invoice', ws = 'work') {
     mail.searchReady({ ws, id: request.id, query });
   }
 
-  setup('work'); type('the invoice Anna sent');
+  setup('work'); type('invoice');
+  assert.deepEqual(last(), { type: 'search', query: 'invoice', server: true });
+  assert.match(list.innerHTML, /Results · All mail/);
+  mail.search({ query: 'invoice', hits: [], searching: true, error: null });
+  assert.match(list.innerHTML, /Searching all mail…/);
+  assert.doesNotMatch(list.innerHTML, /Nothing found/);
+  mail.search({ query: 'invoice', hits: [], searching: false, error: null });
+  assert.doesNotMatch(list.innerHTML, /Searching all mail…/);
+  assert.match(list.innerHTML, /Nothing found/);
+  mail.search({ query: 'invoice', hits: [], searching: false, error: 'Archive <offline>' });
+  assert.match(list.innerHTML, /role="alert">Archive &lt;offline&gt;/);
+  search.value = 'new query'; search.fire('input');
+  mail.search({ query: 'invoice', hits: [], searching: false, error: 'Stale failure' });
+  assert.doesNotMatch(list.innerHTML, /Stale failure/);
+
+  type('the invoice Anna sent');
   const first = ask();
   assert.equal(first.type, 'search_ai');
   assert.equal(first.query, 'the invoice Anna sent');
@@ -75,7 +90,7 @@ function checkSearch(html) {
   assert.deepEqual(last(), { type: 'search', query: 'from:Anna invoice', server: true });
   ready(first, 'from:Duplicate');
   assert.equal(search.value, 'from:Anna invoice');
-  mail.search({ query: search.value, hits: [] });
+  mail.search({ query: search.value, hits: [], searching: false, error: null });
   assert.doesNotMatch(list.innerHTML, /Searching…/);
 
   type('invoice');

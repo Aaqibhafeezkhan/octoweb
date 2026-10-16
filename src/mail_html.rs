@@ -422,7 +422,7 @@ pub fn html(keybindings_json: &str) -> String {
   <div id="banner"></div>
   <div id="body">
     <div id="list-pane">
-      <div id="searchbox"><input id="search" type="search" placeholder="Search" spellcheck="false" autocomplete="off"><span class="kbd" id="search-key">/</span></div>
+      <div id="searchbox"><input id="search" type="search" placeholder="Search all mail" spellcheck="false" autocomplete="off"><span class="kbd" id="search-key">/</span></div>
       <div id="list" tabindex="0" role="listbox" aria-label="Conversations" aria-multiselectable="true"></div>
       <div id="selbar" role="toolbar" aria-label="Selected conversations"></div>
     </div>
@@ -463,7 +463,7 @@ pub fn html(keybindings_json: &str) -> String {
   const S = {
     ws: null, accounts: [], ai: false, blockImages: false,
     view: null, scheduled: [], drafts: [],
-    mode: 'inbox', query: '', hits: [], aiSearch: null, showTitle: '', showItems: [],
+    mode: 'inbox', query: '', hits: [], searching: false, searchError: null, aiSearch: null, showTitle: '', showItems: [],
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
     thread: null, fromNotes: false, composer: null, composerError: '', writers: new Map(),
     undo: null, sending: new Map(), fullscreen: false, chords: {},
@@ -727,14 +727,16 @@ pub fn html(keybindings_json: &str) -> String {
     if (S.mode === 'search' || S.mode === 'show') {
       const items = S.mode === 'search' ? S.hits : S.showItems;
       const finding = S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'writing';
-      html += '<div class="section">' + esc(S.mode === 'search' ? 'Results' : S.showTitle) +
+      html += '<div class="section">' + esc(S.mode === 'search' ? 'Results · All mail' : S.showTitle) +
         '<span class="more" style="display:flex;gap:4px">' +
         (S.mode === 'search' && S.ai ? '<button class="pill" type="button" id="ask-ai" title="Find mail using your own words"' + (finding ? ' disabled' : '') + '>\u2726 ' + (finding ? 'Searching…' : 'Ask AI') + '</button>' : '') +
         (S.mode === 'show' && items.length ? '<button class="pill" type="button" id="done-all" title="Done for every conversation here (E)">Done all</button>' : '') +
         '<button class="pill" type="button" id="back-inbox">Inbox</button></span></div>';
       if (S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'error') html += '<div class="summary" role="alert">' + esc(S.aiSearch.error) + '</div>';
+      if (S.mode === 'search' && S.searchError) html += '<div class="summary" role="alert">' + esc(S.searchError) + '</div>';
+      if (S.mode === 'search' && S.searching) html += '<div class="summary" role="status">Searching all mail…</div>';
       items.forEach(function(t) { html += rowHtml(t, push({ thread: t })); });
-      if (!items.length) html += '<div class="empty" role="status">' + (finding ? 'Finding mail…' : 'Nothing found.') + '</div>';
+      if (!items.length && !S.searching) html += '<div class="empty" role="status">' + (finding ? 'Finding mail…' : 'Nothing found.') + '</div>';
     } else if (S.view) {
       const v = S.view;
       if (S.drafts.length) {
@@ -889,7 +891,7 @@ pub fn html(keybindings_json: &str) -> String {
     }
   }
   function backToInbox() {
-    S.mode = 'inbox'; S.query = ''; S.aiSearch = null; search.value = ''; S.focus = 0;
+    S.mode = 'inbox'; S.query = ''; S.aiSearch = null; S.searching = false; S.searchError = null; search.value = ''; S.focus = 0;
     ipc({ type: 'inbox' });
     render();
   }
@@ -2010,6 +2012,7 @@ pub fn html(keybindings_json: &str) -> String {
     if (!q) return;
     clearTimeout(searchTimer);
     S.mode = 'search'; S.query = q; S.focus = 0;
+    S.searching = false; S.searchError = null;
     S.aiSearch = { id: ++searchRequest, phase: 'writing', error: '' };
     ipc({ type: 'search_ai', id: S.aiSearch.id, query: q });
     render();
@@ -2027,7 +2030,6 @@ pub fn html(keybindings_json: &str) -> String {
     const q = search.value.trim();
     if (!q) { backToInbox(); return; }
     S.mode = 'search'; S.query = q; S.focus = 0;
-    // Enter also asks the servers, for mail older than what is kept here.
     ipc({ type: 'search', query: q, server: true });
     list.focus();
   }
@@ -2035,7 +2037,7 @@ pub fn html(keybindings_json: &str) -> String {
   search.addEventListener('input', function() {
     clearTimeout(searchTimer);
     if (S.aiSearch) { S.aiSearch = null; render(); }
-    searchTimer = setTimeout(function() { if (search.value.trim()) { S.mode = 'search'; S.query = search.value.trim(); ipc({ type: 'search', query: S.query }); } else backToInbox(); }, 220);
+    searchTimer = setTimeout(function() { if (search.value.trim()) { S.mode = 'search'; S.query = search.value.trim(); ipc({ type: 'search', query: S.query, server: true }); } else backToInbox(); }, 220);
   });
 
   // ── Bar, pane and resize ────────────────────────────────────────────────────
@@ -2092,7 +2094,7 @@ pub fn html(keybindings_json: &str) -> String {
   function refresh() {
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(function() {
-      if (S.mode === 'search') ipc({ type: 'search', query: S.query });
+      if (S.mode === 'search') ipc({ type: 'search', query: S.query, server: true });
       else ipc({ type: 'inbox' });
       // A redraw, not an open: a thread marked unread stays unread.
       if (S.thread && !S.thread.loading && !S.composer) ipc({ type: 'thread', account: S.thread.account, thread: S.thread.thread, peek: true });
@@ -2112,7 +2114,7 @@ pub fn html(keybindings_json: &str) -> String {
       panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
-        clearTimeout(searchTimer); S.aiSearch = null;
+        clearTimeout(searchTimer); S.aiSearch = null; S.searching = false; S.searchError = null;
         S.view = null; S.thread = null; S.composer = null; Array.from(S.writers.keys()).forEach(stopWriter); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
         S.gone.clear(); threads.clear(); asked.clear();
         panel.classList.remove('detail'); detail.innerHTML = ''; detail._k = null; search.value = '';
@@ -2137,8 +2139,10 @@ pub fn html(keybindings_json: &str) -> String {
       if (!S.thread && r && r.thread) prefetchSoon(r.thread);
     },
     search: function(data) {
-      if (S.mode !== 'search' || data.query !== S.query) return;
+      if (S.mode !== 'search' || data.query !== S.query || data.query !== search.value.trim()) return;
       S.hits = data.hits;
+      S.searching = data.searching;
+      S.searchError = data.error;
       pruneGone();
       render();
     },
