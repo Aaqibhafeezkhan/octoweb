@@ -183,9 +183,10 @@ pub fn normalize(messages: &mut [Value]) {
 /// the renderer can draw it.
 pub fn validate(messages: &[Value]) -> Vec<String> {
     let mut problems = Vec::new();
-    // Component ids declared anywhere in this envelope, and the references
-    // they make — checked together at the end, once every message is seen.
-    let mut declared: Vec<String> = Vec::new();
+    // Component ids declared anywhere in this envelope, as (path, id), and the
+    // references they make — checked together at the end, once every message
+    // is seen.
+    let mut declared: Vec<(String, String)> = Vec::new();
     let mut referenced: Vec<(String, String)> = Vec::new();
     // Buttons with nowhere for a click to go, as (path, id).
     let mut actionless: Vec<(String, String)> = Vec::new();
@@ -329,7 +330,7 @@ pub fn validate(messages: &[Value]) -> Vec<String> {
     // know every id the tree can reach. Incremental envelopes reference ids
     // declared by earlier calls, so their references are left alone.
     if has_create_surface {
-        if !declared.is_empty() && !declared.iter().any(|id| id == "root") {
+        if !declared.is_empty() && !declared.iter().any(|(_, id)| id == "root") {
             problems.push(
                 "No component has id \"root\". Exactly one component must, and it is the top of \
                  the tree."
@@ -337,9 +338,20 @@ pub fn validate(messages: &[Value]) -> Vec<String> {
             );
         }
         for (from, id) in &referenced {
-            if !declared.contains(id) {
+            if !declared.iter().any(|(_, d)| d == id) {
                 problems.push(format!(
                     "{from} points at \"{id}\", which no component in this envelope declares."
+                ));
+            }
+        }
+        // The renderer walks the tree down from "root", so a component no
+        // parent lists is silently never drawn — and a Button whose checks
+        // read its value can then never be clicked through.
+        for (at, id) in &declared {
+            if id != "root" && !referenced.iter().any(|(_, target)| target == id) {
+                problems.push(format!(
+                    "{at} declares \"{id}\", but no component lists it as a child, so it never \
+                     renders. Add \"{id}\" to a parent's \"children\" (or \"child\"), or drop it."
                 ));
             }
         }
@@ -365,7 +377,7 @@ fn check_components(
     components: &Value,
     at: &str,
     problems: &mut Vec<String>,
-    declared: &mut Vec<String>,
+    declared: &mut Vec<(String, String)>,
     referenced: &mut Vec<(String, String)>,
     actionless: &mut Vec<(String, String)>,
 ) {
@@ -384,7 +396,7 @@ fn check_components(
             continue;
         };
         match obj.get("id").and_then(|v| v.as_str()) {
-            Some(id) if !id.is_empty() => declared.push(id.to_string()),
+            Some(id) if !id.is_empty() => declared.push((at.clone(), id.to_string())),
             _ => problems.push(format!("{at} needs a non-empty string \"id\".")),
         }
         let name = match obj.get("component").and_then(|v| v.as_str()) {
@@ -864,6 +876,26 @@ mod tests {
             {"id": "body", "component": "Text", "text": "More"}
         ]}})];
         assert_eq!(validate(&messages), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_component_no_parent_lists_is_reported() {
+        // What an agent actually sent: the CheckBox a Button's checks read was
+        // declared but never placed, so the user saw the check's toast and no
+        // box to tick.
+        let messages = vec![json!({"createSurface": {"surfaceId": "s1", "components": [
+            {"id": "root", "component": "Card", "child": "body"},
+            {"id": "body", "component": "Column", "children": ["ok"]},
+            {"id": "okLabel", "component": "Text", "text": "Post it"},
+            {"id": "ok", "component": "Button", "child": "okLabel",
+             "action": {"event": {"name": "approve"}},
+             "checks": [{"condition": {"path": "/form/ack"}, "message": "Tick it"}]},
+            {"id": "ack", "component": "CheckBox", "label": "I read it",
+             "value": {"path": "/form/ack"}}
+        ]}})];
+        let problems = validate(&messages);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("\"ack\""), "{problems:?}");
     }
 
     #[test]
