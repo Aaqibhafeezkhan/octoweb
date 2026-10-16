@@ -1,4 +1,4 @@
-//! One-shot mail AI jobs (spec AI-1, AI-2, AI-3): a specialist with no tools
+//! One-shot mail AI jobs (spec AI-1, AI-2, AI-3, AI-5, AI-6): a specialist with no tools
 //! reads mail and answers in text, and the app acts on the answer. Mail comes
 //! from anyone, so nothing in it reaches an agent that can browse, read tabs
 //! or touch the mailbox — the assistant only ever gets what the user types.
@@ -126,6 +126,10 @@ pub fn failed(job: &Job, message: String) -> Outcome {
             "summaryFailed",
             serde_json::json!({ "item": item, "message": message }),
         ),
+        Job::Search { ws, id } => script(
+            "searchFailed",
+            serde_json::json!({ "ws": ws, "id": id, "message": message }),
+        ),
         Job::Tasks { .. } => Outcome {
             toast: Some(message),
             ..Default::default()
@@ -139,7 +143,7 @@ pub fn failed(job: &Job, message: String) -> Outcome {
 }
 
 pub fn outcome(p: Progress) -> Outcome {
-    let block = mail::text_block(&p.response).map(|(text, _)| text);
+    let block = mail::text_block(&p.response);
     let ended = match p.ended {
         Some(Err(e)) => return failed(&p.job, format!("The AI stopped: {e}")),
         Some(Ok(())) => true,
@@ -147,7 +151,9 @@ pub fn outcome(p: Progress) -> Outcome {
     };
     // Finished without its block: whatever it said instead (a question, a
     // refusal) is the message.
-    if ended && block.is_none_or(|t| t.trim().is_empty() && !matches!(p.job, Job::Tasks { .. })) {
+    if ended
+        && block.is_none_or(|(t, _)| t.trim().is_empty() && !matches!(p.job, Job::Tasks { .. }))
+    {
         let said: String = p.response.trim().chars().take(300).collect();
         return failed(
             &p.job,
@@ -164,14 +170,25 @@ pub fn outcome(p: Progress) -> Outcome {
         ..Default::default()
     };
     match (p.job, block) {
-        (Job::Draft { key }, Some(text)) => script(
+        (Job::Draft { key }, Some((text, _))) => script(
             "draftStream",
             serde_json::json!({ "key": key, "text": text, "done": ended }),
         ),
-        (Job::Summary { item }, Some(text)) => script(
+        (Job::Summary { item }, Some((text, _))) => script(
             "summaryStream",
             serde_json::json!({ "item": item, "text": text, "done": ended }),
         ),
+        (Job::Search { ws, id }, Some((text, true)))
+            if ended && text.trim().lines().count() == 1 =>
+        {
+            script(
+                "searchReady",
+                serde_json::json!({ "ws": ws, "id": id, "query": text.trim() }),
+            )
+        }
+        (job @ Job::Search { .. }, _) if ended => {
+            failed(&job, "The AI did not return a single search query.".into())
+        }
         (Job::Summaries { accounts, items }, _) if ended => {
             let summaries = mail::parse_summaries(&items, &p.response);
             tracing::info!(
@@ -250,6 +267,51 @@ mod tests {
         let o = run(Job::Summary { item: item() }, "", Some(Err("gone".into())));
         assert!(o.script.unwrap().contains("summaryFailed"));
         assert!(run(draft(), "thinking", None).script.is_none());
+    }
+
+    #[test]
+    fn search_waits_for_a_complete_query_and_preserves_its_request() {
+        let search = || Job::Search {
+            ws: "work".into(),
+            id: 7,
+        };
+        assert_eq!(search().agent(), "octoweb:mail-reader");
+        assert!(search().same_slot(&Job::Search {
+            ws: "other".into(),
+            id: 8
+        }));
+        assert!(!search().same_slot(&Job::Summary { item: item() }));
+        assert!(run(search(), "<text>from:Anna", None).script.is_none());
+        assert!(run(search(), "<text>from:Anna</text>", None)
+            .script
+            .is_none());
+        let o = run(search(), "<text>\nfrom:Anna invoice\n</text>", Some(Ok(())));
+        assert_eq!(
+            o.script,
+            Some(mail::script(
+                "searchReady",
+                &serde_json::json!({
+                    "ws": "work", "id": 7, "query": "from:Anna invoice"
+                })
+            ))
+        );
+        assert!(o.command.is_none() && !o.ready);
+        for response in [
+            "<text>from:Anna",
+            "<text>from:Anna\ninvoice</text>",
+            "<text></text>",
+            "Sorry.",
+        ] {
+            let o = run(search(), response, Some(Ok(())));
+            let script = o.script.unwrap();
+            assert!(script.contains("searchFailed"), "{script}");
+            assert!(script.contains(r#""ws":"work""#) && script.contains(r#""id":7"#));
+            assert!(o.command.is_none());
+        }
+        let o = run(search(), "", Some(Err("offline".into())));
+        assert!(o.script.unwrap().contains("The AI stopped: offline"));
+        let o = failed(&search(), "The AI could not start".into());
+        assert!(o.script.unwrap().contains("searchFailed"));
     }
 
     #[test]

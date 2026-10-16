@@ -5764,7 +5764,7 @@ fn main() {
             }
         }
 
-        // ── Mail AI: one-shot jobs (AI-1, AI-2, AI-3, AI-5) ──
+        // ── Mail AI: one-shot jobs (AI-1, AI-2, AI-3, AI-5, AI-6) ──
         for progress in mail_jobs.poll() {
             let o = mail_jobs::outcome(progress);
             if let Some(script) = o.script {
@@ -10186,8 +10186,18 @@ fn main() {
                         return;
                     };
                     // Mail reaches the AI only once the user turned it on (AI-8).
-                    if matches!(req, mail::PageRequest::Ai { .. }) && !cfg.mail_ai {
-                        toast!("Turn on mail AI in Settings → Mail first.", "\u{2709}\u{FE0F}", "Mail");
+                    if matches!(req, mail::PageRequest::Ai { .. } | mail::PageRequest::SearchAi { .. }) && !cfg.mail_ai {
+                        if let mail::PageRequest::SearchAi { id, .. } = &req {
+                            let o = mail_jobs::failed(
+                                &mail::Job::Search { ws: workspace_manager.active().id.clone(), id: *id },
+                                "Turn on mail AI in Settings → Mail first.".into(),
+                            );
+                            if let Some(script) = o.script {
+                                let _ = mail_wv.evaluate_script(&script);
+                            }
+                        } else {
+                            toast!("Turn on mail AI in Settings → Mail first.", "\u{2709}\u{FE0F}", "Mail");
+                        }
                         return;
                     }
                     match &req {

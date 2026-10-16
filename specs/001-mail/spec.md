@@ -280,10 +280,11 @@ Jobs that read mail are one-shot and run on specialists with no tools — text
 in, text out — and the app acts on their answer itself: `octoweb:mail-reader`
 summarises and lists tasks, `octoweb:mail-writer` writes replies. Mail comes
 from anyone, so nothing in it reaches an agent that can browse, read tabs or
-touch the mailbox. The sidebar assistant (ACP) only gets mail for the asks
-that need its tools — the brief and plain-language search. All mail text is
-passed inside the untrusted-content wrapper the browser context already uses,
-and a message cannot close that wrapper early.
+touch the mailbox. Plain-language search uses the reader to translate the
+request into a native mail query, then the app runs it in the mail panel.
+The sidebar assistant (ACP) handles the brief, which needs its tools. All mail
+text is passed inside the untrusted-content wrapper the browser context
+already uses, and a message cannot close that wrapper early.
 
 - **AI-1** Where AI summaries are on, each Important conversation shall get a
   one-line summary, shown in the inbox row instead of the preview; summaries
@@ -318,8 +319,10 @@ and a message cannot close that wrapper early.
 - **AI-5** **Extract tasks** shall turn a thread's requests and deadlines into
   `- [ ]` lines in the workspace notes, each linking the conversation. The
   reader lists them; the app adds them and says how many.
-- **AI-6** The assistant shall be able to search mail in plain language and
-  show the matching conversations in the mail panel.
+- **AI-6** Ask AI shall translate a plain-language search with the mail reader
+  and run the query in the mail panel without opening the sidebar. Progress
+  and errors shall appear there. A late answer shall not replace a newer
+  search or affect another workspace.
 - **AI-7** MCP shall expose `mail_search`, `mail_read_thread`,
   `mail_list_inbox` and `mail_create_draft` to agents of the workspace whose
   accounts they touch; there shall be no MCP tool that sends, archives or

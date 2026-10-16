@@ -18,6 +18,7 @@
 //!   key({key, shift}), swipe(phase, …), mailto(href) — native input (mail_patch.rs)
 //!   draftStream({key, text, done}), draftFailed({key, message}) — the reply writer (AI-3)
 //!   summaryStream({item, text, done}), summaryFailed({item, message}) — Summarise (AI-2)
+//!   searchReady({ws, id, query}), searchFailed({ws, id, message}) — Ask AI (AI-6)
 //!   window.__setShortcuts(data)
 
 pub fn html(keybindings_json: &str) -> String {
@@ -462,7 +463,7 @@ pub fn html(keybindings_json: &str) -> String {
   const S = {
     ws: null, accounts: [], ai: false, blockImages: false,
     view: null, scheduled: [], drafts: [],
-    mode: 'inbox', query: '', hits: [], showTitle: '', showItems: [],
+    mode: 'inbox', query: '', hits: [], aiSearch: null, showTitle: '', showItems: [],
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
     thread: null, fromNotes: false, composer: null, composerError: '', writers: new Map(),
     undo: null, sending: new Map(), fullscreen: false, chords: {},
@@ -725,13 +726,15 @@ pub fn html(keybindings_json: &str) -> String {
     }
     if (S.mode === 'search' || S.mode === 'show') {
       const items = S.mode === 'search' ? S.hits : S.showItems;
+      const finding = S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'writing';
       html += '<div class="section">' + esc(S.mode === 'search' ? 'Results' : S.showTitle) +
         '<span class="more" style="display:flex;gap:4px">' +
-        (S.mode === 'search' && S.ai ? '<button class="pill" type="button" id="ask-ai" title="The assistant turns your words into searches">\u2726 Ask AI</button>' : '') +
+        (S.mode === 'search' && S.ai ? '<button class="pill" type="button" id="ask-ai" title="Find mail using your own words"' + (finding ? ' disabled' : '') + '>\u2726 ' + (finding ? 'Searching…' : 'Ask AI') + '</button>' : '') +
         (S.mode === 'show' && items.length ? '<button class="pill" type="button" id="done-all" title="Done for every conversation here (E)">Done all</button>' : '') +
         '<button class="pill" type="button" id="back-inbox">Inbox</button></span></div>';
+      if (S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'error') html += '<div class="summary" role="alert">' + esc(S.aiSearch.error) + '</div>';
       items.forEach(function(t) { html += rowHtml(t, push({ thread: t })); });
-      if (!items.length) html += '<div class="empty">Nothing found.</div>';
+      if (!items.length) html += '<div class="empty" role="status">' + (finding ? 'Finding mail…' : 'Nothing found.') + '</div>';
     } else if (S.view) {
       const v = S.view;
       if (S.drafts.length) {
@@ -886,7 +889,7 @@ pub fn html(keybindings_json: &str) -> String {
     }
   }
   function backToInbox() {
-    S.mode = 'inbox'; S.query = ''; search.value = ''; S.focus = 0;
+    S.mode = 'inbox'; S.query = ''; S.aiSearch = null; search.value = ''; S.focus = 0;
     ipc({ type: 'inbox' });
     render();
   }
@@ -2000,12 +2003,16 @@ pub fn html(keybindings_json: &str) -> String {
     help.innerHTML = keys.map(function(k) { return '<div><kbd>' + esc(k[0]) + '</kbd>' + esc(k[1]) + '</div>'; }).join('');
   }
 
-  // SRCH-4: a question in plain words goes to the assistant (AI-6).
+  // SRCH-4: the reader translates the request; the app runs the search (AI-6).
+  let searchRequest = 0;
   function askSearch() {
-    const q = search.value.trim() || S.query;
+    const q = search.value.trim();
     if (!q) return;
-    ipc({ type: 'ai', kind: 'search', item: null, text: q });
-    showUndo('Asked the assistant to find it', null, 3000);
+    clearTimeout(searchTimer);
+    S.mode = 'search'; S.query = q; S.focus = 0;
+    S.aiSearch = { id: ++searchRequest, phase: 'writing', error: '' };
+    ipc({ type: 'search_ai', id: S.aiSearch.id, query: q });
+    render();
   }
   // AI-4: one key applies a brief group's action \u2014 Done for every conversation shown.
   function doneAll() {
@@ -2015,6 +2022,8 @@ pub fn html(keybindings_json: &str) -> String {
 
   // ── Search (SRCH) ───────────────────────────────────────────────────────────
   function runSearch() {
+    clearTimeout(searchTimer);
+    S.aiSearch = null;
     const q = search.value.trim();
     if (!q) { backToInbox(); return; }
     S.mode = 'search'; S.query = q; S.focus = 0;
@@ -2025,6 +2034,7 @@ pub fn html(keybindings_json: &str) -> String {
   let searchTimer = 0;
   search.addEventListener('input', function() {
     clearTimeout(searchTimer);
+    if (S.aiSearch) { S.aiSearch = null; render(); }
     searchTimer = setTimeout(function() { if (search.value.trim()) { S.mode = 'search'; S.query = search.value.trim(); ipc({ type: 'search', query: S.query }); } else backToInbox(); }, 220);
   });
 
@@ -2102,6 +2112,7 @@ pub fn html(keybindings_json: &str) -> String {
       panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
+        clearTimeout(searchTimer); S.aiSearch = null;
         S.view = null; S.thread = null; S.composer = null; Array.from(S.writers.keys()).forEach(stopWriter); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
         S.gone.clear(); threads.clear(); asked.clear();
         panel.classList.remove('detail'); detail.innerHTML = ''; detail._k = null; search.value = '';
@@ -2129,6 +2140,18 @@ pub fn html(keybindings_json: &str) -> String {
       if (S.mode !== 'search' || data.query !== S.query) return;
       S.hits = data.hits;
       pruneGone();
+      render();
+    },
+    searchReady: function(data) {
+      const s = S.aiSearch;
+      if (data.ws !== S.ws || S.mode !== 'search' || !s || s.id !== data.id || s.phase !== 'writing') return;
+      search.value = data.query;
+      runSearch();
+    },
+    searchFailed: function(data) {
+      const s = S.aiSearch;
+      if (data.ws !== S.ws || S.mode !== 'search' || !s || s.id !== data.id || s.phase !== 'writing') return;
+      s.phase = 'error'; s.error = data.message;
       render();
     },
     // A conversation, opened or loaded ahead (`peek`).
@@ -2260,4 +2283,24 @@ pub fn html(keybindings_json: &str) -> String {
 </html>"#
         .replace("/*@@THEME@@*/", crate::theme::CSS)
         .replace("/*@@KEYBINDINGS_JSON@@*/", keybindings_json)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_search_rejects_stale_answers_and_shows_errors() {
+        let source = format!(
+            "{}\ncheckSearch({});",
+            include_str!("mail_search_test.js"),
+            serde_json::to_string(&super::html("null")).unwrap(),
+        );
+        let Some(out) = crate::a2ui_js::run_node("mail_search", &source, &[]) else {
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "mail search failed:\n{}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
 }

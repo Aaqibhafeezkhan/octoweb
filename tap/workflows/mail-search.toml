@@ -1,9 +1,9 @@
 # Title: Mail Search — a Plain-Language Question Turned into Mail Searches
 #
 # Input: what the user is looking for, in their words ("the invoice Anna sent
-# in March"). Octoweb runs it from the mail panel's ask-the-assistant search
-# (AI-6) as `/workflow mail-search <question>`. Turns the question into
-# mail_search queries, keeps the conversations that match, shows them in the
+# in March"). Run in the sidebar as `/workflow mail-search <question>`.
+# The mail panel's Ask AI uses the native reader job. This workflow turns the
+# question into mail_search queries, keeps the conversations that match, shows them in the
 # mail panel (mail_show) and returns the list as text. Changes nothing.
 
 name        = "mail-search"
