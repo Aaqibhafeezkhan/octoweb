@@ -467,8 +467,12 @@ struct Session<'a> {
     next_id: u64,
     /// Sent, awaiting their ack, by request id.
     pending: HashMap<String, Sent>,
-    /// The acknowledged frame whose replies are arriving now.
+    /// The acknowledged frame whose replies are arriving now, and its request id.
     current: Option<Sent>,
+    current_id: Option<String>,
+    /// The server echoes a request's id on the cost that closes its turn
+    /// (`session_control_v1`), so turn ends are matched, not inferred.
+    tagged_costs: bool,
     /// Prompts waiting for the running one to finish, or for a busy retry.
     queue: VecDeque<PromptMessage>,
     busy_retries: u32,
@@ -533,6 +537,8 @@ async fn serve_session(
         next_id: 0,
         pending: HashMap::new(),
         current: None,
+        current_id: None,
+        tagged_costs: false,
         queue: VecDeque::new(),
         busy_retries: 0,
         busy_retry_at: None,
@@ -640,7 +646,12 @@ impl Session<'_> {
                             .unwrap_or("the agent session failed to start")
                     );
                 }
-                // The greeting and the bind's ack.
+                Some("ack") if value["request_id"] == "bind" => {
+                    self.tagged_costs = value["capabilities"]
+                        .as_array()
+                        .is_some_and(|caps| caps.iter().any(|c| c == "session_control_v1"));
+                }
+                // The greeting.
                 _ => {}
             }
         }
@@ -839,12 +850,13 @@ impl Session<'_> {
         }
         match kind {
             "ack" => {
-                if let Some(sent) = value["request_id"]
+                if let Some((id, sent)) = value["request_id"]
                     .as_str()
-                    .and_then(|id| self.pending.remove(id))
+                    .and_then(|id| self.pending.remove_entry(id))
                 {
                     let is_turn = sent.is_turn();
                     self.current = Some(sent);
+                    self.current_id = Some(id);
                     // A cancel sent while this turn still waited behind another
                     // frame found nothing running; the turn starts now.
                     if is_turn && self.cancel_deadline.is_some() {
@@ -995,12 +1007,20 @@ impl Session<'_> {
         if std::mem::take(&mut self.swallow_cost) {
             return Ok(());
         }
-        let ours = self.current.as_ref().is_some_and(Sent::is_turn);
-        if self.injected_open || !ours {
+        let ours_running = self.current.as_ref().is_some_and(Sent::is_turn);
+        let closes_ours = ours_running
+            && if self.tagged_costs {
+                value["request_id"].as_str().is_some()
+                    && value["request_id"].as_str() == self.current_id.as_deref()
+            } else {
+                !self.injected_open
+            };
+        if !closes_ours {
             // A turn the agent started itself is over — a specialist reply, a
             // schedule, a handback, or the drain run ahead of our prompt. It is
             // not our prompt's end: that one, if any, is still waiting or running.
             self.injected_open = false;
+            let ours = ours_running;
             if !ours {
                 self.cancel_deadline = None;
             }
@@ -1555,6 +1575,43 @@ mod tests {
             .await
             .expect("cancel sent before disconnecting")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_tagged_cost_ends_the_prompt_even_when_a_drained_turn_sent_none() {
+        // The stuck-forever case: a specialist reply drained ahead of the prompt
+        // failed and closed with no cost of its own. The prompt's cost carries
+        // its request id, so it still ends the prompt.
+        let endpoint = mock_server(|mut ws| async move {
+            send(&mut ws, serde_json::json!({"type": "status", "message": "Connected"})).await;
+            let bind = recv(&mut ws).await;
+            send(&mut ws, serde_json::json!({
+                "type": "ack", "request_id": "bind", "message_type": "session", "session_id": "sess-1",
+                "status": "received", "capabilities": ["message_attachments_v1", "session_control_v1"]
+            }))
+            .await;
+            send(&mut ws, serde_json::json!({"type": "status", "message": "Session resumed", "session_id": bind["session_id"]})).await;
+            let probe = recv(&mut ws).await;
+            ack(&mut ws, &probe).await;
+            send(&mut ws, serde_json::json!({"type": "status", "message": "ok", "session_id": "sess-1", "data": {"command_type": "usage"}})).await;
+
+            let msg = recv(&mut ws).await;
+            ack(&mut ws, &msg).await;
+            send(&mut ws, serde_json::json!({"type": "injected", "source_kind": "tap_run", "source_label": "content:social", "content": "report", "session_id": "sess-1"})).await;
+            send(&mut ws, serde_json::json!({"type": "error", "message": "Error processing injected message: provider down"})).await;
+            send(&mut ws, serde_json::json!({"type": "assistant", "content": "All good.", "session_id": "sess-1"})).await;
+            send(&mut ws, cost("sess-1", serde_json::json!({"request_id": msg["request_id"]}))).await;
+            let _ = ws.next().await;
+        })
+        .await;
+        let mut client = start(endpoint, chat_spec());
+        assert!(matches!(client.next().await, AgentEvent::Connected(_)));
+        client.prompt("So all good?");
+        assert!(matches!(client.next().await, AgentEvent::Injected(_)));
+        assert!(matches!(client.next().await, AgentEvent::Chunk(t) if t.contains("provider down")));
+        assert!(matches!(client.next().await, AgentEvent::Chunk(t) if t == "All good."));
+        assert!(matches!(client.next().await, AgentEvent::Done));
+        client.quiet().await;
     }
 
     #[tokio::test]

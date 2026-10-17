@@ -86,8 +86,18 @@ pub fn parse(raw: &[u8], fallback_id: &str) -> Option<Parsed> {
     let auth = msg
         .headers()
         .iter()
-        .find(|h| h.name.as_str().eq_ignore_ascii_case("Authentication-Results"))
-        .and_then(|h| std::str::from_utf8(msg.raw_message().get(h.offset_start as usize..h.offset_end as usize)?).ok());
+        .find(|h| {
+            h.name
+                .as_str()
+                .eq_ignore_ascii_case("Authentication-Results")
+        })
+        .and_then(|h| {
+            std::str::from_utf8(
+                msg.raw_message()
+                    .get(h.offset_start as usize..h.offset_end as usize)?,
+            )
+            .ok()
+        });
     let brand = brand(bulk, &from.addr, auth);
     let preview = preview(text.as_deref().unwrap_or_default(), html.as_deref());
     Some(Parsed {
@@ -237,7 +247,10 @@ pub fn brand(bulk: bool, from: &str, auth_results: Option<&str>) -> Option<Strin
     }
     // Relaxed alignment: the same domain, or one inside the other.
     let aligned = |d: &str| {
-        let d = d.trim_matches('"').trim_start_matches('@').to_ascii_lowercase();
+        let d = d
+            .trim_matches('"')
+            .trim_start_matches('@')
+            .to_ascii_lowercase();
         d == domain || domain.ends_with(&format!(".{d}")) || d.ends_with(&format!(".{domain}"))
     };
     // Comments in parentheses go first: they hold spaces and `=`.
@@ -435,16 +448,49 @@ Anna\r\n";
     fn brands_need_machine_mail_authenticated_as_the_from_domain() {
         let gmail = "mx.google.com;\r\n       dkim=pass header.i=@github.com header.s=pf2023;\r\n       spf=pass (google.com: domain of x@github.com designates 1.2.3.4) smtp.mailfrom=x@github.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=github.com";
         let b = |bulk, from, auth| brand(bulk, from, Some(auth));
-        assert_eq!(b(true, "notifications@github.com", gmail).as_deref(), Some("github.com"));
-        assert_eq!(b(false, "anna@github.com", gmail), None, "people keep a monogram");
-        assert_eq!(b(true, "x@evil.com", gmail), None, "another domain's pass");
-        assert_eq!(b(true, "x@github.com", "mx; dmarc=fail header.from=github.com"), None);
-        assert_eq!(b(true, "x@github.com", "mx; spf=pass smtp.mailfrom=github.com"), None);
         assert_eq!(
-            b(true, "news@mail.notion.so", "mx; dkim=pass header.d=notion.so").as_deref(),
+            b(true, "notifications@github.com", gmail).as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            b(false, "anna@github.com", gmail),
+            None,
+            "people keep a monogram"
+        );
+        assert_eq!(b(true, "x@evil.com", gmail), None, "another domain's pass");
+        assert_eq!(
+            b(
+                true,
+                "x@github.com",
+                "mx; dmarc=fail header.from=github.com"
+            ),
+            None
+        );
+        assert_eq!(
+            b(
+                true,
+                "x@github.com",
+                "mx; spf=pass smtp.mailfrom=github.com"
+            ),
+            None
+        );
+        assert_eq!(
+            b(
+                true,
+                "news@mail.notion.so",
+                "mx; dkim=pass header.d=notion.so"
+            )
+            .as_deref(),
             Some("mail.notion.so")
         );
-        assert_eq!(b(true, "news@gmail.com", "mx; dmarc=pass header.from=gmail.com"), None);
+        assert_eq!(
+            b(
+                true,
+                "news@gmail.com",
+                "mx; dmarc=pass header.from=gmail.com"
+            ),
+            None
+        );
         assert_eq!(brand(true, "x@github.com", None), None);
     }
 

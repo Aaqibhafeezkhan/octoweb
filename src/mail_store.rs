@@ -273,7 +273,11 @@ impl Store {
             );",
         )?;
         // Added later: older stores gain the column, empty until mail resyncs.
-        if self.conn.prepare("SELECT brand FROM messages LIMIT 0").is_err() {
+        if self
+            .conn
+            .prepare("SELECT brand FROM messages LIMIT 0")
+            .is_err()
+        {
             self.conn
                 .execute_batch("ALTER TABLE messages ADD COLUMN brand TEXT")?;
         }
