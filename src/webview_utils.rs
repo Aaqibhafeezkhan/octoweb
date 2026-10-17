@@ -1131,6 +1131,27 @@ pub fn favicon_protocol_response(
         .unwrap()
 }
 
+/// `octoweb-fav://<domain>` for the mail pane's sender logos. Mail comes from
+/// a subdomain of the site more often than not (`mail.notion.so`), so this
+/// tries the domain, its `www.` form, then each parent down to two labels.
+pub fn sender_favicon_response(
+    domain: &str,
+    favicons: &HashMap<String, String>,
+) -> Response<std::borrow::Cow<'static, [u8]>> {
+    let mut d = domain;
+    loop {
+        for key in [d.to_string(), format!("www.{d}")] {
+            if favicons.contains_key(&key) {
+                return favicon_protocol_response(&key, favicons);
+            }
+        }
+        match d.split_once('.') {
+            Some((_, parent)) if parent.contains('.') => d = parent,
+            _ => return favicon_protocol_response(domain, favicons),
+        }
+    }
+}
+
 /// Extract the domain (host) from a URL, e.g. "https://example.com/path" → "example.com".
 pub fn extract_domain(url: &str) -> Option<&str> {
     let after_scheme = url

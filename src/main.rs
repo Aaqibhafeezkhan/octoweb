@@ -2993,6 +2993,15 @@ fn main() {
                 Err(e) => tracing::warn!(error = %e, "malformed mail page message"),
             }
         })
+        // Sender logos, from favicons of sites already visited: showing one
+        // fetches nothing, so no sender learns the message was opened.
+        .with_custom_protocol("octoweb-fav".into(), {
+            let cache = Arc::clone(&favicon_cache);
+            move |_wv_id, request| {
+                let domain = request.uri().host().unwrap_or("");
+                webview_utils::sender_favicon_response(domain, &cache.lock().unwrap())
+            }
+        })
         .build_as_child(&*chrome_win)
         .expect("Failed to create mail WebView");
     let _ = mail_wv.set_visible(false);
@@ -5316,12 +5325,15 @@ fn main() {
                         }
                     }
                     agent::AgentEvent::Injected(text) => {
-                        // Specialist/inbox reply injected by the agent runtime. The
-                        // autonomous main-agent turn it triggers streams with no
-                        // terminal Done (no prompt in flight), so first commit
-                        // whatever is still buffered as its own agent message,
-                        // then record the injected text as a separate "specialist"
-                        // entry.
+                        // Specialist/inbox reply injected by the agent runtime: it
+                        // opens a turn the agent runs by itself (ended by
+                        // `BackgroundDone`). Commit whatever is still buffered as
+                        // its own agent message, record the injected text as a
+                        // separate "specialist" entry, and show the live feed so
+                        // that turn's steps render as they happen. Passing an
+                        // elapsed time marks the session busy, so what the user
+                        // types meanwhile queues until the turn ends (and Stop
+                        // stops it).
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             flush_agent_turn(s, cfg.max_acp_session_messages);
                             push_acp_msg(s, "specialist", text.clone(), cfg.max_acp_session_messages);
@@ -5329,8 +5341,34 @@ fn main() {
                         }
                         let escaped = webview_utils::escape_js_template(&text);
                         let _ = sidebar_wv.evaluate_script(&format!(
-                            "window.__appendSpecialist && window.__appendSpecialist({sid},`{escaped}`)"
+                            "window.__appendSpecialist && window.__appendSpecialist({sid},`{escaped}`);\
+                             window.__setThinking && window.__setThinking({sid},true,0)"
                         ));
+                        persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
+                    }
+                    agent::AgentEvent::BackgroundDone => {
+                        // A turn the agent ran by itself ended. Commit it as its
+                        // own message. If the user's prompt is still waiting or
+                        // running behind it, keep that prompt's live feed going;
+                        // otherwise the session is idle again.
+                        let mut in_flight = false;
+                        if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
+                            in_flight = s.prompt_in_flight;
+                            flush_agent_turn(s, cfg.max_acp_session_messages);
+                            if in_flight {
+                                s.turn_started = Some(std::time::Instant::now());
+                            } else {
+                                s.last_cancel_at = None;
+                            }
+                        }
+                        let _ = sidebar_wv.evaluate_script(&format!(
+                            "window.__setThinking && window.__setThinking({sid},{in_flight})"
+                        ));
+                        if !in_flight && (!sidebar_visible || !on_screen) {
+                            let _ = address_bar_wv.evaluate_script(
+                                "window.__setBadge && window.__setBadge(true)"
+                            );
+                        }
                         persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
                     }
                     agent::AgentEvent::ToolStart { id, title, kind, raw_input, locations } => {

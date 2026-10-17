@@ -53,8 +53,12 @@ pub enum AgentEvent {
         status: String,
         raw_output: Option<serde_json::Value>,
     },
-    /// The turn finished.
+    /// Our prompt's turn finished.
     Done,
+    /// A turn the agent started by itself finished (a specialist reply, a
+    /// schedule, a handback, or the drain run ahead of a prompt). Not the end
+    /// of any prompt: one may still be waiting or running.
+    BackgroundDone,
     /// The turn was stopped by `cancel()`.
     Cancelled,
     /// The turn failed (provider error, bad attachment, …). The session and its
@@ -992,14 +996,16 @@ impl Session<'_> {
             return Ok(());
         }
         let ours = self.current.as_ref().is_some_and(Sent::is_turn);
-        if self.injected_open {
-            // A turn the agent started itself is over. Inside a prompt that was
-            // only the drain before the prompt's own turn; outside, it is a
-            // whole reply.
+        if self.injected_open || !ours {
+            // A turn the agent started itself is over — a specialist reply, a
+            // schedule, a handback, or the drain run ahead of our prompt. It is
+            // not our prompt's end: that one, if any, is still waiting or running.
             self.injected_open = false;
             if !ours {
                 self.cancel_deadline = None;
-                self.events.send(AgentEvent::Done);
+            }
+            self.events.send(AgentEvent::BackgroundDone);
+            if !ours {
                 // The session's lock is free again: a prompt refused as busy goes now.
                 self.busy_retry_at = None;
                 self.send_next_prompt().await?;
@@ -1008,19 +1014,13 @@ impl Session<'_> {
         }
         let cancelled =
             value["cancelled"].as_bool().unwrap_or(false) || self.cancel_deadline.is_some();
-        if ours {
-            self.end_turn();
-        }
+        self.end_turn();
+        self.clear_busy();
         self.events.send(if cancelled {
             AgentEvent::Cancelled
         } else {
             AgentEvent::Done
         });
-        // The session's lock is free again: a prompt refused as busy goes now.
-        self.busy_retry_at = None;
-        if ours {
-            self.clear_busy();
-        }
         self.send_next_prompt().await
     }
 
@@ -1460,7 +1460,8 @@ mod tests {
             matches!(client.next().await, AgentEvent::Injected(t) if t == "[agent reviewer] LGTM")
         );
         assert!(matches!(client.next().await, AgentEvent::Chunk(t) if t == "Reviewer agrees."));
-        assert!(matches!(client.next().await, AgentEvent::Done));
+        // The agent's own turn ending is not the waiting prompt's end.
+        assert!(matches!(client.next().await, AgentEvent::BackgroundDone));
         assert!(matches!(client.next().await, AgentEvent::Chunk(t) if t == "Done it."));
         assert!(matches!(client.next().await, AgentEvent::Done));
         client.quiet().await;
@@ -1519,8 +1520,9 @@ mod tests {
         client.prompt("persist");
         loop {
             match client.next().await {
-                // Each freed lock (a background turn's cost) reads as its Done.
-                AgentEvent::Done => continue,
+                // Each freed lock (a background turn's cost) is the agent's
+                // own turn ending — never the waiting prompt's Done.
+                AgentEvent::BackgroundDone => continue,
                 AgentEvent::Chunk(t) => {
                     assert_eq!(t, "finally");
                     break;
@@ -1627,7 +1629,7 @@ mod tests {
             matches!(client.next().await, AgentEvent::Injected(t) if t == "[schedule ab12] check mail")
         );
         assert!(matches!(client.next().await, AgentEvent::Chunk(t) if t == "Checked."));
-        assert!(matches!(client.next().await, AgentEvent::Done));
+        assert!(matches!(client.next().await, AgentEvent::BackgroundDone));
     }
 
     #[tokio::test]
