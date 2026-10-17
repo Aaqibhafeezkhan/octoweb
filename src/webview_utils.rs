@@ -1055,8 +1055,9 @@ pub fn escape_js_template(s: &str) -> String {
             '`' => out.push_str("\\`"),
             // Escape ${ to prevent template literal interpolation
             '$' if s.as_bytes().get(i + 1) == Some(&b'{') => out.push_str("\\$"),
-            // Break up </script> to prevent early HTML parser termination
-            '<' if s.as_bytes().get(i + 1) == Some(&b'/') => out.push_str("<\\/"),
+            // Break up </script> to prevent early HTML parser termination: `<\`
+            // here plus the `/` the loop emits next is `<\/`, which reads back as `</`
+            '<' if s.as_bytes().get(i + 1) == Some(&b'/') => out.push_str("<\\"),
             _ => out.push(ch),
         }
     }
@@ -1170,5 +1171,14 @@ mod tests {
         assert!(allow("blob:null/0b1c".into()), "an attachment preview");
         assert!(!allow("about:blank".into()), "back to the blank page");
         assert!(!allow("https://example.com/".into()));
+    }
+
+    /// `</` is broken up for the HTML parser yet must read back as itself —
+    /// an extra `/` turned every closing tag in chat text into `<//tag>`.
+    #[test]
+    fn closing_tags_escape_to_themselves() {
+        let escaped = super::escape_js_template("<b>x</b></script>");
+        assert_eq!(escaped, r"<b>x<\/b><\/script>");
+        assert!(!escaped.contains("</"));
     }
 }
