@@ -3078,6 +3078,7 @@ fn main() {
         // Esc and the digit row are handled as a fixed fallback below; every
         // other global shortcut is data-driven via the configurable Keymap.
         const ESC_KEYCODE: u16 = 53;
+        const Z_KEYCODE: u16 = 6;
         // ⌘1–⌘9 then ⌘0 → quickslots (⌘⇧+digit saves). Positional, not remappable.
         const DIGIT_KEYCODES: [u16; 10] = [18, 19, 20, 21, 23, 22, 26, 28, 25, 29];
 
@@ -3157,6 +3158,15 @@ fn main() {
                     // page's handler from here.
                     None if matches!(tab, PaneTab::Mail) && !cmd && !ctrl && !opt => {
                         match mail_patch::frame_key(event, keycode, shift) {
+                            Some(call) => {
+                                let _ = p.send_event(AppEvent::MailCall(call));
+                                consume
+                            }
+                            None => pass,
+                        }
+                    }
+                    None if matches!(tab, PaneTab::Mail) && cmd && !ctrl && !opt && !shift && keycode == Z_KEYCODE => {
+                        match mail_patch::frame_undo() {
                             Some(call) => {
                                 let _ = p.send_event(AppEvent::MailCall(call));
                                 consume

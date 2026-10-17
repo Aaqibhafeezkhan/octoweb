@@ -580,6 +580,13 @@ pub fn html(keybindings_json: &str) -> String {
   }
   function hideUndo() { undoBar.classList.remove('open'); undoAction = null; }
   $('undo-btn').addEventListener('click', function() { const a = undoAction; hideUndo(); if (a) a(); });
+  // ⌘Z takes back what the undo bar offers — a send or a scheduled send
+  // too, until it leaves — else the last triage action.
+  function undoKey() {
+    if (undoAction) { const a = undoAction; hideUndo(); a(); return true; }
+    if (S.undo) { undo(); return true; }
+    return false;
+  }
 
   // ── Triage ──────────────────────────────────────────────────────────────────
   const INVERSE = { done: 'restore', snooze: 'unsnooze', pin: 'unpin', mute: 'unmute', block: 'unblock', spam: 'unspam', to_notes: 'undo_notes', mark_unread: 'mark_read', mark_read: 'mark_unread', unpin: 'pin', accept: 'unaccept', important: 'unclass', other: 'unclass' };
@@ -1920,7 +1927,7 @@ pub fn html(keybindings_json: &str) -> String {
     }
     // ⌘↩ sends, and ⇧⌘D as in Apple Mail.
     if (e.metaKey && S.composer && (e.key === 'Enter' || (e.shiftKey && e.key.toLowerCase() === 'd'))) { e.preventDefault(); send(null); return; }
-    if (e.metaKey && (e.key === 'z' || e.key === 'Z') && !typing(e) && S.undo) { e.preventDefault(); undo(); return; }
+    if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && (e.key === 'z' || e.key === 'Z') && !typing(e) && undoKey()) { e.preventDefault(); return; }
     if (typing(e)) {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -2202,6 +2209,8 @@ pub fn html(keybindings_json: &str) -> String {
       onKey({ key: k.key, shiftKey: k.shift, metaKey: false, ctrlKey: false, altKey: false, isComposing: false,
         target: document.activeElement, preventDefault: function() {} });
     },
+    // ⌘Z typed while the message frame has focus (see `mail_patch`).
+    undo: function() { undoKey(); },
     swipe: onSwipe,
     mailto: function(href) {
       compose({ to: decodeURIComponent(href.slice(7).split('?')[0]) });

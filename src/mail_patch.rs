@@ -18,7 +18,8 @@
 //! - **Menu.** `willOpenMenu:withEvent:` renames WebKit's new-window items
 //!   to what they do here and drops download, back, forward and reload.
 //! - **Keys.** A key typed while the message frame has focus never reaches the
-//!   page's handler; `frame_key` turns it into a `window.__mail.key` call.
+//!   page's handler; `frame_key` turns it into a `window.__mail.key` call, and
+//!   `frame_undo` turns ⌘Z into `window.__mail.undo`.
 //! - **Swipe.** A scroll-wheel monitor follows two-finger gestures by phase.
 //!   It owns the gesture — when it arms, the trackpad tick as it does, and
 //!   whether the release commits — while the page draws it and decides what
@@ -293,6 +294,15 @@ extern "C-unwind" fn will_open_menu(
 /// The page reports whether the message frame holds keyboard focus.
 pub fn set_frame_focused(focused: bool) {
     FRAME_FOCUSED.store(focused, Ordering::SeqCst);
+}
+
+/// The `window.__mail.undo()` call for ⌘Z typed while the message frame has
+/// focus, or `None` without it: the frame holds nothing to undo, while the
+/// page holds the last mail action and the send still waiting to leave.
+pub fn frame_undo() -> Option<String> {
+    FRAME_FOCUSED
+        .load(Ordering::SeqCst)
+        .then(|| "window.__mail && window.__mail.undo()".to_string())
 }
 
 /// The `window.__mail.key(…)` call for a key-down without ⌘/⌃/⌥ typed while
