@@ -60,6 +60,8 @@ Every assistant runs as a session on ONE `octomind server` process, reached over
   MCP agent-server token (see MCP below); `OCTOMIND_MEDIA_ROOT` holds pasted images
 - Dead server → sessions error → main loop reconnect → `endpoint()` starts a new one; sessions resume from disk
 - `shutdown()` on quit; a pid file reaps a server orphaned by a crash
+- Debug: launch with `OCTOWEB_OCTOMIND_TOKEN=<secret>` to attach your own WS client to the app's server
+  (`Authorization: Bearer <secret>`; address in the `octomind server ready url=…` log line)
 
 **Session (`agent.rs`):**
 - `AgentHandle::connect(AgentSpec, wake)` — one WS connection per session, on a shared 2-thread runtime

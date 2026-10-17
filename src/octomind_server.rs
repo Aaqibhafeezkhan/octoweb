@@ -122,12 +122,19 @@ fn reap_orphan() {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    if command.contains("octomind") && command.contains(" server") {
+    if is_octomind_server(&command) {
         tracing::info!(pid, "stopping an octomind server left by a previous run");
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
     }
+}
+
+/// octomind retitles its process (`octomind-server`); `ps` shows that, or the
+/// original argv on systems where retitling is unavailable.
+fn is_octomind_server(command: &str) -> bool {
+    command.trim_start().starts_with("octomind-server")
+        || (command.contains("octomind") && command.contains(" server"))
 }
 
 fn start() -> anyhow::Result<Running> {
@@ -141,7 +148,12 @@ fn start() -> anyhow::Result<Running> {
         crate::agent_workspace::prepare(crate::workspace::DEFAULT_WORKSPACE_ID, SERVER_ROLE)?;
     let media = media_dir();
     std::fs::create_dir_all(&media)?;
-    let token = crate::mcp::random_token();
+    // `OCTOWEB_OCTOMIND_TOKEN` pins the secret, so whoever launched octoweb can
+    // attach a debug client (websocat, a script) to the app's own server.
+    let token = std::env::var("OCTOWEB_OCTOMIND_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(crate::mcp::random_token);
 
     let mut child = Command::new("octomind")
         .args([
@@ -282,6 +294,17 @@ fn last_lines(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_an_octomind_server_process_is_reaped() {
+        assert!(super::is_octomind_server("octomind-server"));
+        assert!(super::is_octomind_server(
+            "/usr/local/bin/octomind server octoweb:assistant --port 0"
+        ));
+        assert!(!super::is_octomind_server("octomind-acp octoweb:assistant"));
+        assert!(!super::is_octomind_server("octomind-run developer:general"));
+        assert!(!super::is_octomind_server("/usr/sbin/httpd"));
+    }
+
     #[test]
     fn startup_errors_keep_only_the_last_lines() {
         assert_eq!(super::last_lines(""), "");
