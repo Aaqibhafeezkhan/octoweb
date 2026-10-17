@@ -130,6 +130,58 @@ fn reap_orphan() {
     }
 }
 
+/// Variables octoweb hands the server for this run only. octomind loads the
+/// server directory's `.env` *over* the real environment, so a stale copy saved
+/// there — an octomind run that lacked them once prompts on an absent stdin and
+/// saves the empty answer — silently wins: the octoweb MCP URL loses its port
+/// and every browser tool goes dead. They never belong in that file.
+const RUNTIME_ENV: [&str; 4] = [
+    "OCTOWEB_MCP_PORT",
+    "OCTOWEB_MCP_TOKEN",
+    "OCTOMIND_SERVER_TOKEN",
+    "OCTOMIND_MEDIA_ROOT",
+];
+
+/// Drop `RUNTIME_ENV` entries from `.env` (the shared file every workspace
+/// links to), keeping everything else byte for byte.
+fn scrub_runtime_env(path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let (kept, dropped) = strip_runtime_env(&text);
+    if dropped.is_empty() {
+        return;
+    }
+    match std::fs::write(path, kept) {
+        Ok(()) => tracing::warn!(
+            file = %path.display(),
+            keys = ?dropped,
+            "removed octoweb runtime variables saved in .env"
+        ),
+        Err(e) => tracing::warn!(error = %e, file = %path.display(), "could not clean .env"),
+    }
+}
+
+fn strip_runtime_env(text: &str) -> (String, Vec<String>) {
+    let mut kept = String::with_capacity(text.len());
+    let mut dropped = Vec::new();
+    for line in text.split_inclusive('\n') {
+        let key = line
+            .trim_start()
+            .trim_start_matches("export ")
+            .split('=')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if line.contains('=') && RUNTIME_ENV.contains(&key) {
+            dropped.push(key.to_string());
+        } else {
+            kept.push_str(line);
+        }
+    }
+    (kept, dropped)
+}
+
 /// octomind retitles its process (`octomind-server`); `ps` shows that, or the
 /// original argv on systems where retitling is unavailable.
 fn is_octomind_server(command: &str) -> bool {
@@ -146,6 +198,7 @@ fn start() -> anyhow::Result<Running> {
     // workspace directory under the same writable tree.
     let root =
         crate::agent_workspace::prepare(crate::workspace::DEFAULT_WORKSPACE_ID, SERVER_ROLE)?;
+    scrub_runtime_env(&root.join(".env"));
     let media = media_dir();
     std::fs::create_dir_all(&media)?;
     // `OCTOWEB_OCTOMIND_TOKEN` pins the secret, so whoever launched octoweb can
@@ -294,6 +347,19 @@ fn last_lines(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runtime_variables_are_stripped_from_env_and_the_rest_kept() {
+        let text = "OCTOHUB_API_KEY=abc\nOCTOWEB_MCP_PORT=\nexport OCTOWEB_MCP_TOKEN=x\n# OCTOWEB_MCP_PORT note\nOTHER=1";
+        let (kept, dropped) = super::strip_runtime_env(text);
+        assert_eq!(
+            kept,
+            "OCTOHUB_API_KEY=abc\n# OCTOWEB_MCP_PORT note\nOTHER=1"
+        );
+        assert_eq!(dropped, ["OCTOWEB_MCP_PORT", "OCTOWEB_MCP_TOKEN"]);
+        let (same, none) = super::strip_runtime_env("A=1\n");
+        assert_eq!((same.as_str(), none.len()), ("A=1\n", 0));
+    }
+
     #[test]
     fn only_an_octomind_server_process_is_reaped() {
         assert!(super::is_octomind_server("octomind-server"));

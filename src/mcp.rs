@@ -2302,48 +2302,43 @@ impl ServerHandler for McpServer {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
-        // The shared octomind server presents one token for every session it
-        // runs; the request's `_meta` names the calling session, and that
-        // session was routed to its chat's (or workspace's) own token.
-        let header =
-            match header {
-                Some(token) if token == agent_server_token() => {
-                    let routed = calling_agent_session(&context.meta)
-                        .and_then(|session| AGENT_SESSIONS.read().ok()?.get(&session).cloned());
-                    match routed {
-                        Some(token) => Some(token),
-                        None => return Ok(err_result(
+        let scope = match header {
+            // No header: the main loop falls back to the first workspace.
+            None => None,
+            // The shared octomind server presents one token for every session
+            // it runs; the request's `_meta` names the calling session.
+            Some(token) if token == agent_server_token() => {
+                match agent_session_scope(&context.meta, &self.state.tokens) {
+                    Some(scope) => Some(scope),
+                    None => {
+                        return Ok(err_result(
                             "Unknown assistant session — this agent session is not attached to a \
                              workspace any more. Start a new chat to pick up the current one."
                                 .to_string(),
-                        )),
+                        ))
                     }
                 }
-                other => other,
-            };
-
-        let scope =
-            match header {
-                // No header: the main loop falls back to the first workspace.
-                None => None,
-                Some(token) => match self
-                    .state
-                    .tokens
-                    .read()
-                    .ok()
-                    .and_then(|m| m.get(&token).cloned())
-                {
-                    Some(scope) => Some(scope),
-                    // A token we don't know is never treated as "use the default" —
-                    // silently acting on the wrong workspace is the exact failure
-                    // this header exists to prevent.
-                    None => return Ok(err_result(
+            }
+            Some(token) => match self
+                .state
+                .tokens
+                .read()
+                .ok()
+                .and_then(|m| m.get(&token).cloned())
+            {
+                Some(scope) => Some(scope),
+                // A token we don't know is never treated as "use the default" —
+                // silently acting on the wrong workspace is the exact failure
+                // this header exists to prevent.
+                None => {
+                    return Ok(err_result(
                         "Unknown workspace token — this agent is pointed at a workspace that no \
                          longer exists. Restart the assistant to pick up the current one."
                             .to_string(),
-                    )),
-                },
-            };
+                    ))
+                }
+            },
+        };
 
         let scoped = McpServer {
             state: McpState {
@@ -2498,16 +2493,71 @@ pub fn unroute_agent_session(session_id: &str) {
     }
 }
 
+/// Agent working directory → the workspace whose assistant runs there. A
+/// session octoweb never bound itself — a specialist the assistant delegated
+/// to (`tap`), which octomind runs as its own session in the parent's
+/// directory — is scoped to the workspace by that directory.
+static AGENT_WORKDIRS: std::sync::LazyLock<std::sync::RwLock<HashMap<std::path::PathBuf, String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Route tool calls from any session working under `workdir` to `workspace_id`.
+pub fn route_agent_workdir(workdir: &std::path::Path, workspace_id: &str) {
+    if let Ok(mut map) = AGENT_WORKDIRS.write() {
+        map.insert(workdir.to_path_buf(), workspace_id.to_string());
+    }
+}
+
+/// The calling session's `experimental.session` block from request `_meta`.
+fn meta_session(meta: &rmcp::model::Meta) -> Option<&serde_json::Value> {
+    meta.get("io.modelcontextprotocol/clientCapabilities")?
+        .get("experimental")?
+        .get("session")
+}
+
 /// The octomind session a request comes from. Octomind names it in every
 /// request's `_meta`, in the client capabilities' `experimental.session`.
 fn calling_agent_session(meta: &rmcp::model::Meta) -> Option<String> {
-    meta.get("io.modelcontextprotocol/clientCapabilities")?
-        .get("experimental")?
-        .get("session")?
+    meta_session(meta)?
         .get("session_id")?
         .as_str()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
+}
+
+/// The scope a call from the shared octomind server acts in: the calling
+/// session's own route when octoweb bound it (a chat names its workspace and
+/// itself), else the workspace whose agent directory the session works in.
+fn agent_session_scope(
+    meta: &rmcp::model::Meta,
+    tokens: &WorkspaceTokens,
+) -> Option<TokenScope> {
+    let tokens = tokens.read().ok()?;
+    let routed = calling_agent_session(meta)
+        .and_then(|session| AGENT_SESSIONS.read().ok()?.get(&session).cloned())
+        .and_then(|token| tokens.get(&token).cloned());
+    if routed.is_some() {
+        return routed;
+    }
+    let workdir = std::path::PathBuf::from(meta_session(meta)?.get("workdir")?.as_str()?);
+    let workspace_id = workspace_for_workdir(&workdir)?;
+    // Only a workspace that still exists: a deleted one's tokens are gone.
+    tokens
+        .values()
+        .any(|scope| scope.workspace_id == workspace_id)
+        .then_some(TokenScope {
+            workspace_id,
+            session_id: None,
+        })
+}
+
+/// The workspace whose agent directory contains `workdir` — the deepest one,
+/// so a session that moved into a subdirectory still resolves.
+fn workspace_for_workdir(workdir: &std::path::Path) -> Option<String> {
+    let map = AGENT_WORKDIRS.read().ok()?;
+    map.iter()
+        .filter(|(dir, _)| workdir.starts_with(dir))
+        .max_by_key(|(dir, _)| dir.components().count())
+        .map(|(_, workspace)| workspace.clone())
 }
 
 /// What a token grants. Every token names a workspace; tokens minted for one
@@ -2710,6 +2760,47 @@ mod tests {
             let meta: rmcp::model::Meta = serde_json::from_value(missing).unwrap();
             assert_eq!(calling_agent_session(&meta), None);
         }
+    }
+
+    fn meta(session_id: &str, workdir: &str) -> rmcp::model::Meta {
+        serde_json::from_value(serde_json::json!({
+            "io.modelcontextprotocol/clientCapabilities": {
+                "experimental": {"session": {"session_id": session_id, "workdir": workdir}}
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_delegated_specialist_reaches_its_workspace_through_its_workdir() {
+        let tokens: WorkspaceTokens = Arc::default();
+        tokens.write().unwrap().insert(
+            "chat-tok".into(),
+            TokenScope {
+                workspace_id: "ws-route".into(),
+                session_id: Some(7),
+            },
+        );
+        route_agent_session("octoweb-route-parent", "chat-tok");
+        route_agent_workdir(std::path::Path::new("/tmp/ow-route/octoweb-ws"), "ws-route");
+
+        // The chat itself: its own route, chat included.
+        let own = agent_session_scope(&meta("octoweb-route-parent", "/tmp/ow-route/octoweb-ws"), &tokens)
+            .expect("bound chat routes");
+        assert_eq!((own.workspace_id.as_str(), own.session_id), ("ws-route", Some(7)));
+
+        // A specialist (unknown session) in the same dir, or below it: the workspace.
+        for dir in ["/tmp/ow-route/octoweb-ws", "/tmp/ow-route/octoweb-ws/sub"] {
+            let child = agent_session_scope(&meta("tap-browser-general-1", dir), &tokens)
+                .expect("specialist routes by workdir");
+            assert_eq!((child.workspace_id.as_str(), child.session_id), ("ws-route", None));
+        }
+
+        // Elsewhere, or once the workspace is gone: refused.
+        assert!(agent_session_scope(&meta("tap-x", "/tmp/elsewhere"), &tokens).is_none());
+        tokens.write().unwrap().clear();
+        assert!(agent_session_scope(&meta("tap-x", "/tmp/ow-route/octoweb-ws"), &tokens).is_none());
+        unroute_agent_session("octoweb-route-parent");
     }
 
     #[test]

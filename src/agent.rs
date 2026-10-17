@@ -515,6 +515,9 @@ async fn serve_session(
     // Route this session's tool calls before it can make any.
     if let Some(token) = &spec.mcp_token {
         crate::mcp::route_agent_session(&session_id, token);
+        // Specialists it delegates to run as their own sessions in this
+        // directory; they reach the workspace's browser through it.
+        crate::mcp::route_agent_workdir(cwd, &spec.workspace_id);
     }
 
     let mut request = endpoint.url.as_str().into_client_request()?;
