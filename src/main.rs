@@ -3165,7 +3165,13 @@ fn main() {
                             None => pass,
                         }
                     }
-                    None if matches!(tab, PaneTab::Mail) && cmd && !ctrl && !opt && !shift && keycode == Z_KEYCODE => {
+                    None if matches!(tab, PaneTab::Mail)
+                        && cmd
+                        && !ctrl
+                        && !opt
+                        && !shift
+                        && keycode == Z_KEYCODE =>
+                    {
                         match mail_patch::frame_undo() {
                             Some(call) => {
                                 let _ = p.send_event(AppEvent::MailCall(call));

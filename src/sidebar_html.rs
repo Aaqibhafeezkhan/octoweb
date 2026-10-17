@@ -1390,6 +1390,13 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     overflow-x: auto;
     font-size: 11.5px;
   }
+  .a2ui-md pre code,
+  .a2ui-md-pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: inherit;
+  }
   .a2ui-md a { color: var(--accent); text-decoration: none; }
   .a2ui-md ul, .a2ui-md ol { margin: 4px 0 6px 18px; padding: 0; }
   .a2ui-md li { margin: 2px 0; }
