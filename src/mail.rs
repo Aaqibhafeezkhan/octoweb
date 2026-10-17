@@ -4306,6 +4306,7 @@ mod tests {
             body_loaded: true,
             seen: true,
             parents: vec!["root@x".into()],
+            brand: None,
         };
         let draft = Draft {
             key: "k".into(),

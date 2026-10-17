@@ -41,6 +41,8 @@ pub struct Parsed {
     pub attachments: Vec<Attachment>,
     pub preview: String,
     pub bulk: bool,
+    /// Domain whose logo may stand for the sender; see `brand`.
+    pub brand: Option<String>,
 }
 
 /// Parse a full message. `fallback_id` names it when it has no Message-ID.
@@ -79,6 +81,14 @@ pub fn parse(raw: &[u8], fallback_id: &str) -> Option<Parsed> {
         header("Auto-Submitted"),
         &from.addr,
     );
+    // The topmost: the receiving server adds it; any below came with the
+    // message. (`header_raw` would give the bottom one.)
+    let auth = msg
+        .headers()
+        .iter()
+        .find(|h| h.name.as_str().eq_ignore_ascii_case("Authentication-Results"))
+        .and_then(|h| std::str::from_utf8(msg.raw_message().get(h.offset_start as usize..h.offset_end as usize)?).ok());
+    let brand = brand(bulk, &from.addr, auth);
     let preview = preview(text.as_deref().unwrap_or_default(), html.as_deref());
     Some(Parsed {
         message_id,
@@ -93,6 +103,7 @@ pub fn parse(raw: &[u8], fallback_id: &str) -> Option<Parsed> {
         attachments,
         preview,
         bulk,
+        brand,
         from,
     })
 }
@@ -185,6 +196,79 @@ pub fn is_bulk(
         ]
         .iter()
         .any(|n| local == *n || local.starts_with(&format!("{n}+")))
+}
+
+/// Mailbox providers: their logo says nothing about who wrote.
+const FREEMAIL: &[&str] = &[
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
+    "yahoo.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "pm.me",
+    "fastmail.com",
+    "hey.com",
+    "zoho.com",
+    "gmx.com",
+    "gmx.net",
+    "gmx.de",
+    "web.de",
+    "yandex.ru",
+    "yandex.com",
+    "mail.ru",
+];
+
+/// The From domain, when its logo may stand for the sender: machine mail
+/// (people keep their monogram) that the receiving server authenticated as
+/// that domain — DMARC pass, or a DKIM signature aligned with it.
+/// `auth_results` is the message's topmost `Authentication-Results`.
+pub fn brand(bulk: bool, from: &str, auth_results: Option<&str>) -> Option<String> {
+    let domain = from.rsplit_once('@')?.1.trim().to_ascii_lowercase();
+    if !bulk || !domain.contains('.') || FREEMAIL.contains(&domain.as_str()) {
+        return None;
+    }
+    // Relaxed alignment: the same domain, or one inside the other.
+    let aligned = |d: &str| {
+        let d = d.trim_matches('"').trim_start_matches('@').to_ascii_lowercase();
+        d == domain || domain.ends_with(&format!(".{d}")) || d.ends_with(&format!(".{domain}"))
+    };
+    // Comments in parentheses go first: they hold spaces and `=`.
+    let mut text = String::new();
+    let mut depth = 0usize;
+    for c in auth_results?.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => text.push(c),
+            _ => {}
+        }
+    }
+    // The first clause names the server that checked.
+    let authenticated = text.split(';').skip(1).any(|clause| {
+        let mut words = clause.split_whitespace();
+        let method = words.next().unwrap_or_default().to_ascii_lowercase();
+        let props: Vec<(String, &str)> = words
+            .filter_map(|w| w.split_once('='))
+            .map(|(k, v)| (k.to_ascii_lowercase(), v))
+            .collect();
+        let prop = |name: &str| props.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+        match method.as_str() {
+            "dmarc=pass" => prop("header.from").is_some_and(aligned),
+            "dkim=pass" => prop("header.d")
+                .or_else(|| prop("header.i").and_then(|i| i.rsplit_once('@').map(|(_, d)| d)))
+                .is_some_and(aligned),
+            _ => false,
+        }
+    });
+    authenticated.then_some(domain)
 }
 
 /// Subject without reply and forward prefixes, lowercased — for threading.
@@ -345,6 +429,38 @@ Anna\r\n";
             None,
             "anna@example.com"
         ));
+    }
+
+    #[test]
+    fn brands_need_machine_mail_authenticated_as_the_from_domain() {
+        let gmail = "mx.google.com;\r\n       dkim=pass header.i=@github.com header.s=pf2023;\r\n       spf=pass (google.com: domain of x@github.com designates 1.2.3.4) smtp.mailfrom=x@github.com;\r\n       dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=github.com";
+        let b = |bulk, from, auth| brand(bulk, from, Some(auth));
+        assert_eq!(b(true, "notifications@github.com", gmail).as_deref(), Some("github.com"));
+        assert_eq!(b(false, "anna@github.com", gmail), None, "people keep a monogram");
+        assert_eq!(b(true, "x@evil.com", gmail), None, "another domain's pass");
+        assert_eq!(b(true, "x@github.com", "mx; dmarc=fail header.from=github.com"), None);
+        assert_eq!(b(true, "x@github.com", "mx; spf=pass smtp.mailfrom=github.com"), None);
+        assert_eq!(
+            b(true, "news@mail.notion.so", "mx; dkim=pass header.d=notion.so").as_deref(),
+            Some("mail.notion.so")
+        );
+        assert_eq!(b(true, "news@gmail.com", "mx; dmarc=pass header.from=gmail.com"), None);
+        assert_eq!(brand(true, "x@github.com", None), None);
+    }
+
+    #[test]
+    fn only_the_topmost_authentication_results_counts() {
+        let raw = |top: &str, bottom: &str| {
+            format!(
+                "Authentication-Results: {top}\r\nAuthentication-Results: {bottom}\r\nFrom: noreply@github.com\r\nSubject: x\r\n\r\nbody\r\n"
+            )
+        };
+        let pass = "mx; dmarc=pass header.from=github.com";
+        let fail = "mx; dmarc=fail header.from=github.com";
+        let p = parse(raw(fail, pass).as_bytes(), "f").unwrap();
+        assert_eq!(p.brand, None, "a forged result below the server's");
+        let p = parse(raw(pass, fail).as_bytes(), "f").unwrap();
+        assert_eq!(p.brand.as_deref(), Some("github.com"));
     }
 
     #[test]

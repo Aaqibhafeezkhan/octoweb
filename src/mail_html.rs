@@ -109,7 +109,7 @@ pub fn html(keybindings_json: &str) -> String {
     position: relative; display: flex; gap: 8px; padding: 8px 12px 9px 9px; cursor: default; color: var(--label);
     border-radius: 10px; margin: 0 8px; transition: background var(--t-fast);
   }
-  .row + .row::before { content: ""; position: absolute; top: 0; left: 26px; right: 10px; height: 0.5px; background: var(--hairline); }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 64px; right: 10px; height: 0.5px; background: var(--hairline); }
   .row:hover::before, .row:hover + .row::before, .row.focused::before, .row.focused + .row::before,
   .row.selected::before, .row.selected + .row::before, .row.open::before, .row.open + .row::before { opacity: 0; }
   .row:hover { background: var(--fill); }
@@ -124,6 +124,7 @@ pub fn html(keybindings_json: &str) -> String {
   }
   #list:focus .row.selected.focused { box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.55); }
   #list:focus .row.focused .dot, #list:focus .row.selected .dot { background: var(--on-accent) !important; }
+  #list:focus .row.focused .avatar, #list:focus .row.selected .avatar { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.75); }
   #list:focus .row.focused .ai, #list:focus .row.selected .ai, #list:focus .row.focused .mark.accent, #list:focus .row.selected .mark.accent { color: var(--on-accent); }
   #list:focus .row.focused .pill.primary { background: var(--on-accent); color: var(--accent); }
   /* TRI-11: a swipe slides the row or thread right, its own background and
@@ -165,6 +166,7 @@ pub fn html(keybindings_json: &str) -> String {
   .row:not(.unread) .dot { visibility: hidden; }
   /* With several accounts a read row keeps a faint dot in its account's color. */
   #panel.multi .row:not(.unread) .dot { visibility: visible; transform: scale(0.55); opacity: 0.6; }
+  .row .avatar { width: 30px; height: 30px; font-size: 12px; margin-top: 1px; }
   .row .main { flex: 1; min-width: 0; }
   .line1 { display: flex; gap: 5px; align-items: center; }
   .from { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
@@ -213,9 +215,25 @@ pub fn html(keybindings_json: &str) -> String {
   .msg.collapsed:hover { background: color-mix(in srgb, var(--card) 70%, var(--fill-hover)); }
   .msg-head { display: flex; gap: 10px; padding: 11px 14px 4px; align-items: center; }
   .msg.collapsed .msg-head { padding-bottom: 11px; }
-  /* Contacts-style monogram. */
-  .avatar { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; letter-spacing: .02em; background: linear-gradient(180deg, #a6abb6, #858a94); box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.06); }
-  @media (prefers-color-scheme: dark) { .avatar { background: linear-gradient(180deg, #7a7e87, #5a5d64); } }
+  /* Contacts-style monogram in the sender's own color, hashed from the
+     address; machine mail from a verified domain wears that site's icon. */
+  .avatar {
+    position: relative; flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 11px; font-weight: 600; letter-spacing: .02em; text-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.16);
+    background: linear-gradient(180deg, var(--av-1, #a6abb6), var(--av-2, #858a94));
+    box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.08), inset 0 0.5px 0 rgba(255, 255, 255, 0.25);
+  }
+  @media (prefers-color-scheme: dark) {
+    .avatar { background: linear-gradient(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.12)), linear-gradient(180deg, var(--av-1, #7a7e87), var(--av-2, #5a5d64)); }
+  }
+  .avatar svg { width: 14px; height: 14px; }
+  .avatar .logo {
+    position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; padding: 21%;
+    border-radius: 50%; object-fit: contain; background: #fff; box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+    opacity: 0; transition: opacity var(--t-fast);
+  }
+  .avatar .logo.ok { opacity: 1; }
   .msg-head .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .msg-head .who b { font-weight: 600; }
   .msg-head .addr { color: var(--label-3); font-size: 12px; }
@@ -701,7 +719,7 @@ pub fn html(keybindings_json: &str) -> String {
     const open = S.thread && S.thread.account === t.account && S.thread.thread === t.thread;
     const cls = 'row' + (t.unread ? ' unread' : '') + (S.selected.has(key(t)) ? ' selected' : '') + (i === S.focus ? ' focused' : '') + (open ? ' open' : '');
     return '<div class="' + cls + '" data-i="' + i + '" data-k="' + rowAttr(rowKey(S.rows[i])) + '" role="option">' +
-      '<span class="dot" style="background:' + esc(color(t.account)) + '"></span>' +
+      '<span class="dot" style="background:' + esc(color(t.account)) + '"></span>' + avatar({ name: t.from_name, addr: t.from_addr }, t.brand) +
       '<div class="main"><div class="line1"><span class="from">' + esc(t.from_name || t.from_addr) + '</span>' +
       (t.count > 1 ? '<span class="count">' + t.count + '</span>' : '') +
       (t.attachment ? '<span class="clip" title="Attachment">' + I.clip + '</span>' : '') +
@@ -765,7 +783,7 @@ pub fn html(keybindings_json: &str) -> String {
         html += '<div class="section">Drafts</div>';
         S.drafts.forEach(function(d) {
           const i = push({ draft: d });
-          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(d.account)) + '"></span>' +
+          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(d.account)) + '"></span>' + avatar(recipient(d.to)) +
             '<div class="main"><div class="line1"><span class="from">To: ' + esc(d.to || '—') + '</span></div><div class="subject">' + esc(d.subject || '(no subject)') + '</div></div></div>';
         });
       }
@@ -773,7 +791,7 @@ pub fn html(keybindings_json: &str) -> String {
         html += '<div class="section">Sending later</div>';
         S.scheduled.forEach(function(s) {
           const i = push({ scheduled: s });
-          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(s.account)) + '"></span>' +
+          html += '<div class="row' + (i === S.focus ? ' focused' : '') + attrs(i) + '<span class="dot" style="background:' + esc(color(s.account)) + '"></span>' + '<span class="avatar" aria-hidden="true">' + I.snooze + '</span>' +
             '<div class="main"><div class="subject">Scheduled for ' + esc(fmtTime(s.at, true)) + '</div></div>' +
             '<div class="gate"><button class="pill" type="button" data-cancel="' + s.id + '">Cancel</button></div></div>';
         });
@@ -799,7 +817,7 @@ pub fn html(keybindings_json: &str) -> String {
           const open = S.expanded.has(g.addr);
           const i = push({ group: g });
           html += '<div class="row group' + (open ? ' open' : '') + (g.unread ? ' unread' : '') + (i === S.focus ? ' focused' : '') + attrs(i) +
-            '<span class="chev">›</span><div class="main"><div class="line1"><span class="from">' + esc(g.name || g.addr) + '</span>' +
+            '<span class="chev">›</span>' + avatar(g, g.threads[0].brand) + '<div class="main"><div class="line1"><span class="from">' + esc(g.name || g.addr) + '</span>' +
             '<span class="count">' + g.threads.length + '</span><span class="time">' + esc(fmtTime(g.threads[0].key)) + '</span></div>' +
             '<div class="preview">' + esc(g.threads[0].subject) + '</div></div></div>';
           if (open) g.threads.forEach(function(t) { html += rowHtml(t, push({ thread: t })); });
@@ -1116,13 +1134,52 @@ pub fn html(keybindings_json: &str) -> String {
   function imagesOn(t, m, i) {
     return !S.blockImages || (t.images || []).indexOf(m.from.addr) >= 0 || (t.shown && t.shown.has(i));
   }
+  // A bare address goes by its local part (sienna@x.ai is S, not SX), or by
+  // its domain when the local part is a machine's (noreply@crates.io is C).
   function initials(a) {
-    const words = (a.name || a.addr || '?').replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/);
+    const parts = (a.addr || '?').split('@'), domain = (parts[1] || '').split('.');
+    const machine = domain.length > 1 && /^(no[-_]?reply|do[-_]?not[-_]?reply|notifications?|mailer-daemon)$/i.test(parts[0]);
+    const name = a.name !== a.addr ? a.name : '';
+    const words = (name || (machine ? domain[domain.length - 2] : parts[0])).replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/);
     const first = words[0] || '?', last = words.length > 1 ? words[words.length - 1] : '';
     return (Array.from(first)[0] + (last ? Array.from(last)[0] : '')).toUpperCase();
   }
-  function avatar(a) {
-    return '<span class="avatar" aria-hidden="true">' + esc(initials(a)) + '</span>';
+  // System hues, each a top-to-bottom gradient deep enough for white initials.
+  const AVATAR_COLORS = [
+    ['#ff7a7c', '#e8383c'], ['#ffa85a', '#f07418'], ['#f5be4a', '#d99400'], ['#62d482', '#2bab4c'],
+    ['#45cfc4', '#0fa39c'], ['#52c4ee', '#1597d0'], ['#55a6ff', '#1670ec'], ['#8c83f7', '#5a4de0'],
+    ['#d474ee', '#a53ac6'], ['#ff7697', '#e6315f'], ['#c9a383', '#9c7656'],
+  ];
+  function hue(s) {
+    let h = 2166136261;
+    for (const c of s.toLowerCase()) h = Math.imul(h ^ c.codePointAt(0), 16777619);
+    return AVATAR_COLORS[(h >>> 0) % AVATAR_COLORS.length];
+  }
+  // Logos come from the favicon cache (octoweb-fav://, see main.rs): true
+  // once one loaded, false where none did, so redraws neither flash nor ask again.
+  const logos = new Map();
+  document.addEventListener('load', function(e) {
+    if (!e.target.classList || !e.target.classList.contains('logo')) return;
+    e.target.classList.add('ok');
+    logos.set(e.target.dataset.brand, true);
+  }, true);
+  document.addEventListener('error', function(e) {
+    if (!e.target.classList || !e.target.classList.contains('logo')) return;
+    logos.set(e.target.dataset.brand, false);
+    e.target.remove();
+  }, true);
+  function avatar(a, brand) {
+    const c = hue(a.addr || a.name || '');
+    const known = brand && logos.get(brand);
+    const logo = brand && known !== false ?
+      '<img class="logo' + (known ? ' ok' : '') + '" src="octoweb-fav://' + esc(brand) + '" data-brand="' + esc(brand) + '" alt="">' : '';
+    return '<span class="avatar" style="--av-1:' + c[0] + ';--av-2:' + c[1] + '" aria-hidden="true">' + esc(initials(a)) + logo + '</span>';
+  }
+  // A draft's `To:` line as an address, for its avatar.
+  function recipient(to) {
+    const first = String(to || '').split(',')[0].trim();
+    const m = /<([^>]+)>/.exec(first);
+    return { name: first.replace(/<[^>]*>/, '').replace(/"/g, '').trim(), addr: m ? m[1] : first };
   }
 
   const I = {
@@ -1168,12 +1225,12 @@ pub fn html(keybindings_json: &str) -> String {
     const open = i === t.messages.length - 1 || t.open.has(i);
     if (!open) {
       const snip = (m.text || '').replace(/\s+/g, ' ').slice(0, 120);
-      return '<div class="msg collapsed" data-i="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who"><b>' + esc(m.from.name || m.from.addr) + '</b>' +
+      return '<div class="msg collapsed" data-i="' + i + '"><div class="msg-head">' + avatar(m.from, m.brand) + '<span class="who"><b>' + esc(m.from.name || m.from.addr) + '</b>' +
         ' <span class="snip">— ' + esc(snip) + '</span></span><span class="time">' + esc(fmtTime(m.date)) + '</span></div></div>';
     }
     const who = m.from.name ? '<b>' + esc(m.from.name) + '</b> <span class="addr">' + esc(m.from.addr) + '</span>' : '<b>' + esc(m.from.addr) + '</b>';
     const recipients = m.to.concat(m.cc).map(function(a) { return a.addr === t.me ? 'me' : (a.name || a.addr); }).join(', ');
-    let html = '<div class="msg" data-i="' + i + '"><div class="msg-head">' + avatar(m.from) + '<span class="who">' + who + '</span><span class="time">' + esc(fmtTime(m.date, true)) + '</span></div>' +
+    let html = '<div class="msg" data-i="' + i + '"><div class="msg-head">' + avatar(m.from, m.brand) + '<span class="who">' + who + '</span><span class="time">' + esc(fmtTime(m.date, true)) + '</span></div>' +
       (recipients ? '<div class="msg-to">to ' + esc(recipients) + '</div>' : '');
     if (m.html && REMOTE.test(m.html) && !imagesOn(t, m, i)) {
       html += '<div class="images-bar"><span>Remote images are hidden.</span><button class="pill" type="button" data-images="once" data-i="' + i + '">Show</button>' +

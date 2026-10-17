@@ -55,6 +55,8 @@ pub struct ThreadRow {
     pub returned: Option<String>,
     pub remind_at: Option<i64>,
     pub summary: Option<String>,
+    /// Domain whose logo stands for the sender (`mail_parse::brand`).
+    pub brand: Option<String>,
     /// Sort key: latest activity, or when it came back.
     pub key: i64,
 }
@@ -94,6 +96,7 @@ pub struct MessageView {
     pub body_loaded: bool,
     pub seen: bool,
     pub parents: Vec<String>,
+    pub brand: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -149,6 +152,7 @@ struct RowMessage {
     bulk: bool,
     seen: bool,
     folder: String,
+    brand: Option<String>,
 }
 
 /// What `insert` did with a synced message.
@@ -267,7 +271,13 @@ impl Store {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );",
-        )
+        )?;
+        // Added later: older stores gain the column, empty until mail resyncs.
+        if self.conn.prepare("SELECT brand FROM messages LIMIT 0").is_err() {
+            self.conn
+                .execute_batch("ALTER TABLE messages ADD COLUMN brand TEXT")?;
+        }
+        Ok(())
     }
 
     // ── Sync ────────────────────────────────────────────────────────────────
@@ -360,9 +370,10 @@ impl Store {
             self.conn
                 .execute(
                     "UPDATE messages SET folder = ?2,
-                        uid = CASE WHEN folder = ?2 THEN COALESCE(?3, uid) ELSE ?3 END, seen = ?4
+                        uid = CASE WHEN folder = ?2 THEN COALESCE(?3, uid) ELSE ?3 END, seen = ?4,
+                        brand = COALESCE(brand, ?5)
                      WHERE id = ?1",
-                    params![id, folder, uid, seen],
+                    params![id, folder, uid, seen, p.brand],
                 )
                 .expect("update message");
             if body_loaded {
@@ -379,9 +390,9 @@ impl Store {
             .execute(
                 "INSERT INTO messages(account, folder, uid, message_id, thread, parents, subject,
                     nsubject, from_name, from_addr, reply_to, to_json, cc_json, date, preview,
-                    text, html, attachments, body, bulk, seen)
+                    text, html, attachments, body, bulk, seen, brand)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21)",
+                    ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     account,
                     folder,
@@ -404,6 +415,7 @@ impl Store {
                     body_loaded,
                     p.bulk,
                     seen,
+                    p.brand,
                 ],
             )
             .expect("insert message");
@@ -652,7 +664,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT subject, from_name, from_addr, date, preview, attachments, bulk, seen, folder
+                "SELECT subject, from_name, from_addr, date, preview, attachments, bulk, seen, folder, brand
                  FROM messages WHERE account = ?1 AND thread = ?2 ORDER BY date ASC",
             )
             .expect("thread row");
@@ -668,6 +680,7 @@ impl Store {
                     bulk: r.get(6)?,
                     seen: r.get(7)?,
                     folder: r.get(8)?,
+                    brand: r.get(9)?,
                 })
             })
             .expect("thread rows")
@@ -716,6 +729,7 @@ impl Store {
             returned: state.returned,
             remind_at: state.remind_at,
             summary: state.summary,
+            brand: theirs.brand.clone(),
         })
     }
 
@@ -724,7 +738,7 @@ impl Store {
             .conn
             .prepare_cached(
                 "SELECT id, message_id, folder, uid, from_name, from_addr, reply_to, to_json,
-                    cc_json, subject, date, text, html, attachments, body, seen, parents
+                    cc_json, subject, date, text, html, attachments, body, seen, parents, brand
                  FROM messages WHERE account = ?1 AND thread = ?2 ORDER BY date ASC, id ASC",
             )
             .expect("thread");
@@ -751,6 +765,7 @@ impl Store {
                 body_loaded: r.get(14)?,
                 seen: r.get(15)?,
                 parents: from_json(&r.get::<_, String>(16)?),
+                brand: r.get(17)?,
             })
         })
         .expect("thread messages")
