@@ -285,7 +285,9 @@ summarises and lists tasks, `octoweb:mail-writer` writes replies. Mail comes
 from anyone, so nothing in it reaches an agent that can browse, read tabs or
 touch the mailbox. Plain-language search uses the reader to translate the
 request into a native mail query, then the app runs it in the mail panel.
-The sidebar assistant (ACP) handles the brief, which needs its tools. All mail
+The brief runs on the reader too: the app hands it the inbox, numbered, and
+shows the groups it answers with. Mail features never use the sidebar
+assistant; the user can still ask it about mail through its MCP tools. All mail
 text is passed inside the untrusted-content wrapper the browser context
 already uses, and a message cannot close that wrapper early.
 
@@ -318,7 +320,9 @@ already uses, and a message cannot close that wrapper early.
 - **AI-4** **Daily brief** — on request, or each morning where enabled — shall
   group the inbox into *Needs reply*, *Waiting on others*, *FYI* and *Can
   archive*, each item one line; the user shall be able to apply a group's
-  suggested action with one key, and nothing is applied otherwise.
+  suggested action with one key, and nothing is applied otherwise. The reader
+  sorts the numbered inbox from senders, subjects, previews and who wrote
+  last; the mail panel says it is sorting, then shows the groups, or why not.
 - **AI-5** **Extract tasks** shall turn a thread's requests and deadlines into
   `- [ ]` lines in the workspace notes, each linking the conversation. The
   reader lists them; the app adds them and says how many.

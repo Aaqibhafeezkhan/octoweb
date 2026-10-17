@@ -1,8 +1,9 @@
 # Title: Mail Brief — the Inbox in Four Groups, Shown in the Mail Panel
 #
-# Input: optional focus ("all", "work only", "skip newsletters"). Octoweb runs
-# it from the mail panel's brief button and the morning brief (AI-4) as
-# `/workflow mail-brief all`. Reads the inbox (mail_list_inbox), sorts every
+# Input: optional focus ("all", "work only", "skip newsletters"). For the
+# user to run from the sidebar (`/workflow mail-brief all`): the mail panel's
+# brief button and the morning brief run on `octoweb:mail-reader` instead and
+# never reach the assistant. Reads the inbox (mail_list_inbox), sorts every
 # conversation into Needs reply, Waiting on others, FYI and Can archive, puts
 # each group in the mail panel (mail_show) so the user can apply it with one
 # key, and returns the brief as text. Reads no message body; changes nothing.

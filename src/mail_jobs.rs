@@ -1,4 +1,4 @@
-//! One-shot mail AI jobs (spec AI-1, AI-2, AI-3, AI-5, AI-6): a specialist with no tools
+//! One-shot mail AI jobs (spec AI-1 to AI-6): a specialist with no tools
 //! reads mail and answers in text, and the app acts on the answer. Mail comes
 //! from anyone, so nothing in it reaches an agent that can browse, read tabs
 //! or touch the mailbox — the assistant only ever gets what the user types.
@@ -135,6 +135,13 @@ pub fn failed(job: &Job, message: String) -> Outcome {
             "searchFailed",
             serde_json::json!({ "ws": ws, "id": id, "message": message }),
         ),
+        Job::Brief { ws, .. } => {
+            tracing::warn!(error = %message, "mail brief run failed");
+            script(
+                "briefFailed",
+                serde_json::json!({ "ws": ws, "message": message }),
+            )
+        }
         Job::Tasks { .. } => Outcome {
             toast: Some(message),
             ..Default::default()
@@ -218,6 +225,36 @@ pub fn outcome(p: Progress) -> Outcome {
             }),
             ..Default::default()
         },
+        (
+            Job::Brief {
+                ws,
+                accounts,
+                items,
+            },
+            _,
+        ) if ended => {
+            let groups = mail::parse_brief(&items, &p.response);
+            let sorted: usize = groups.iter().map(|(_, list)| list.len()).sum();
+            tracing::info!(asked = items.len(), sorted, "mail brief run ended");
+            if sorted == 0 {
+                return failed(
+                    &Job::Brief {
+                        ws,
+                        accounts,
+                        items,
+                    },
+                    "The AI did not sort the inbox.".into(),
+                );
+            }
+            Outcome {
+                command: Some(mail::Command::Brief {
+                    ws,
+                    accounts,
+                    groups,
+                }),
+                ..Default::default()
+            }
+        }
         _ => Outcome::default(),
     }
 }

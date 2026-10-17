@@ -463,7 +463,8 @@ pub fn html(keybindings_json: &str) -> String {
   const S = {
     ws: null, accounts: [], ai: false, blockImages: false,
     view: null, scheduled: [], drafts: [],
-    mode: 'inbox', query: '', hits: [], searching: false, searchError: null, aiSearch: null, showTitle: '', showItems: [],
+    mode: 'inbox', query: '', hits: [], searching: false, searchError: null, aiSearch: null,
+    showTitle: '', showGroups: [], showEmpty: '', briefing: null,
     rows: [], focus: 0, selected: new Set(), expanded: new Set(),
     thread: null, fromNotes: false, composer: null, composerError: '', writers: new Map(),
     undo: null, sending: new Map(), fullscreen: false, chords: {},
@@ -623,7 +624,7 @@ pub fn html(keybindings_json: &str) -> String {
     const v = S.view;
     if (v) { v.important.forEach(each); v.new_senders.forEach(each); v.other.forEach(function(g) { g.threads.forEach(each); }); }
     S.hits.forEach(each);
-    S.showItems.forEach(each);
+    S.showGroups.forEach(function(g) { g.items.forEach(each); });
     if (S.thread && S.thread.row && keys.has(key(S.thread))) fn(S.thread.row);
   }
   // The conversation below the open one, else above, that `keys` leaves,
@@ -656,7 +657,8 @@ pub fn html(keybindings_json: &str) -> String {
       v.other = v.other.filter(function(g) { return g.threads.length; });
     }
     S.hits = S.hits.filter(keep);
-    S.showItems = S.showItems.filter(keep);
+    S.showGroups.forEach(function(g) { g.items = g.items.filter(keep); });
+    S.showGroups = S.showGroups.filter(function(g) { return g.items.length; });
   }
   // Drops what was acted away from a list sent before the server knew.
   function pruneGone() {
@@ -724,19 +726,32 @@ pub fn html(keybindings_json: &str) -> String {
       $('add-account').addEventListener('click', function() { ipc({ type: 'settings' }); });
       return;
     }
-    if (S.mode === 'search' || S.mode === 'show') {
-      const items = S.mode === 'search' ? S.hits : S.showItems;
-      const finding = S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'writing';
-      html += '<div class="section">' + esc(S.mode === 'search' ? 'Results · All mail' : S.showTitle) +
+    const doneBtn = function(gi) { return '<button class="pill" type="button" data-done-group="' + gi + '" title="Done for every conversation here (E)">Done all</button>'; };
+    if (S.mode === 'search') {
+      const finding = S.aiSearch && S.aiSearch.phase === 'writing';
+      html += '<div class="section">Results · All mail' +
         '<span class="more" style="display:flex;gap:4px">' +
-        (S.mode === 'search' && S.ai ? '<button class="pill" type="button" id="ask-ai" title="Find mail using your own words"' + (finding ? ' disabled' : '') + '>\u2726 ' + (finding ? 'Searching…' : 'Ask AI') + '</button>' : '') +
-        (S.mode === 'show' && items.length ? '<button class="pill" type="button" id="done-all" title="Done for every conversation here (E)">Done all</button>' : '') +
+        (S.ai ? '<button class="pill" type="button" id="ask-ai" title="Find mail using your own words"' + (finding ? ' disabled' : '') + '>✦ ' + (finding ? 'Searching…' : 'Ask AI') + '</button>' : '') +
         '<button class="pill" type="button" id="back-inbox">Inbox</button></span></div>';
-      if (S.mode === 'search' && S.aiSearch && S.aiSearch.phase === 'error') html += '<div class="summary" role="alert">' + esc(S.aiSearch.error) + '</div>';
-      if (S.mode === 'search' && S.searchError) html += '<div class="summary" role="alert">' + esc(S.searchError) + '</div>';
-      if (S.mode === 'search' && S.searching) html += '<div class="summary" role="status">Searching all mail…</div>';
-      items.forEach(function(t) { html += rowHtml(t, push({ thread: t })); });
-      if (!items.length && !S.searching) html += '<div class="empty" role="status">' + (finding ? 'Finding mail…' : 'Nothing found.') + '</div>';
+      if (S.aiSearch && S.aiSearch.phase === 'error') html += '<div class="summary" role="alert">' + esc(S.aiSearch.error) + '</div>';
+      if (S.searchError) html += '<div class="summary" role="alert">' + esc(S.searchError) + '</div>';
+      if (S.searching) html += '<div class="summary" role="status">Searching all mail…</div>';
+      S.hits.forEach(function(t) { html += rowHtml(t, push({ thread: t })); });
+      if (!S.hits.length && !S.searching) html += '<div class="empty" role="status">' + (finding ? 'Finding mail…' : 'Nothing found.') + '</div>';
+    } else if (S.mode === 'show') {
+      // One list under the title, or the brief's groups each under its own (AI-4).
+      const groups = S.showGroups;
+      const titled = groups.length > 1 || (groups.length === 1 && groups[0].title !== S.showTitle);
+      html += '<div class="section">' + esc(S.showTitle) +
+        '<span class="more" style="display:flex;gap:4px">' + (groups.length && !titled ? doneBtn(0) : '') +
+        '<button class="pill" type="button" id="back-inbox">Inbox</button></span></div>';
+      if (S.briefing && S.briefing.phase === 'writing') html += '<div class="summary" role="status">Sorting your inbox…</div>';
+      if (S.briefing && S.briefing.phase === 'error') html += '<div class="summary" role="alert">' + esc(S.briefing.error) + '</div>';
+      groups.forEach(function(g, gi) {
+        if (titled) html += '<div class="section">' + esc(g.title) + ' · ' + g.items.length + '<span class="more">' + doneBtn(gi) + '</span></div>';
+        g.items.forEach(function(t) { html += rowHtml(t, push({ thread: t, show: gi })); });
+      });
+      if (!groups.length && !S.briefing) html += '<div class="empty" role="status">' + esc(S.showEmpty || 'Nothing found.') + '</div>';
     } else if (S.view) {
       const v = S.view;
       if (S.drafts.length) {
@@ -800,8 +815,9 @@ pub fn html(keybindings_json: &str) -> String {
     if (back) back.addEventListener('click', backToInbox);
     const ask = $('ask-ai');
     if (ask) ask.addEventListener('click', askSearch);
-    const all = $('done-all');
-    if (all) all.addEventListener('click', doneAll);
+    list.querySelectorAll('[data-done-group]').forEach(function(b) {
+      b.addEventListener('click', function() { doneAll(Number(b.dataset.doneGroup)); });
+    });
     const focused = list.querySelector('.row.focused');
     if (focused) focused.scrollIntoView({ block: 'nearest' });
     glide(before);
@@ -2017,10 +2033,22 @@ pub fn html(keybindings_json: &str) -> String {
     ipc({ type: 'search_ai', id: S.aiSearch.id, query: q });
     render();
   }
-  // AI-4: one key applies a brief group's action \u2014 Done for every conversation shown.
-  function doneAll() {
-    if (S.mode !== 'show' || !S.showItems.length) return;
-    act('done', S.showItems.map(function(t) { return { account: t.account, thread: t.thread }; }));
+  // AI-4: one key applies a brief group's action — Done for every conversation
+  // in the group of the focused row, or in group `gi`.
+  function doneAll(gi) {
+    if (S.mode !== 'show') return;
+    if (gi === undefined) { const r = S.rows[S.focus]; gi = r && r.show !== undefined ? r.show : 0; }
+    const g = S.showGroups[gi];
+    if (!g || !g.items.length) return;
+    act('done', g.items.map(function(t) { return { account: t.account, thread: t.thread }; }));
+  }
+  // The brief runs on the mail reader, not the assistant: the list says it is
+  // coming, and `brief` or `briefFailed` follows.
+  function startBrief() {
+    S.mode = 'show'; S.showTitle = 'Daily brief'; S.showGroups = []; S.showEmpty = ''; S.briefing = { phase: 'writing' }; S.focus = 0;
+    closeThread(true);
+    render();
+    ipc({ type: 'ai', kind: 'brief', item: null, text: '' });
   }
 
   // ── Search (SRCH) ───────────────────────────────────────────────────────────
@@ -2046,7 +2074,7 @@ pub fn html(keybindings_json: &str) -> String {
   $('fullscreen-btn').addEventListener('click', function() { ipc({ type: 'fullscreen' }); });
   $('compose-btn').addEventListener('click', function() { compose(); });
   $('help-btn').addEventListener('click', function() { renderHelp(); help.classList.toggle('open'); });
-  $('brief-btn').addEventListener('click', function() { ipc({ type: 'ai', kind: 'brief', item: null, text: '' }); showUndo('Asked the assistant for your brief', null, 3000); });
+  $('brief-btn').addEventListener('click', startBrief);
 
   const handle = $('resize-handle');
   let dragPointer = null, dragStartX = 0, dragStartWidth = 0, dragWidth = 0, dragFrame = 0;
@@ -2114,7 +2142,7 @@ pub fn html(keybindings_json: &str) -> String {
       panel.classList.toggle('multi', S.accounts.length > 1);
       if (switched) {
         closePreview();
-        clearTimeout(searchTimer); S.aiSearch = null; S.searching = false; S.searchError = null;
+        clearTimeout(searchTimer); S.aiSearch = null; S.searching = false; S.searchError = null; S.briefing = null;
         S.view = null; S.thread = null; S.composer = null; Array.from(S.writers.keys()).forEach(stopWriter); S.mode = 'inbox'; S.selected.clear(); S.expanded.clear(); S.focus = 0;
         S.gone.clear(); threads.clear(); asked.clear();
         panel.classList.remove('detail'); detail.innerHTML = ''; detail._k = null; search.value = '';
@@ -2242,7 +2270,20 @@ pub fn html(keybindings_json: &str) -> String {
       w.error = data.message;
       if (S.composer && S.composer.key === w.key) renderComposer();
     },
-    show: function(data) { S.mode = 'show'; S.showTitle = data.title; S.showItems = data.items; S.focus = 0; closeThread(true); render(); },
+    show: function(data) { S.mode = 'show'; S.showTitle = data.title; S.showGroups = [{ title: data.title, items: data.items }]; S.showEmpty = ''; S.briefing = null; S.focus = 0; closeThread(true); render(); },
+    brief: function(data) {
+      if (data.ws !== S.ws) return;
+      S.mode = 'show'; S.showTitle = 'Daily brief'; S.showGroups = data.groups; S.showEmpty = 'Your inbox is empty.'; S.briefing = null; S.focus = 0;
+      closeThread(true);
+      pruneGone();
+      render();
+    },
+    briefFailed: function(data) {
+      if (data.ws !== S.ws || !S.briefing || S.briefing.phase !== 'writing') return;
+      S.briefing = { phase: 'error', error: data.message };
+      if (S.mode === 'show') render();
+      else showUndo(data.message, null, 5000);
+    },
     files: function(k, files) {
       const d = S.composer;
       if (!d || d.key !== k) return;

@@ -4745,6 +4745,16 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     workflow: function(o) {
       var d = o.data || {};
       if (o.workflow_executed) return toast('Ran workflow: ' + o.workflow_executed);
+      // Octomind replies `{ subcommand: run | show | error | list, … }`.
+      if (d.subcommand === 'error') return toast(d.message || 'Workflow failed', true);
+      if (d.subcommand === 'run') {
+        return toast('Ran workflow: ' + d.name) +
+          '<div class="cmd-section-title">Result</div>' + messageBlock(d.output, false);
+      }
+      if (d.subcommand === 'show') {
+        return '<div class="cmd-section-title">' + escapeHtml(d.name + (d.source_tap ? ' · ' + d.source_tap : '')) + '</div>' +
+          messageBlock(d.definition, false);
+      }
       var wfs = Array.isArray(d.workflows) ? d.workflows : [];
       var html = '<div class="cmd-section-title">' + escapeHtml(d.message || 'Workflows') + '</div>';
       if (!wfs.length) return html + emptyState('No workflows defined');

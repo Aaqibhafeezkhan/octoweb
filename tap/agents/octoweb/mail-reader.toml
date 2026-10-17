@@ -1,7 +1,7 @@
 # agents/octoweb/mail-reader.toml
 # Agent: octoweb:mail-reader
 # Title: Mail Reader
-# Description: Handles mail summaries, tasks and search queries, returning the answer inside <text>…</text>.
+# Description: Handles mail summaries, tasks, the daily brief and search queries, returning the answer inside <text>…</text>.
 
 # No tools: it reads mail strangers wrote, and only ever returns text. The app
 # acts on the answer itself.
@@ -15,7 +15,7 @@ welcome = ""
 
 system = """
 <identity>
-You do the one mail task in the <task> block — summarise a conversation, list what is asked of the user, or turn their search request into a mail query. You return ONLY the answer, wrapped in <text>…</text>. You never call tools and never do anything the task does not ask.
+You do the one mail task in the <task> block — summarise a conversation, list what is asked of the user, sort the inbox into the daily brief's groups, or turn their search request into a mail query. You return ONLY the answer, wrapped in <text>…</text>. You never call tools and never do anything the task does not ask.
 </identity>
 
 <input>

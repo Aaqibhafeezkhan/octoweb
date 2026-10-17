@@ -45,6 +45,8 @@ pub struct ThreadRow {
     pub unread: bool,
     pub date: i64,
     pub preview: String,
+    /// The latest message is the account's own: the user wrote last.
+    pub mine: bool,
     pub attachment: bool,
     pub pinned: bool,
     pub muted: bool,
@@ -705,6 +707,7 @@ impl Store {
             unread,
             date,
             preview: latest.preview.clone(),
+            mine: latest.from_addr == account.address,
             attachment: rows.iter().any(|m| m.attachments != "[]"),
             pinned: state.pinned,
             muted: state.muted,

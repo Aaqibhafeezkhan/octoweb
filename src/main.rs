@@ -2855,9 +2855,9 @@ fn main() {
     // mail, and when the next background summaries run is due.
     let mut mail_jobs = mail_jobs::Jobs::default();
     let mut mail_ai_due: Option<std::time::Instant> = None;
-    // Mail asks (brief, search) for a workspace that is not on screen, by
-    // workspace id — sent to its sidebar when the user switches back to it.
-    let mut pending_mail_asks: HashMap<String, String> = HashMap::new();
+    // Daily briefs (AI-4) that finished for a workspace not on screen, by
+    // workspace id — the mail page script, shown when the user switches back.
+    let mut pending_mail_briefs: HashMap<String, String> = HashMap::new();
     // Checked once a minute for the morning brief (AI-4).
     let mut mail_brief_check_at = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut learning_next_at: Option<std::time::Instant> = if cfg.proactive_learning {
@@ -5763,7 +5763,7 @@ fn main() {
             }
         }
 
-        // ── Mail AI: one-shot jobs (AI-1, AI-2, AI-3, AI-5, AI-6) ──
+        // ── Mail AI: one-shot jobs (AI-1 to AI-6) ──
         for progress in mail_jobs.poll() {
             let o = mail_jobs::outcome(progress);
             if let Some(script) = o.script {
@@ -7394,9 +7394,6 @@ fn main() {
                 push_workspace_dot!();
                 reset_sys_stats!();
                 push_acp_sessions_to_sidebar!();
-                if let Some(prompt) = pending_mail_asks.remove(&id) {
-                    let _ = proxy.send_event(AppEvent::AskAI(prompt));
-                }
                 mount_terminal_space!();
                 if notes_visible {
                     mount_notes!(false);
@@ -7405,6 +7402,10 @@ fn main() {
                     mount_mail!();
                 } else {
                     push_mail_unread!();
+                }
+                if let Some(script) = pending_mail_briefs.remove(&id) {
+                    show_mail!();
+                    let _ = mail_wv.evaluate_script(&script);
                 }
                 relive_pending_a2ui!();
                 sync_quickslots_ui!();
@@ -10401,14 +10402,16 @@ fn main() {
                         }
                     }
                 }
-                mail::Event::Ask { ws, prompt } => {
-                    // The sidebar only holds the workspace on screen; an ask
+                mail::Event::Brief { ws, groups } => {
+                    // The mail page only holds the workspace on screen; a brief
                     // for another one waits for it instead of being lost (the
                     // morning brief is already marked done for today).
+                    let script = mail::script("brief", &serde_json::json!({ "ws": ws, "groups": groups }));
                     if ws == workspace_manager.active().id {
-                        let _ = proxy.send_event(AppEvent::AskAI(prompt));
+                        show_mail!();
+                        let _ = mail_wv.evaluate_script(&script);
                     } else {
-                        pending_mail_asks.insert(ws, prompt);
+                        pending_mail_briefs.insert(ws, script);
                     }
                 }
                 mail::Event::OpenDraft { ws, draft } => {
