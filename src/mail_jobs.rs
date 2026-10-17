@@ -7,13 +7,12 @@
 //! the main thread and reports its text as it grows. One run per kind (per
 //! reply for drafts): a new one replaces a run still going.
 
-use crate::acp::{AcpHandle, AgentEvent};
+use crate::agent::{AgentEvent, AgentHandle, AgentSpec};
 use crate::mail::{self, Job};
 
 struct Run {
     job: Job,
-    handle: AcpHandle,
-    pid: Option<u32>,
+    handle: AgentHandle,
     response: String,
 }
 
@@ -39,10 +38,8 @@ impl Jobs {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<(), String> {
         self.stop(|j| j.same_slot(&job));
-        let handle = AcpHandle::connect(
-            &format!("octomind acp {}", job.agent()),
-            crate::workspace::DEFAULT_WORKSPACE_ID,
-            None,
+        let handle = AgentHandle::connect(
+            AgentSpec::one_shot(job.agent(), crate::workspace::DEFAULT_WORKSPACE_ID, None),
             wake,
         )
         .map_err(|e| format!("The AI could not start: {e}"))?;
@@ -52,24 +49,18 @@ impl Jobs {
         self.runs.push(Run {
             job,
             handle,
-            pid: None,
             response: String::new(),
         });
         Ok(())
     }
 
-    /// Drop the runs whose job matches, killing their processes.
+    /// Drop the runs whose job matches, ending their sessions.
     pub fn stop(&mut self, matches: impl Fn(&Job) -> bool) {
         self.runs.retain(|r| !matches(&r.job));
     }
 
     pub fn running(&self, matches: impl Fn(&Job) -> bool) -> bool {
         self.runs.iter().any(|r| matches(&r.job))
-    }
-
-    /// Agent processes still running, for a clean quit.
-    pub fn pids(&self) -> Vec<u32> {
-        self.runs.iter().filter_map(|r| r.pid).collect()
     }
 
     /// Drain every run's events; ended runs are dropped.
@@ -80,13 +71,12 @@ impl Jobs {
             let mut grew = false;
             for ev in run.handle.poll() {
                 match ev {
-                    AgentEvent::ProcessPid(pid) => run.pid = Some(pid),
                     AgentEvent::Chunk(chunk) => {
                         run.response.push_str(&chunk);
                         grew = true;
                     }
                     AgentEvent::Done => ended = Some(Ok(())),
-                    AgentEvent::Error(e) => ended = Some(Err(e)),
+                    AgentEvent::Error(e) | AgentEvent::TurnError(e) => ended = Some(Err(e)),
                     _ => {}
                 }
             }

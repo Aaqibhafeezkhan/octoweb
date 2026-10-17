@@ -1,7 +1,7 @@
 mod a2ui;
 mod a2ui_js;
-mod acp;
 mod address_bar_html;
+mod agent;
 mod agent_tabs;
 mod agent_workspace;
 mod async_eval;
@@ -43,6 +43,7 @@ mod newtab_html;
 mod notes;
 mod notes_html;
 mod notification_html;
+mod octomind_server;
 mod overlay_html;
 mod page_index;
 mod progress_bar_html;
@@ -497,38 +498,40 @@ struct PendingA2ui {
     response: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
-/// Per-ACP-session live state.
+/// Per-assistant-session live state.
 ///
-/// Multiple sessions can run in parallel (capped at `MAX_SESSIONS`). Each owns a
-/// dedicated subprocess via `AcpHandle`. The sidebar UI shows a tab strip; events
-/// from each handle are tagged with `id` before being forwarded to the sidebar JS,
-/// which keeps a separate DOM message log per session.
+/// Multiple sessions can run in parallel (capped at `MAX_SESSIONS`). Each is an
+/// octomind session on the shared server, driven over its own connection by an
+/// `AgentHandle`. The sidebar UI shows a tab strip; events from each handle are
+/// tagged with `id` before being forwarded to the sidebar JS, which keeps a
+/// separate DOM message log per session.
 pub(crate) struct AcpSession {
     /// Stable monotonic local id (not the ACP protocol session id).
     id: u64,
     /// User-visible label shown in the header strip.
     title: String,
-    /// Agent command tag (the `<tag>` in `octomind acp <tag>`).
+    /// Agent tag the session runs under (e.g. `octoweb:assistant`).
     tag: String,
     /// Live handle. `None` while reconnecting after an error.
-    handle: Option<acp::AcpHandle>,
+    handle: Option<agent::AgentHandle>,
     /// Reconnect retry counter (per-session exponential backoff).
     retry_count: u32,
     /// Generation counter — bumped on every intentional reconnect to invalidate
     /// stale `AcpReconnect` timers from prior error cycles for THIS session.
     reconnect_gen: u64,
     /// Timestamp of the last user-initiated cancel that hasn't yet completed.
-    /// A second `AcpCancel` within ~12s escalates to a force-kill + respawn.
+    /// A second `AcpCancel` within ~12s escalates to dropping the connection
+    /// and reconnecting.
     /// Cleared on any terminal event (Done/Cancelled/Error).
     last_cancel_at: Option<std::time::Instant>,
     /// A prompt has been sent and no terminal event has come back yet. The
     /// sidebar tracks this itself while mounted; Rust needs it to rebuild the
     /// Working… state after a workspace round-trip remounts the session.
     prompt_in_flight: bool,
-    /// ACP protocol session id reported by the agent on `AgentEvent::Connected`.
-    /// Passed back as `--resume <id>` when force-respawning the subprocess so
-    /// the agent restores its in-memory conversation context. Cleared on
-    /// AcpSetAgent / AcpClearSession (which want a fresh chat).
+    /// Octomind session id: reported on `AgentEvent::Connected` for a new
+    /// session and bound again on every reconnect, so the agent resumes its
+    /// conversation context. Cleared on AcpSetAgent / AcpClearSession (which
+    /// want a fresh chat).
     acp_session_id: Option<String>,
     /// Persisted message log — user prompts, finalized agent responses with
     /// their tool runs, errors. Survives app restarts via `acp_history.json`.
@@ -560,16 +563,9 @@ pub(crate) struct AcpSession {
     /// last `/usage` probe. Re-pushed on `sidebar_ready` so the login chip
     /// survives sidebar opens that happen after the probe.
     account_json: Option<String>,
-    /// OS pid of this session's octomind subprocess. Set on `ProcessPid`.
-    /// Used by the A2UI watcher to route incoming envelopes to the session
-    /// whose octomind actually invoked `render_ui` — the bash script
-    /// stamps `parent_pid` into each envelope, and we match against this.
-    /// Cleared on Error/respawn; the next spawn fills it again.
-    octomind_pid: Option<u32>,
 }
 
-/// Hard cap on parallel ACP sessions — each is a forked subprocess with its own
-/// memory footprint.
+/// Hard cap on parallel assistant sessions per workspace.
 pub const MAX_SESSIONS: usize = 10;
 
 /// Colors cycled through for workspaces created via the "+ New Workspace" row —
@@ -615,26 +611,12 @@ fn next_acp_session_id() -> u64 {
     NEXT_ACP_SESSION_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// SIGTERM (then SIGKILL after a bounded wait) every given octomind pid.
-/// Shared by `save_and_exit` (every workspace, on quit) and `DeleteWorkspace`
-/// (just the workspace being torn down, mid-session) — without this, deleting
-/// a workspace whose sessions were ever connected (i.e. it was the active
-/// workspace at some point this run) would leak the subprocess: nothing else
-/// ever reaches it again once its `Workspace` is dropped.
-fn terminate_octomind_pids(pids: &[u32]) {
-    for &pid in pids {
-        unsafe { libc::kill(pid as libc::c_int, libc::SIGTERM) };
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    for &pid in pids {
-        while unsafe { libc::kill(pid as libc::c_int, 0) } == 0
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        if unsafe { libc::kill(pid as libc::c_int, 0) } == 0 {
-            tracing::warn!(pid, "octomind did not exit on SIGTERM — killing");
-            unsafe { libc::kill(pid as libc::c_int, libc::SIGKILL) };
+/// End every live session in `sessions` on the octomind server — they are
+/// going away for good (their workspace was deleted).
+fn close_agent_sessions(sessions: &mut [AcpSession]) {
+    for s in sessions {
+        if let Some(handle) = s.handle.take() {
+            handle.close();
         }
     }
 }
@@ -2484,7 +2466,7 @@ fn main() {
     let mut inline_edit_pending = false;
     let mut inline_edit_selected_text = String::new();
     let mut inline_edit_tab_id: usize = 0;
-    let mut inline_edit_acp: Option<acp::AcpHandle> = None;
+    let mut inline_edit_acp: Option<agent::AgentHandle> = None;
     let mut inline_edit_response = String::new();
     let mut prompt_history: Vec<String> = config::load_prompt_history();
     prompt_history.truncate(cfg.max_prompt_history);
@@ -2658,10 +2640,10 @@ fn main() {
         ));
     }
 
-    // ── ACP sessions — multiple parallel agent connections ─────────────────
-    // Each session owns its own `octomind acp <tag>` subprocess. The sidebar shows
-    // them as tabs in its header strip; switching toggles which DOM message log is
-    // visible (the others remain mounted as detached fragments).
+    // —— Assistant sessions — multiple parallel agent sessions ——
+    // Each is a session on the shared `octomind server` (see `agent.rs`). The
+    // sidebar shows them as tabs in its header strip; switching toggles which
+    // DOM message log is visible (the others remain mounted as detached fragments).
     //
     // At least one session always exists (the default `octoweb:assistant` —
     // matches pre-multi-session behavior on startup).
@@ -2676,15 +2658,14 @@ fn main() {
     // echoes back in `a2ui_resolve`. Entries live only as long as the agent
     // waits; a restart drops them and the surface replays as a ghost.
     let mut pending_a2ui: HashMap<String, PendingA2ui> = HashMap::new();
-    // Restore persisted ACP history (sessions + per-session message log) per
-    // workspace. `--resume` is passed when an `acp_session_id` was captured
-    // before — the agent then restores its in-memory conversation context,
-    // matching what the user sees in the replayed message log. Only the
-    // session that was foreground in whichever workspace is active at
-    // cold-start gets eagerly connected — every other session, in that
-    // workspace or any other, starts fully lazy (no subprocess spawned until
-    // the user actually switches to it) — keeps cold-start fast and baseline
-    // CPU/RAM low, and matches stage 3's "assistant sticks to the workspace"
+    // Restore persisted assistant history (sessions + per-session message log)
+    // per workspace. A captured `acp_session_id` is bound again on connect, so
+    // the agent restores its conversation context, matching what the user sees
+    // in the replayed message log. Only the session that was foreground in
+    // whichever workspace is active at cold-start gets eagerly connected —
+    // every other session, in that workspace or any other, starts fully lazy
+    // (no connection until the user actually switches to it) — keeps cold-start
+    // fast, and matches stage 3's "assistant sticks to the workspace"
     // requirement (a background workspace shouldn't be running agents).
     let mut persisted_acp = config::load_acp_history();
     // Session ids are minted from a single process-wide counter (not
@@ -2756,16 +2737,15 @@ fn main() {
                         snap.messages.drain(..drop);
                     }
                     let handle = if is_startup_active_ws && snap.id == h.active_id {
-                        let cmd = match &snap.acp_session_id {
-                            Some(id) => format!("octomind acp {} --resume {}", snap.tag, id),
-                            None => format!("octomind acp {}", snap.tag),
-                        };
-                        acp::AcpHandle::connect(
-                            &cmd,
-                            &ws.id,
-                            mcp_handle
-                                .as_ref()
-                                .map(|h| h.register_session(&ws.id, snap.id)),
+                        agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(
+                                &snap.tag,
+                                snap.acp_session_id.clone(),
+                                &ws.id,
+                                mcp_handle
+                                    .as_ref()
+                                    .map(|h| h.register_session(&ws.id, snap.id)),
+                            ),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok()
@@ -2790,7 +2770,6 @@ fn main() {
                         prompt_in_flight: false,
                         available_commands_json: None,
                         account_json: None,
-                        octomind_pid: None,
                     });
                 }
                 let active = if built.iter().any(|s| s.id == persisted_active_id) {
@@ -2807,10 +2786,13 @@ fn main() {
                     title: "Assistant".to_string(),
                     tag: "octoweb:assistant".to_string(),
                     handle: if is_startup_active_ws {
-                        acp::AcpHandle::connect(
-                            "octomind acp octoweb:assistant",
-                            &ws.id,
-                            mcp_handle.as_ref().map(|h| h.register_session(&ws.id, id)),
+                        agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(
+                                "octoweb:assistant",
+                                None,
+                                &ws.id,
+                                mcp_handle.as_ref().map(|h| h.register_session(&ws.id, id)),
+                            ),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok()
@@ -2830,7 +2812,6 @@ fn main() {
                     prompt_in_flight: false,
                     available_commands_json: None,
                     account_json: None,
-                    octomind_pid: None,
                 };
                 (vec![default_session], id)
             }
@@ -2846,11 +2827,7 @@ fn main() {
     const ACP_MAX_DELAY_SECS: u64 = 30;
 
     // ── Proactive learning — background agent that memorizes browsing patterns ─
-    let mut learning_handle: Option<acp::AcpHandle> = None;
-    // Pid of the learning agent's octomind process — save_and_exit must SIGTERM
-    // it (like session agents) since ControlFlow::Exit skips destructors and
-    // would otherwise orphan a mid-run learning agent on every quit.
-    let mut learning_pid: Option<u32> = None;
+    let mut learning_handle: Option<agent::AgentHandle> = None;
     // One-shot mail AI (AI-1, AI-2, AI-3, AI-5): tool-less agents reading
     // mail, and when the next background summaries run is due.
     let mut mail_jobs = mail_jobs::Jobs::default();
@@ -4431,11 +4408,11 @@ fn main() {
         }};
     }
 
-    /// Mint the MCP token for one chat session's agent process. It names both
-    /// the workspace and the session, so `render_ui` lands in the chat that
-    /// asked for it rather than whichever one is in front. Replaces whatever
-    /// token that session held before, which is what stops a superseded
-    /// subprocess from still rendering into the chat.
+    /// Mint the MCP token for one chat session. It names both the workspace
+    /// and the session, so `render_ui` lands in the chat that asked for it
+    /// rather than whichever one is in front. Replaces whatever token that
+    /// session held before, which is what stops a superseded connection from
+    /// still rendering into the chat.
     macro_rules! session_mcp_token {
         ($sid:expr) => {{
             let sid = $sid;
@@ -5266,7 +5243,7 @@ fn main() {
         // Collected into an owned Vec first so the mutable borrow of the
         // sessions is released before the handlers mutate them (e.g. on Error
         // we drop a session's handle).
-        let mut drained: Vec<(usize, u64, Vec<acp::AgentEvent>)> = Vec::new();
+        let mut drained: Vec<(usize, u64, Vec<agent::AgentEvent>)> = Vec::new();
         for (ws_idx, ws) in workspace_manager.list_mut().iter_mut().enumerate() {
             for s in ws.acp_sessions.iter_mut() {
                 if let Some(h) = s.handle.as_mut() {
@@ -5283,25 +5260,14 @@ fn main() {
             let on_screen = ws_idx == workspace_manager.active_index();
             for ev in events {
                 match ev {
-                    acp::AgentEvent::Connected(acp_sid) => {
+                    agent::AgentEvent::Connected(acp_sid) => {
                         let mut should_persist = false;
-                        let mut resume_failed = false;
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             s.retry_count = 0;
-                            if let Some(old) = s.acp_session_id.as_deref() {
-                                if old != acp_sid.as_str() {
-                                    // Resume failed: the agent minted a fresh session
-                                    // instead of restoring the saved one. Keep the saved
-                                    // id — the old session still exists on disk and the
-                                    // next (re)connect retries it. Adopting the fresh id
-                                    // would permanently orphan the real context.
-                                    tracing::warn!(session_id = sid, saved = %old, fresh = %acp_sid, "ACP resume failed — agent started a fresh session; keeping saved id");
-                                    resume_failed = true;
-                                }
-                            } else {
-                                // No saved id (new/cleared session) — adopt so a future
-                                // cold start can pass `--resume <id>` and recover the
-                                // agent's own conversation context.
+                            // A new (or cleared) session: keep its id so every
+                            // reconnect and cold start binds the same octomind
+                            // session and its conversation context.
+                            if s.acp_session_id.as_deref() != Some(acp_sid.as_str()) {
                                 s.acp_session_id = Some(acp_sid.clone());
                                 should_persist = true;
                             }
@@ -5309,26 +5275,11 @@ fn main() {
                         let _ = sidebar_wv.evaluate_script(&format!(
                             "window.__setSessionStatus && window.__setSessionStatus({sid},'ready')"
                         ));
-                        if resume_failed {
-                            let _ = sidebar_wv.evaluate_script(&format!(
-                                "window.__appendError && window.__appendError({sid},`previous agent context wasn't restored (fresh session) — restart octoweb to retry it`)"
-                            ));
-                        }
                         if should_persist {
                             persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
                         }
                     }
-                    acp::AgentEvent::ProcessPid(pid) => {
-                        if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
-                            s.octomind_pid = Some(pid);
-                        }
-                    }
-                    acp::AgentEvent::Image { data, mime_type } => {
-                        let _ = sidebar_wv.evaluate_script(&format!(
-                            "window.__appendImage && window.__appendImage({sid},`{mime_type}`,`{data}`)"
-                        ));
-                    }
-                    acp::AgentEvent::Chunk(chunk) => {
+                    agent::AgentEvent::Chunk(chunk) => {
                         // Accumulate the in-flight agent response so we can
                         // commit one finalized "agent" message to the persisted
                         // log on Done/Cancelled — no save during streaming.
@@ -5364,7 +5315,7 @@ fn main() {
                             ));
                         }
                     }
-                    acp::AgentEvent::Injected(text) => {
+                    agent::AgentEvent::Injected(text) => {
                         // Specialist/inbox reply injected by the agent runtime. The
                         // autonomous main-agent turn it triggers streams with no
                         // terminal Done (no prompt in flight), so first commit
@@ -5382,7 +5333,7 @@ fn main() {
                         ));
                         persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
                     }
-                    acp::AgentEvent::ToolStart { id, title, kind, raw_input, locations } => {
+                    agent::AgentEvent::ToolStart { id, title, kind, raw_input, locations } => {
                         // Record for persistence so the steps group survives a
                         // restart. `render_ui` is skipped: it renders as an A2UI
                         // bubble (persisted separately) and the sidebar suppresses
@@ -5416,7 +5367,7 @@ fn main() {
                             "window.__toolStart && window.__toolStart({sid},`{eid}`,`{etitle}`,`{ekind}`,{raw_input_json},{locations_json})"
                         ));
                     }
-                    acp::AgentEvent::ToolUpdate { id, title, status, raw_output } => {
+                    agent::AgentEvent::ToolUpdate { id, title, status, raw_output } => {
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             if let Some(&(idx, started)) = s.tool_starts.get(&id) {
                                 if let Some(rec) = s.tool_buf.get_mut(idx) {
@@ -5449,7 +5400,7 @@ fn main() {
                             "window.__toolUpdate && window.__toolUpdate({sid},`{eid}`,`{etitle}`,`{estatus}`,{raw_output_json})"
                         ));
                     }
-                    acp::AgentEvent::AvailableCommands(commands) => {
+                    agent::AgentEvent::AvailableCommands(commands) => {
                         let json: Vec<serde_json::Value> = commands.iter().map(|c| {
                             serde_json::json!({"name": c.name, "description": c.description, "hint": c.hint})
                         }).collect();
@@ -5466,7 +5417,7 @@ fn main() {
                         ));
                         probe_workflows_and_routines(workspace_manager.at(ws_idx).acp_sessions.iter().find(|s| s.id == sid));
                     }
-                    acp::AgentEvent::Done | acp::AgentEvent::Cancelled => {
+                    agent::AgentEvent::Done | agent::AgentEvent::Cancelled => {
                         let mut should_persist = false;
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             s.last_cancel_at = None;
@@ -5483,7 +5434,7 @@ fn main() {
                             "window.__setThinking && window.__setThinking({sid},false)"
                         ));
                         // Only Done bumps the hidden-sidebar badge.
-                        if matches!(ev, acp::AgentEvent::Done) && (!sidebar_visible || !on_screen) {
+                        if matches!(ev, agent::AgentEvent::Done) && (!sidebar_visible || !on_screen) {
                             let _ = address_bar_wv.evaluate_script(
                                 "window.__setBadge && window.__setBadge(true)"
                             );
@@ -5492,8 +5443,32 @@ fn main() {
                             persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
                         }
                     }
-                    acp::AgentEvent::Error(err) => {
-                        tracing::warn!(session_id = sid, error = %err, "ACP connection error");
+                    agent::AgentEvent::TurnError(err) => {
+                        // The turn failed but the session is fine: show why and
+                        // end the turn — no reconnect.
+                        tracing::warn!(session_id = sid, error = %err, "agent turn failed");
+                        if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
+                            s.last_cancel_at = None;
+                            s.prompt_in_flight = false;
+                            flush_agent_turn(s, cfg.max_acp_session_messages);
+                            push_acp_msg(s, "error", err.clone(), cfg.max_acp_session_messages);
+                        }
+                        let escaped = webview_utils::escape_js_template(&err);
+                        let _ = sidebar_wv.evaluate_script(&format!(
+                            "window.__appendError && window.__appendError({sid},`{escaped}`)"
+                        ));
+                        let _ = sidebar_wv.evaluate_script(&format!(
+                            "window.__setThinking && window.__setThinking({sid},false)"
+                        ));
+                        if !sidebar_visible || !on_screen {
+                            let _ = address_bar_wv.evaluate_script(
+                                "window.__setBadge && window.__setBadge(true)"
+                            );
+                        }
+                        persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
+                    }
+                    agent::AgentEvent::Error(err) => {
+                        tracing::warn!(session_id = sid, error = %err, "agent connection error");
                         // Mutate session state in an inner scope so the &mut borrow
                         // is released before we call evaluate_script + persist (both
                         // read &workspace_manager.at(ws_idx).acp_sessions). Decision drives the post-borrow JS calls.
@@ -5505,7 +5480,6 @@ fn main() {
                             let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) else { continue };
                             // Drop dead handle immediately so prompts aren't silently lost.
                             s.handle = None;
-                            s.octomind_pid = None; // pid is now stale — next spawn fills it
                             s.last_cancel_at = None;
                             s.prompt_in_flight = false;
                             // Save the partial in-flight turn so the persisted log
@@ -5588,19 +5562,19 @@ fn main() {
                             persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
                         }
                     }
-                    acp::AgentEvent::Workflows(json) => {
+                    agent::AgentEvent::Workflows(json) => {
                         let escaped = webview_utils::escape_js_template(&json);
                         let _ = sidebar_wv.evaluate_script(&format!(
                             "window.__setWorkflows && window.__setWorkflows({sid},`{escaped}`)"
                         ));
                     }
-                    acp::AgentEvent::Schedules(text) => {
+                    agent::AgentEvent::Schedules(text) => {
                         let escaped = webview_utils::escape_js_template(&text);
                         let _ = sidebar_wv.evaluate_script(&format!(
                             "window.__setRoutines && window.__setRoutines({sid},`{escaped}`)"
                         ));
                     }
-                    acp::AgentEvent::Account { signed_in, usage } => {
+                    agent::AgentEvent::Account { signed_in, usage } => {
                         let json_str = usage.to_string();
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             s.account_json = Some(json_str.clone());
@@ -5610,30 +5584,15 @@ fn main() {
                             "window.__setAccount && window.__setAccount({sid},`{escaped}`)"
                         ));
                         // A login flow was in flight and just succeeded: stop the
-                        // poller and respawn the session so the fresh OCTOHUB_API_KEY
-                        // in `.env` is loaded (it's read at process startup). Resume
-                        // by id to keep the conversation context.
+                        // poller. The server applies the new octohub key to its
+                        // own process on login, so every session already uses it.
                         if signed_in {
                             if let Some(stop) = login_pollers.remove(&sid) {
                                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                                let mcp_token = session_mcp_token!(sid);
-                                let workspace_id = workspace_manager.at(ws_idx).id.clone();
-                                if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
-                                    s.retry_count = 0;
-                                    s.reconnect_gen += 1;
-                                    let cmd = match &s.acp_session_id {
-                                        Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
-                                        None => format!("octomind acp {}", s.tag),
-                                    };
-                                    s.handle = acp::AcpHandle::connect(&cmd, &workspace_id, mcp_token.clone(), make_wake(acp_proxy.clone())).ok();
-                                    let _ = sidebar_wv.evaluate_script(&format!(
-                                        "window.__setSessionStatus && window.__setSessionStatus({sid},'connecting')"
-                                    ));
-                                }
                             }
                         }
                     }
-                    acp::AgentEvent::LoginStarted { url, code, already_signed_in } => {
+                    agent::AgentEvent::LoginStarted { url, code, already_signed_in } => {
                         if already_signed_in {
                             // Nothing to do — the chip already reflects it. Nudge a
                             // refresh so any stale "signed out" state corrects.
@@ -5673,10 +5632,10 @@ fn main() {
         let inline_events = inline_edit_acp.as_mut().map(|h| h.poll()).unwrap_or_default();
         for ev in inline_events {
             match ev {
-                acp::AgentEvent::Chunk(chunk) => {
+                agent::AgentEvent::Chunk(chunk) => {
                     inline_edit_response.push_str(&chunk);
                 }
-                acp::AgentEvent::Done => {
+                agent::AgentEvent::Done => {
                     // Parse <text>...</text> from response; fallback to full response
                     let result = if let (Some(start), Some(end)) = (
                         inline_edit_response.find("<text>"),
@@ -5707,8 +5666,8 @@ fn main() {
                     inline_edit_acp = None;
                     inline_edit_response.clear();
                 }
-                acp::AgentEvent::Error(err) => {
-                    tracing::warn!(error = %err, "inline edit ACP error");
+                agent::AgentEvent::Error(err) | agent::AgentEvent::TurnError(err) => {
+                    tracing::warn!(error = %err, "inline edit agent error");
                     // Reset cursor on target tab
                     if let Some(wv) = workspace_manager.active().webviews.get(&inline_edit_tab_id) {
                         let _ = wv.evaluate_script(
@@ -5763,16 +5722,13 @@ fn main() {
         if let Some(ref mut h) = learning_handle {
             for ev in h.poll() {
                 match ev {
-                    acp::AgentEvent::ProcessPid(pid) => learning_pid = Some(pid),
-                    acp::AgentEvent::Done => {
+                    agent::AgentEvent::Done => {
                         tracing::info!("proactive learning run completed");
                         learning_handle = None;
-                        learning_pid = None;
                     }
-                    acp::AgentEvent::Error(err) => {
+                    agent::AgentEvent::Error(err) | agent::AgentEvent::TurnError(err) => {
                         tracing::warn!(error = %err, "proactive learning error");
                         learning_handle = None;
-                        learning_pid = None;
                     }
                     _ => {} // Ignore Chunk, ToolStart, etc.
                 }
@@ -7481,7 +7437,6 @@ fn main() {
                     prompt_in_flight: false,
                     available_commands_json: None,
                     account_json: None,
-                    octomind_pid: None,
                 });
                 workspace_manager.active_mut().acp_active_session_id = default_sid;
                 push_workspace_dot!();
@@ -7567,22 +7522,10 @@ fn main() {
                     }
                     teardown_acp_sessions_from_sidebar!(workspace_manager.active(), false);
                     reset_cross_workspace_ui_state!();
-                    // Kill any live octomind subprocesses for this workspace
-                    // before dropping it — Drop alone doesn't terminate them
-                    // (no Drop impl on AcpHandle), so a session that was ever
-                    // connected (this workspace was active at some point) would
-                    // otherwise leak until quit. Backgrounded: terminate_octomind_pids
-                    // can block up to 3s (SIGTERM wait), and this is a live user
-                    // action, not app exit — must not freeze the UI.
-                    let dying_pids: Vec<u32> = workspace_manager
-                        .active()
-                        .acp_sessions
-                        .iter()
-                        .filter_map(|s| s.octomind_pid)
-                        .collect();
-                    if !dying_pids.is_empty() {
-                        std::thread::spawn(move || terminate_octomind_pids(&dying_pids));
-                    }
+                    // End the workspace's assistant sessions on the server too,
+                    // so their conversations and background work don't stay
+                    // loaded for the rest of the run.
+                    close_agent_sessions(&mut workspace_manager.active_mut().acp_sessions);
                     if !workspace_manager.remove(&id) {
                         return;
                     }
@@ -7630,17 +7573,10 @@ fn main() {
                 } else {
                     // Non-active workspace — not mounted in the sidebar DOM
                     // (only the active workspace's sessions ever are), so no
-                    // __removeSession calls needed. But it may hold live
-                    // octomind subprocesses if it was active earlier this run
-                    // — kill those before dropping it, same reasoning as above.
-                    let dying_pids: Vec<u32> = workspace_manager
-                        .list()
-                        .iter()
-                        .find(|ws| ws.id == id)
-                        .map(|ws| ws.acp_sessions.iter().filter_map(|s| s.octomind_pid).collect())
-                        .unwrap_or_default();
-                    if !dying_pids.is_empty() {
-                        std::thread::spawn(move || terminate_octomind_pids(&dying_pids));
+                    // __removeSession calls needed. Its sessions may still be
+                    // live if it was active earlier this run — end them too.
+                    if let Some(ws) = workspace_manager.list_mut().iter_mut().find(|ws| ws.id == id) {
+                        close_agent_sessions(&mut ws.acp_sessions);
                     }
                     // Dropping the workspace tears down its WebViews
                     // (WKWebViews/XPC processes) via Drop. No visible webview
@@ -7849,7 +7785,6 @@ fn main() {
                         } else {
                             learning_next_at = None;
                             learning_handle = None;
-                            learning_pid = None;
                         }
                     }
                     "learning_interval_min" => {
@@ -8598,18 +8533,16 @@ fn main() {
                         if s.handle.is_none() {
                             s.retry_count = 0;
                             s.reconnect_gen += 1; // invalidate any pending backoff timers
-                            // Must carry --resume: this loop also hits lazily
-                            // unconnected persisted sessions — a bare spawn would
-                            // mint a fresh octomind session and the Connected
-                            // handler would overwrite (lose) the saved resume id.
-                            let cmd = match &s.acp_session_id {
-                                Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
-                                None => format!("octomind acp {}", s.tag),
-                            };
-                            s.handle = acp::AcpHandle::connect(
-                                &cmd,
-                                &workspace_id,
-                                session_tokens.remove(&s.id).flatten(),
+                            // Binds the saved octomind session id when there is one,
+                            // so lazily unconnected persisted sessions resume their
+                            // conversation instead of starting a fresh one.
+                            s.handle = agent::AgentHandle::connect(
+                                agent::AgentSpec::chat(
+                                    &s.tag,
+                                    s.acp_session_id.clone(),
+                                    &workspace_id,
+                                    session_tokens.remove(&s.id).flatten(),
+                                ),
                                 make_wake(acp_proxy.clone()),
                             )
                             .ok();
@@ -8807,14 +8740,13 @@ fn main() {
                     // Lazy-spawn safety net: prompts can race ahead of an
                     // explicit switch on first activation of a persisted session.
                     if s.handle.is_none() {
-                        let cmd = match &s.acp_session_id {
-                            Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
-                            None => format!("octomind acp {}", s.tag),
-                        };
-                        s.handle = acp::AcpHandle::connect(
-                            &cmd,
-                            &workspace_id,
-                            mcp_token.clone(),
+                        s.handle = agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(
+                                &s.tag,
+                                s.acp_session_id.clone(),
+                                &workspace_id,
+                                mcp_token.clone(),
+                            ),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok();
@@ -8838,11 +8770,11 @@ fn main() {
                 }
             }
 
-            // ── ACP cancel (stop button) ───────────────────────────────────────────
-            // First click: polite ACP cancel notification.
-            // Second click within 12s: force-kill the subprocess and respawn the
-            // handle with the same agent tag. This is the user's escape hatch when
-            // the agent ignores `CancelNotification` (e.g. wedged on a syscall).
+            // —— Agent cancel (stop button) ——
+            // First click: cancel the running turn.
+            // Second click within 12s: drop the connection and reconnect, resuming
+            // the same session. The user's escape hatch when a turn ignores the
+            // cancel (e.g. a tool wedged on a syscall).
             Event::UserEvent(AppEvent::AcpSignIn(sid)) => {
                 // Kick off `/login`; the LoginStarted event opens the browser tab.
                 if let Some(h) = workspace_manager.active().acp_sessions.iter().find(|s| s.id == sid).and_then(|s| s.handle.as_ref()) {
@@ -8880,15 +8812,9 @@ fn main() {
                         let resume = s.acp_session_id.clone();
                         s.retry_count = 0;
                         s.reconnect_gen += 1;
-                        s.handle = None; // drop -> kill_on_drop fires on the child
-                        let cmd = match &resume {
-                            Some(id) => format!("octomind acp {} --resume {}", tag, id),
-                            None => format!("octomind acp {}", tag),
-                        };
-                        s.handle = acp::AcpHandle::connect(
-                            &cmd,
-                            &workspace_id,
-                            mcp_token.clone(),
+                        s.handle = None;
+                        s.handle = agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(&tag, resume, &workspace_id, mcp_token.clone()),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok();
@@ -8919,7 +8845,7 @@ fn main() {
                 }
             }
 
-            // ── ACP set agent for an existing session (kills + respawns its handle) ──
+            // —— Set agent for an existing session (ends it, starts a fresh one) ——
             Event::UserEvent(AppEvent::AcpSetAgent(sid, tag)) => {
                 let mut should_persist = false;
                 let workspace_id = workspace_manager.active().id.clone();
@@ -8931,11 +8857,11 @@ fn main() {
                     s.retry_count = 0;
                     s.reconnect_gen += 1;
                     s.acp_session_id = None; // user switched agent — start fresh
-                    s.handle = None; // drop old (kills subprocess)
-                    s.handle = acp::AcpHandle::connect(
-                        &format!("octomind acp {}", tag),
-                        &workspace_id,
-                        mcp_token.clone(),
+                    if let Some(old) = s.handle.take() {
+                        old.close();
+                    }
+                    s.handle = agent::AgentHandle::connect(
+                        agent::AgentSpec::chat(&tag, None, &workspace_id, mcp_token.clone()),
                         make_wake(acp_proxy.clone()),
                     )
                     .ok();
@@ -8972,11 +8898,11 @@ fn main() {
                     s.retry_count = 0;
                     s.reconnect_gen += 1;
                     s.acp_session_id = None; // explicit fresh chat
-                    s.handle = None; // drop old (kills subprocess)
-                    s.handle = acp::AcpHandle::connect(
-                        &format!("octomind acp {}", s.tag),
-                        &workspace_id,
-                        mcp_token.clone(),
+                    if let Some(old) = s.handle.take() {
+                        old.close();
+                    }
+                    s.handle = agent::AgentHandle::connect(
+                        agent::AgentSpec::chat(&s.tag, None, &workspace_id, mcp_token.clone()),
                         make_wake(acp_proxy.clone()),
                     )
                     .ok();
@@ -9010,10 +8936,13 @@ fn main() {
                     tracing::warn!(max = MAX_SESSIONS, "session create rejected — cap reached");
                 } else {
                     let sid = next_acp_session_id();
-                    let handle = acp::AcpHandle::connect(
-                        &format!("octomind acp {}", tag),
-                        &workspace_manager.active().id,
-                        session_mcp_token!(sid),
+                    let handle = agent::AgentHandle::connect(
+                        agent::AgentSpec::chat(
+                            &tag,
+                            None,
+                            &workspace_manager.active().id,
+                            session_mcp_token!(sid),
+                        ),
                         make_wake(acp_proxy.clone()),
                     )
                     .ok();
@@ -9035,7 +8964,6 @@ fn main() {
                         prompt_in_flight: false,
                         available_commands_json: None,
                         account_json: None,
-                        octomind_pid: None,
                     });
                     workspace_manager.active_mut().acp_active_session_id = sid; // auto-switch to new session
                     let etitle = webview_utils::escape_js_template(&title);
@@ -9061,7 +8989,10 @@ fn main() {
                 if workspace_manager.active().acp_sessions.len() <= 1 {
                     tracing::debug!(session_id = sid, "session close ignored — last session");
                 } else if let Some(pos) = workspace_manager.active().acp_sessions.iter().position(|s| s.id == sid) {
-                    let _removed = workspace_manager.active_mut().acp_sessions.remove(pos); // drop kills subprocess
+                    let removed = workspace_manager.active_mut().acp_sessions.remove(pos);
+                    if let Some(handle) = removed.handle {
+                        handle.close();
+                    }
                     if let Some(ref handle) = mcp_handle {
                         handle.unregister_session(sid);
                     }
@@ -9094,14 +9025,13 @@ fn main() {
                 let workspace_id = workspace_manager.active().id.clone();
                 if let Some(s) = workspace_manager.active_mut().acp_sessions.iter_mut().find(|s| s.id == sid) {
                     if s.handle.is_none() {
-                        let cmd = match &s.acp_session_id {
-                            Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
-                            None => format!("octomind acp {}", s.tag),
-                        };
-                        s.handle = acp::AcpHandle::connect(
-                            &cmd,
-                            &workspace_id,
-                            mcp_token.clone(),
+                        s.handle = agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(
+                                &s.tag,
+                                s.acp_session_id.clone(),
+                                &workspace_id,
+                                mcp_token.clone(),
+                            ),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok();
@@ -9731,10 +9661,12 @@ fn main() {
                     drop(tm);
                     tracing::info!(prompt_len = prompt.len(), "starting proactive learning run");
                     let lp = proxy.clone();
-                    learning_handle = acp::AcpHandle::connect(
-                        "octomind acp octoweb:learning",
-                        &workspace_manager.active().id,
-                        workspace_manager.active().mcp_token.clone(),
+                    learning_handle = agent::AgentHandle::connect(
+                        agent::AgentSpec::one_shot(
+                            "octoweb:learning",
+                            &workspace_manager.active().id,
+                            workspace_manager.active().mcp_token.clone(),
+                        ),
                         move || { let _ = lp.send_event(AppEvent::LearningWake); },
                     ).ok();
                     if let Some(ref h) = learning_handle {
@@ -9770,14 +9702,13 @@ fn main() {
                     } else {
                         tracing::info!(session_id = sid, retry = s.retry_count, "attempting ACP reconnection");
                         s.handle = None; // drop old handle if any
-                        let cmd = match &s.acp_session_id {
-                            Some(id) => format!("octomind acp {} --resume {}", s.tag, id),
-                            None => format!("octomind acp {}", s.tag),
-                        };
-                        s.handle = acp::AcpHandle::connect(
-                            &cmd,
-                            workspace_id,
-                            mcp_token.clone(),
+                        s.handle = agent::AgentHandle::connect(
+                            agent::AgentSpec::chat(
+                                &s.tag,
+                                s.acp_session_id.clone(),
+                                workspace_id,
+                                mcp_token.clone(),
+                            ),
                             make_wake(acp_proxy.clone()),
                         )
                         .ok();
@@ -10581,7 +10512,6 @@ fn main() {
                     &ai_prompt_history,
                     cfg.max_acp_session_messages,
                     cfg.max_history,
-                    learning_pid.into_iter().chain(mail_jobs.pids()).collect(),
                     control_flow,
                 );
             }
@@ -11179,10 +11109,12 @@ fn main() {
                     format!("{}\n<text>{}</text>", prompt, inline_edit_selected_text)
                 };
                 inline_edit_response.clear();
-                let start_error = match acp::AcpHandle::connect(
-                    "octomind acp octoweb:editor",
-                    &workspace_manager.active().id,
-                    workspace_manager.active().mcp_token.clone(),
+                let start_error = match agent::AgentHandle::connect(
+                    agent::AgentSpec::one_shot(
+                        "octoweb:editor",
+                        &workspace_manager.active().id,
+                        workspace_manager.active().mcp_token.clone(),
+                    ),
                     { let p = acp_proxy.clone(); move || { let _ = p.send_event(AppEvent::AcpWake); } }
                 ) {
                     Ok(handle) => {
@@ -11446,7 +11378,6 @@ fn main() {
                             &ai_prompt_history,
                             cfg.max_acp_session_messages,
                             cfg.max_history,
-                            learning_pid.into_iter().chain(mail_jobs.pids()).collect(),
                             control_flow,
                         );
                     } else if window_id == chrome_win_id {
@@ -12468,7 +12399,6 @@ fn save_and_exit(
     ai_prompt_history: &[String],
     max_acp_session_messages: usize,
     max_history: usize,
-    background_pids: Vec<u32>,
     control_flow: &mut ControlFlow,
 ) {
     // Persists every workspace, not just the active one — `WorkspaceManager`
@@ -12520,21 +12450,11 @@ fn save_and_exit(
     config::save_acp_history(&config::AcpHistory {
         workspaces: acp_workspaces,
     });
-    // Terminate agent subprocesses before exiting. ControlFlow::Exit ends the
-    // process via std::process::exit — destructors (and tokio's kill_on_drop)
-    // never run, so octomind children would outlive us as orphans. An orphan
-    // still flushing its session file makes the next launch's `--resume` race
-    // it and silently mint a fresh session — that's how agent context got
-    // lost across restarts. SIGTERM lets octomind save; bounded wait, then
-    // SIGKILL stragglers. Covers every workspace's sessions, not just the
-    // active one — a background workspace can still hold live handles.
-    let pids: Vec<u32> = workspace_manager
-        .list()
-        .iter()
-        .flat_map(|ws| ws.acp_sessions.iter().filter_map(|s| s.octomind_pid))
-        .chain(background_pids)
-        .collect();
-    terminate_octomind_pids(&pids);
+    // Stop the octomind server before exiting. ControlFlow::Exit ends the
+    // process via std::process::exit — destructors never run, so the server
+    // would outlive us as an orphan. SIGTERM lets octomind save its sessions
+    // and stop its MCP servers; bounded wait, then SIGKILL.
+    octomind_server::shutdown();
     crash_report::log_clean_shutdown();
     *control_flow = ControlFlow::Exit;
 }
@@ -13093,7 +13013,6 @@ mod injected_turn_tests {
             prompt_in_flight: false,
             available_commands_json: None,
             account_json: None,
-            octomind_pid: None,
         }
     }
 
@@ -13198,7 +13117,6 @@ mod a2ui_tests {
             prompt_in_flight: false,
             available_commands_json: None,
             account_json: None,
-            octomind_pid: None,
         }
     }
 

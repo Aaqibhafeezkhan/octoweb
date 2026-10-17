@@ -2302,6 +2302,26 @@ impl ServerHandler for McpServer {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
+        // The shared octomind server presents one token for every session it
+        // runs; the request's `_meta` names the calling session, and that
+        // session was routed to its chat's (or workspace's) own token.
+        let header =
+            match header {
+                Some(token) if token == agent_server_token() => {
+                    let routed = calling_agent_session(&context.meta)
+                        .and_then(|session| AGENT_SESSIONS.read().ok()?.get(&session).cloned());
+                    match routed {
+                        Some(token) => Some(token),
+                        None => return Ok(err_result(
+                            "Unknown assistant session — this agent session is not attached to a \
+                             workspace any more. Start a new chat to pick up the current one."
+                                .to_string(),
+                        )),
+                    }
+                }
+                other => other,
+            };
+
         let scope =
             match header {
                 // No header: the main loop falls back to the first workspace.
@@ -2449,6 +2469,46 @@ impl ServerHandler for McpServer {
 /// token, minted at registration. Absent → the first workspace, which is what
 /// keeps agent configs written before workspaces existed working unchanged.
 pub const WORKSPACE_HEADER: &str = "x-octoweb-workspace";
+
+/// The token the shared octomind server sends in `WORKSPACE_HEADER` for every
+/// session it runs. It grants nothing by itself: the calling session, named in
+/// each request's `_meta`, must have been routed with `route_agent_session`.
+pub fn agent_server_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(random_token)
+}
+
+/// octomind session id → the MCP token whose scope that session acts in.
+/// Revoking the token (`unregister_session` / `unregister_workspace`) cuts the
+/// session off too, since the route resolves through it.
+static AGENT_SESSIONS: std::sync::LazyLock<std::sync::RwLock<HashMap<String, String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Let an octomind session's tool calls act in `token`'s scope.
+pub fn route_agent_session(session_id: &str, token: &str) {
+    if let Ok(mut map) = AGENT_SESSIONS.write() {
+        map.insert(session_id.to_string(), token.to_string());
+    }
+}
+
+/// Forget a session that is gone for good (a finished background job).
+pub fn unroute_agent_session(session_id: &str) {
+    if let Ok(mut map) = AGENT_SESSIONS.write() {
+        map.remove(session_id);
+    }
+}
+
+/// The octomind session a request comes from. Octomind names it in every
+/// request's `_meta`, in the client capabilities' `experimental.session`.
+fn calling_agent_session(meta: &rmcp::model::Meta) -> Option<String> {
+    meta.get("io.modelcontextprotocol/clientCapabilities")?
+        .get("experimental")?
+        .get("session")?
+        .get("session_id")?
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
 
 /// What a token grants. Every token names a workspace; tokens minted for one
 /// agent process also name the sidebar session that spawned it, which is how
@@ -2619,7 +2679,7 @@ impl McpHandle {
 
 /// 32 hex chars from `/dev/urandom`. Ephemeral: minted per run, never
 /// persisted, so a stale token can't outlive the process that issued it.
-fn random_token() -> String {
+pub fn random_token() -> String {
     use std::io::Read;
     let mut buf = [0u8; 16];
     std::fs::File::open("/dev/urandom")
@@ -2631,6 +2691,49 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_calling_octomind_session_is_read_from_request_meta() {
+        let meta: rmcp::model::Meta = serde_json::from_value(serde_json::json!({
+            "io.modelcontextprotocol/clientCapabilities": {
+                "experimental": {"session": {"session_id": "octoweb-abc", "role": "octoweb"}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(calling_agent_session(&meta).as_deref(), Some("octoweb-abc"));
+
+        for missing in [
+            serde_json::json!({}),
+            serde_json::json!({"io.modelcontextprotocol/clientCapabilities": {}}),
+            serde_json::json!({"io.modelcontextprotocol/clientCapabilities": {"experimental": {"session": {"session_id": ""}}}}),
+        ] {
+            let meta: rmcp::model::Meta = serde_json::from_value(missing).unwrap();
+            assert_eq!(calling_agent_session(&meta), None);
+        }
+    }
+
+    #[test]
+    fn agent_sessions_route_to_their_token_until_unrouted() {
+        route_agent_session("octoweb-route-test", "tok-1");
+        route_agent_session("octoweb-route-test", "tok-2");
+        assert_eq!(
+            AGENT_SESSIONS
+                .read()
+                .unwrap()
+                .get("octoweb-route-test")
+                .map(String::as_str),
+            Some("tok-2"),
+            "a reconnect re-routes to the chat's fresh token"
+        );
+        unroute_agent_session("octoweb-route-test");
+        assert!(AGENT_SESSIONS
+            .read()
+            .unwrap()
+            .get("octoweb-route-test")
+            .is_none());
+        assert_eq!(agent_server_token(), agent_server_token());
+        assert_eq!(agent_server_token().len(), 32);
+    }
 
     fn tab(id: usize, title: &str, url: &str) -> crate::browser::Tab {
         crate::browser::Tab {

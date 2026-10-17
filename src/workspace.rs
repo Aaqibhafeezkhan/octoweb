@@ -38,7 +38,7 @@ pub struct Workspace {
     pub webviews: HashMap<usize, WebView>,
     /// AI sidebar sessions belonging to this workspace. Empty until main.rs
     /// populates it at startup (or via `CreateWorkspace`) — constructing an
-    /// `AcpSession` needs `acp::AcpHandle::connect`/the wake-proxy, neither
+    /// `AcpSession` needs `agent::AgentHandle::connect`/the wake-proxy, neither
     /// of which this module has access to.
     pub acp_sessions: Vec<AcpSession>,
     /// Which of `acp_sessions` is foreground in the sidebar tab strip.

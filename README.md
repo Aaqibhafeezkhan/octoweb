@@ -34,7 +34,7 @@ Most browsers are built around the mouse. Octoweb is built around the keyboard �
 
 1. **Keyboard-first navigation** — Every action has a shortcut. Nothing requires a click. The command palette (`⌘⇧P`) fuzzy-searches tabs and history. Pin any page to a fast-access slot with `⌘⇧1`–`⌘⇧0` and jump back with `⌘1`–`⌘9` from anywhere.
 
-2. **AI assistant built in** — Not an extension, not a tab. A sidebar overlay powered by a local [octomind](https://github.com/muvon/octomind) agent via [ACP](https://github.com/muvon/agent-client-protocol). Ask questions about the current page, get code explanations, summarize content — all without leaving the browser.
+2. **AI assistant built in** — Not an extension, not a tab. A sidebar overlay powered by a local [octomind](https://github.com/muvon/octomind) agent server. Ask questions about the current page, get code explanations, summarize content — all without leaving the browser.
 
 3. **MCP server inside the browser** — Your AI tools can actually *drive* the browser. Octoweb runs an MCP server on `localhost:3434/mcp` that exposes 38 tools for navigation, tab management, page interaction, content extraction, and mail. Point Claude Desktop or any MCP client at it and watch it browse.
 
@@ -73,19 +73,22 @@ Most browsers are built around the mouse. Octoweb is built around the keyboard �
 
 ## AI Assistant
 
-Press `⌘⇧A` to open the sidebar. It connects to a local AI agent running under [octomind](https://github.com/muvon/octomind) using the [Agent Client Protocol (ACP)](https://github.com/muvon/agent-client-protocol). Responses stream in as they arrive.
+Press `⌘⇧A` to open the sidebar. It talks to a local [octomind](https://github.com/muvon/octomind) agent server over WebSocket. Responses stream in as they arrive.
 
 ### How it works
 
 ```
-octoweb sidebar  ──ACP/JSON-RPC──▶  octomind acp octoweb:assistant
-                                         │
-                                    specialist agent config
-                                    from the tap registry
-                                         │
-                                    your chosen AI provider
-                                    (OpenAI, Anthropic, etc.)
+octoweb  ──WebSocket (loopback, per-run token)──▶  octomind server
+  │ one session per chat / background job              │
+  │ (own working dir + agent tag each)          specialist agent configs
+  │                                             from the tap registry
+  ◀───────── MCP (browser tools, render_ui) ──────────────┤
+                                              your chosen AI provider
 ```
+
+Octoweb starts ONE `octomind server` process the first time an assistant is needed and runs every assistant in it —
+every chat in every workspace, inline edit, background learning and the mail jobs — each as its own session with its
+own working directory and agent tag. The server is stopped when octoweb quits.
 
 octomind is a plug-and-play AI agent runtime. You install it once, point it at an API key, and get a fully configured specialist agent — model, system prompt, tools, and all — with zero manual setup. The `octoweb:assistant` tag fetches that agent's configuration from the [community tap registry](https://github.com/muvon/octomind-tap) automatically.
 
@@ -104,13 +107,8 @@ export OPENROUTER_API_KEY="your_key"   # easiest — covers all providers
 # or: OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
 ```
 
-**3. Start octomind in ACP mode** (octoweb connects to this):
-
-```bash
-octomind acp octoweb:assistant
-```
-
-octomind fetches the `octoweb:assistant` agent manifest from the tap, installs any required tools, and starts listening for ACP connections. octoweb's sidebar connects automatically.
+**3. Nothing else to start** — octoweb launches `octomind server` itself (on a free loopback port, with a per-run
+secret), resolves the `octoweb:assistant` agent from the tap, and connects every sidebar session to it.
 
 **4. Open the sidebar in octoweb:** `⌘⇧A`
 
@@ -154,7 +152,7 @@ proactive_learning    = false   # enable background learning (default: off)
 learning_interval_min = 30     # minutes between runs (floored to 5 on load)
 ```
 
-The learning agent runs as a separate `octomind acp octoweb:learning` process. It's completely independent from the sidebar assistant — you can use one without the other.
+The learning agent runs as its own `octoweb:learning` session on the shared octomind server. It's completely independent from the sidebar assistant — you can use one without the other.
 
 ---
 
@@ -494,7 +492,7 @@ It won't replace your main browser. It might become the browser you reach for wh
 - **[wry](https://github.com/tauri-apps/wry)** — WebView (WKWebView on macOS)
 - **[tao](https://github.com/tauri-apps/tao)** — windowing + event loop
 - **[octomind](https://github.com/muvon/octomind)** — plug-and-play AI agent runtime powering the sidebar
-- **[agent-client-protocol](https://github.com/muvon/agent-client-protocol)** — ACP for browser ↔ agent communication
+- **[tokio-tungstenite](https://github.com/snapview/tokio-tungstenite)** — WebSocket client for the octomind server
 - **[rmcp](https://github.com/modelcontextprotocol/rust-sdk)** — MCP server (AI browser control)
 - **CGEventTap** — system-wide keyboard shortcuts without rdev
 - Rust, release profile: LTO + `codegen-units=1` + stripped binary
