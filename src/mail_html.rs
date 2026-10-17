@@ -1043,6 +1043,30 @@ pub fn html(keybindings_json: &str) -> String {
     });
   }
 
+  // READ-3: bare addresses in a message become links — web, www. and mail.
+  const LINK = /\b(?:https?:\/\/|www\.)[^\s<>"`]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/gi;
+  // Sentence punctuation and an unopened closing bracket end the link.
+  function trimLink(s) {
+    for (;;) {
+      const c = s.slice(-1), open = { ')': '(', ']': '[', '}': '{' }[c];
+      if (/[.,;:!?*'"]/.test(c) || (open && s.split(open).length < s.split(c).length)) s = s.slice(0, -1);
+      else return s;
+    }
+  }
+  function linkHref(s) { return /^www\./i.test(s) ? 'https://' + s : s.indexOf('://') < 0 ? 'mailto:' + s : s; }
+  // [text, link, text, link, …, text]: links at the odd indexes.
+  function linkParts(text) {
+    const parts = [];
+    let last = 0;
+    text.replace(LINK, function(m, at) {
+      const link = trimLink(m);
+      if (link.replace(/^(?:https?:\/\/|www\.)/i, '')) { parts.push(text.slice(last, at), link); last = at + link.length; }
+      return m;
+    });
+    parts.push(text.slice(last));
+    return parts;
+  }
+
   function textHtml(text) {
     // Quoted lines (and the "On … wrote:" above them) fold; links work.
     const lines = String(text || '').replace(/\r/g, '').split('\n');
@@ -1052,11 +1076,35 @@ pub fn html(keybindings_json: &str) -> String {
       if (/^-- ?$/.test(line)) sig = true;
       if (quoted && !inQuote) { out += '<span class="quote">'; inQuote = true; }
       if (!quoted && inQuote) { out += '</span>'; inQuote = false; }
-      const html = esc(line).replace(/(https?:\/\/[^\s<>"]+)/g, '<a href="$1" title="$1">$1</a>');
+      const html = linkParts(line).map(function(p, k) {
+        return k % 2 ? '<a href="' + esc(linkHref(p)) + '" title="' + esc(linkHref(p)) + '">' + esc(p) + '</a>' : esc(p);
+      }).join('');
       out += (sig ? '<span style="color:var(--label-3)">' + html + '</span>' : html) + '\n';
     });
     if (inQuote) out += '</span>';
     return out;
+  }
+
+  // HTML mail often carries its addresses as bare text, too.
+  function linkifyFrame(doc) {
+    const walk = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, { acceptNode: function(n) {
+      return n.parentElement && n.parentElement.closest('a, script, style, textarea, title') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    } });
+    const nodes = [];
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) { LINK.lastIndex = 0; if (LINK.test(n.data)) nodes.push(n); }
+    nodes.forEach(function(n) {
+      const parts = linkParts(n.data);
+      if (parts.length < 3) return;
+      const frag = doc.createDocumentFragment();
+      parts.forEach(function(p, k) {
+        if (!(k % 2)) { if (p) frag.appendChild(doc.createTextNode(p)); return; }
+        const a = doc.createElement('a');
+        a.href = linkHref(p);
+        a.textContent = p;
+        frag.appendChild(a);
+      });
+      n.parentNode.replaceChild(frag, n);
+    });
   }
 
   function hasQuote(m) {
@@ -1261,6 +1309,7 @@ pub fn html(keybindings_json: &str) -> String {
     // Again whenever its content grows, as images arrive.
     if (window.ResizeObserver) new ResizeObserver(fit).observe(doc.body);
     else setTimeout(fit, 300);
+    linkifyFrame(doc);
     // READ-3: the full address shows on hover before clicking.
     doc.querySelectorAll('a[href]').forEach(function(a) { a.title = a.getAttribute('href'); });
     f._fit = fit;
