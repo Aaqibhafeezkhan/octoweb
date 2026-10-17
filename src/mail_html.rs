@@ -1324,8 +1324,9 @@ pub fn html(keybindings_json: &str) -> String {
     root.querySelectorAll('iframe.mail').forEach(function(f) {
       const i = Number(f.dataset.i), m = t.messages[i];
       if (heights[i]) f.style.height = heights[i];
-      f.addEventListener('load', function() { wireFrame(f); });
+      f.addEventListener('load', function() { wireFrame(f); f.classList.add('fitted'); });
       f.srcdoc = frameDoc(m.html, imagesOn(t, m, i), frameKind(m.html));
+      whenParsed(f);
     });
   }
   // A fresh copy of the open thread: only what changed is redrawn.
@@ -1354,10 +1355,24 @@ pub fn html(keybindings_json: &str) -> String {
       (s.phase === 'writing' ? '<span class="caret"></span>' : '');
   }
 
+  // A frame shows once its mail is parsed, not at `load`: that waits for
+  // every remote image, and one that stalls (a tracking pixel) left the
+  // message blank. `load` still wires it should parsing be missed.
+  function whenParsed(f) {
+    let tries = 0;
+    (function check() {
+      if (f._wired || !f.isConnected) return;
+      const doc = f.contentDocument;
+      if (doc && doc.readyState !== 'loading') wireFrame(f);
+      if (!f._wired && ++tries < 600) setTimeout(check, 16);
+    })();
+  }
+  // Once, on the mail's own document — not the blank one the frame starts with.
   function wireFrame(f) {
-    f.classList.add('fitted');
     const doc = f.contentDocument;
-    if (!doc || !doc.body) return;
+    if (f._wired || !doc || doc.URL !== 'about:srcdoc' || !doc.body) return;
+    f._wired = true;
+    f.classList.add('fitted');
     if (f.classList.contains('plain')) readableInDark(doc);
     // The body's own height: the document's is at least the frame's, so it
     // would never shrink below the iframe default.
