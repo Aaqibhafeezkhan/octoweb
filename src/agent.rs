@@ -422,7 +422,8 @@ enum Sent {
     },
     /// A slash command the user typed: its output is shown as the reply.
     /// `/done <instructions>` goes on to run those as a turn, ending on `cost`.
-    UserCommand { name: String, ends_on_cost: bool },
+    /// Kept as typed, so a "busy" refusal can resend it.
+    UserCommand { text: String, ends_on_cost: bool },
     /// A background command (`/usage` refresh, workflow list, login).
     Probe,
 }
@@ -433,14 +434,15 @@ impl Sent {
     }
 }
 
-/// Octomind refuses a frame for a session whose lock another turn holds — here
-/// that is the session's own background turn (a specialist reply, a
-/// schedule). The prompt is resent once that turn's `cost` arrives.
+/// Octomind refuses a frame for a session whose lock another turn holds — the
+/// session's own background turn (a specialist reply, a schedule), or a turn
+/// an earlier connection left running. The prompt is resent the moment a
+/// `cost` says the lock is free, and on a backing-off timer otherwise.
 const BUSY: &str = "is busy processing another request";
-/// How long a refused prompt waits before it is retried without a `cost`, and
-/// how many retries before the refusal is shown.
-const BUSY_RETRY: Duration = Duration::from_secs(3);
-const BUSY_RETRIES: u32 = 40;
+const BUSY_RETRY: Duration = Duration::from_secs(2);
+const BUSY_RETRY_MAX: Duration = Duration::from_secs(30);
+/// A prompt still refused after this long is given up on, with a message.
+const BUSY_GIVE_UP: Duration = Duration::from_secs(30 * 60);
 /// A turn that sends nothing for this long is considered stuck. Long tool
 /// calls report progress, which counts as activity.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(1200);
@@ -467,6 +469,8 @@ struct Session<'a> {
     queue: VecDeque<PromptMessage>,
     busy_retries: u32,
     busy_retry_at: Option<Instant>,
+    /// When the prompt at the head of the queue was first refused as busy.
+    busy_since: Option<Instant>,
     /// An `injected` frame opened a turn the agent started itself; its `cost`
     /// closes it (inside a prompt, before the prompt's own turn runs).
     injected_open: bool,
@@ -528,6 +532,7 @@ async fn serve_session(
         queue: VecDeque::new(),
         busy_retries: 0,
         busy_retry_at: None,
+        busy_since: None,
         injected_open: false,
         swallow_cost: false,
         cancel_deadline: None,
@@ -540,6 +545,14 @@ async fn serve_session(
 
     let result = session.serve(&mut stream, &mut requests).await;
 
+    // Leaving mid-turn: stop the turn rather than leave it holding the session
+    // against the next connection (a reconnect would only hear "busy").
+    let turn_running = session.current.as_ref().is_some_and(Sent::is_turn)
+        || session.pending.values().any(Sent::is_turn)
+        || session.injected_open;
+    if result.is_ok() && turn_running {
+        let _ = session.send_cancel().await;
+    }
     if spec.one_shot {
         crate::mcp::unroute_agent_session(&session_id);
     }
@@ -721,8 +734,13 @@ impl Session<'_> {
                 "args": args,
             }))
             .await?;
-            self.pending
-                .insert(request_id, Sent::UserCommand { name, ends_on_cost });
+            self.pending.insert(
+                request_id,
+                Sent::UserCommand {
+                    text: prompt.text,
+                    ends_on_cost,
+                },
+            );
             return Ok(());
         }
 
@@ -775,8 +793,7 @@ impl Session<'_> {
         // A prompt still waiting (behind a busy session) never reaches the agent.
         let dropped_waiting = !self.queue.is_empty() || self.busy_retry_at.is_some();
         self.queue.clear();
-        self.busy_retry_at = None;
-        self.busy_retries = 0;
+        self.clear_busy();
         if !turn_running {
             if dropped_waiting {
                 self.events.send(AgentEvent::Cancelled);
@@ -918,12 +935,12 @@ impl Session<'_> {
         };
         let command_type = data["command_type"].as_str().unwrap_or_default();
         match self.current.take() {
-            Some(Sent::UserCommand { ends_on_cost, name }) => {
+            Some(Sent::UserCommand { ends_on_cost, text }) => {
                 self.events
                     .send(AgentEvent::Chunk(render_command_output(data)));
                 if ends_on_cost {
                     // `/done <instructions>` runs those next, in the same turn.
-                    self.current = Some(Sent::UserCommand { name, ends_on_cost });
+                    self.current = Some(Sent::UserCommand { text, ends_on_cost });
                 } else {
                     self.events.send(AgentEvent::Done);
                     self.send_next_prompt().await?;
@@ -1001,7 +1018,37 @@ impl Session<'_> {
         });
         // The session's lock is free again: a prompt refused as busy goes now.
         self.busy_retry_at = None;
+        if ours {
+            self.clear_busy();
+        }
         self.send_next_prompt().await
+    }
+
+    /// Forget a busy-retry cycle: the prompt ran, failed, or was cancelled.
+    fn clear_busy(&mut self) {
+        self.busy_retries = 0;
+        self.busy_since = None;
+        self.busy_retry_at = None;
+    }
+
+    /// Put a refused prompt back at the head of the queue and schedule its
+    /// retry, or give up once the session has stayed busy too long.
+    async fn retry_busy(&mut self, prompt: PromptMessage) -> anyhow::Result<()> {
+        let since = *self.busy_since.get_or_insert_with(Instant::now);
+        if since.elapsed() > BUSY_GIVE_UP {
+            self.clear_busy();
+            self.events.send(AgentEvent::TurnError(
+                "The assistant is still busy with an earlier task — try again shortly.".into(),
+            ));
+            return self.send_next_prompt().await;
+        }
+        let wait = BUSY_RETRY
+            .saturating_mul(1 << self.busy_retries.min(4))
+            .min(BUSY_RETRY_MAX);
+        self.busy_retries += 1;
+        self.queue.push_front(prompt);
+        self.busy_retry_at = Some(Instant::now() + wait);
+        Ok(())
     }
 
     async fn on_error(&mut self, message: String) -> anyhow::Result<()> {
@@ -1011,18 +1058,14 @@ impl Session<'_> {
                     for path in media {
                         let _ = std::fs::remove_file(path);
                     }
-                    self.busy_retries += 1;
-                    if self.busy_retries > BUSY_RETRIES {
-                        self.busy_retries = 0;
-                        self.events.send(AgentEvent::TurnError(message));
-                        return self.send_next_prompt().await;
-                    }
-                    self.queue.push_front(prompt);
-                    self.busy_retry_at = Some(Instant::now() + BUSY_RETRY);
+                    self.retry_busy(prompt).await?;
                 }
-                Some(Sent::UserCommand { .. }) => {
-                    self.events.send(AgentEvent::TurnError(message));
-                    self.send_next_prompt().await?;
+                Some(Sent::UserCommand { text, .. }) => {
+                    self.retry_busy(PromptMessage {
+                        text,
+                        images: Vec::new(),
+                    })
+                    .await?;
                 }
                 // A background probe will run again on its own schedule.
                 _ => {}
@@ -1038,7 +1081,7 @@ impl Session<'_> {
         match &self.current {
             Some(Sent::Prompt { .. }) => {
                 self.end_turn();
-                self.busy_retries = 0;
+                self.clear_busy();
                 // A provider failure still sends the turn's cost right behind.
                 self.swallow_cost = true;
                 self.events.send(AgentEvent::TurnError(message));
@@ -1449,6 +1492,67 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         client.requests.send(Request::Cancel).unwrap();
         assert!(matches!(client.next().await, AgentEvent::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn busy_refusals_never_surface_while_the_session_frees_up() {
+        // More refusals than any fixed retry budget, each freed by a background
+        // turn's cost: the prompt keeps waiting and finally runs, no error.
+        let endpoint = mock_server(|mut ws| async move {
+            accept_session(&mut ws).await;
+            for round in 0..60 {
+                let msg = recv(&mut ws).await;
+                assert_eq!(msg["content"], "persist", "round {round}");
+                ack(&mut ws, &msg).await;
+                send(&mut ws, serde_json::json!({"type": "error", "message": "Session 'sess-1' is busy processing another request. Please wait."})).await;
+                send(&mut ws, cost("sess-1", serde_json::json!({}))).await;
+            }
+            let msg = recv(&mut ws).await;
+            ack(&mut ws, &msg).await;
+            send(&mut ws, serde_json::json!({"type": "assistant", "content": "finally", "session_id": "sess-1"})).await;
+            send(&mut ws, cost("sess-1", serde_json::json!({}))).await;
+            let _ = ws.next().await;
+        })
+        .await;
+        let mut client = start(endpoint, chat_spec());
+        assert!(matches!(client.next().await, AgentEvent::Connected(_)));
+        client.prompt("persist");
+        loop {
+            match client.next().await {
+                // Each freed lock (a background turn's cost) reads as its Done.
+                AgentEvent::Done => continue,
+                AgentEvent::Chunk(t) => {
+                    assert_eq!(t, "finally");
+                    break;
+                }
+                other => panic!("busy surfaced as {other:?}"),
+            }
+        }
+        assert!(matches!(client.next().await, AgentEvent::Done));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_handle_mid_turn_cancels_the_turn_on_the_server() {
+        let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+        let endpoint = mock_server(|mut ws| async move {
+            accept_session(&mut ws).await;
+            let msg = recv(&mut ws).await;
+            ack(&mut ws, &msg).await;
+            send(&mut ws, serde_json::json!({"type": "assistant", "content": "working", "session_id": "sess-1"})).await;
+            let cancel = recv(&mut ws).await;
+            assert_eq!(cancel["type"], "cancel");
+            let _ = cancelled_tx.send(());
+        })
+        .await;
+        let mut client = start(endpoint, chat_spec());
+        assert!(matches!(client.next().await, AgentEvent::Connected(_)));
+        client.prompt("long");
+        assert!(matches!(client.next().await, AgentEvent::Chunk(_)));
+        drop(client.requests);
+        tokio::time::timeout(Duration::from_secs(5), cancelled_rx)
+            .await
+            .expect("cancel sent before disconnecting")
+            .unwrap();
     }
 
     #[tokio::test]
