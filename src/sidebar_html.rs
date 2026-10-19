@@ -7665,6 +7665,11 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
       const key = a2uiSurfaceKey(sid, newSurfaceId);
       const existingFile = a2uiSurfaceIndex.get(key);
       if (existingFile && a2uiBlocks.has(existingFile)) {
+        const sess = sessions.get(sid);
+        // Back-filling older history (scroll-up): this record predates the
+        // mounted surface, whose state already folds it in. Rebinding would
+        // roll the card back to stale content and stale event names.
+        if (sess && sess.insertAnchor) return;
         block = a2uiBlocks.get(existingFile);
         // Rebind: same DOM bubble, new envelope identity.
         a2uiBlocks.delete(existingFile);
@@ -7673,6 +7678,16 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
         if (wrap) {
           a2uiBubbleByFile.delete(existingFile);
           a2uiBubbleByFile.set(fileId, wrap);
+          // A new call on a reused surfaceId is a new question: move the card
+          // to where the conversation is now. Updated in place it stays where
+          // the surface first appeared, possibly far up the scrollback, and
+          // the user never sees it.
+          if (sess) {
+            mountMsg(sess, wrap);
+            const time = wrap.querySelector('.msg-time');
+            if (time) time.textContent = fmtTime((typeof ts === 'number' && ts > 0) ? new Date(ts) : new Date());
+            if (sid === activeSid) scrollToBottom();
+          }
         }
         block.fileId = fileId;
       }

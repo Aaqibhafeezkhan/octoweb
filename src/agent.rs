@@ -18,7 +18,7 @@
 //! stream on the same connection between client turns and end with `Done`.
 
 use futures::{SinkExt, StreamExt};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
@@ -448,7 +448,8 @@ const BUSY_RETRY_MAX: Duration = Duration::from_secs(30);
 /// A prompt still refused after this long is given up on, with a message.
 const BUSY_GIVE_UP: Duration = Duration::from_secs(30 * 60);
 /// A turn that sends nothing for this long is considered stuck. Long tool
-/// calls report progress, which counts as activity.
+/// calls report progress, which counts as activity; a `render_ui` waiting on
+/// the user reports nothing and is exempt (it has its own cap in `mcp.rs`).
 const IDLE_TIMEOUT: Duration = Duration::from_secs(1200);
 /// After `cancel()`, how long the turn gets to close before it is reported
 /// cancelled anyway.
@@ -486,6 +487,9 @@ struct Session<'a> {
     swallow_cost: bool,
     cancel_deadline: Option<Instant>,
     last_frame: Instant,
+    /// Open `render_ui` calls, by tool id: the turn is waiting on a click,
+    /// not stuck, so the idle timeout does not apply.
+    asking_user: HashSet<String>,
 }
 
 /// Start (or reuse) the server, then serve the session on it.
@@ -550,6 +554,7 @@ async fn serve_session(
         swallow_cost: false,
         cancel_deadline: None,
         last_frame: Instant::now(),
+        asking_user: HashSet::new(),
     };
 
     session.bind(&mut stream, cwd, &spec.role).await?;
@@ -723,7 +728,10 @@ impl Session<'_> {
         }
         let waiting = self.current.as_ref().is_some_and(Sent::is_turn)
             || self.pending.values().any(Sent::is_turn);
-        if waiting && now.duration_since(self.last_frame) > IDLE_TIMEOUT {
+        if waiting
+            && self.asking_user.is_empty()
+            && now.duration_since(self.last_frame) > IDLE_TIMEOUT
+        {
             anyhow::bail!("agent idle for 20 minutes — no response");
         }
         Ok(())
@@ -842,6 +850,7 @@ impl Session<'_> {
         }
         self.cancel_deadline = None;
         self.injected_open = false;
+        self.asking_user.clear();
     }
 
     async fn on_frame(&mut self, value: serde_json::Value) -> anyhow::Result<()> {
@@ -872,14 +881,24 @@ impl Session<'_> {
                     self.events.send(AgentEvent::Chunk(text.to_string()));
                 }
             }
-            "tool_use" => self.events.send(AgentEvent::ToolStart {
-                id: value["tool_id"].as_str().unwrap_or_default().to_string(),
-                title: value["tool"].as_str().unwrap_or_default().to_string(),
-                kind: "other".to_string(),
-                raw_input: value.get("params").cloned(),
-                locations: Vec::new(),
-            }),
+            "tool_use" => {
+                let id = value["tool_id"].as_str().unwrap_or_default().to_string();
+                let title = value["tool"].as_str().unwrap_or_default().to_string();
+                if title.ends_with("render_ui") {
+                    self.asking_user.insert(id.clone());
+                }
+                self.events.send(AgentEvent::ToolStart {
+                    id,
+                    title,
+                    kind: "other".to_string(),
+                    raw_input: value.get("params").cloned(),
+                    locations: Vec::new(),
+                });
+            }
             "tool_result" => {
+                if let Some(id) = value["tool_id"].as_str() {
+                    self.asking_user.remove(id);
+                }
                 let content = value["content"].as_str().unwrap_or_default();
                 self.events.send(AgentEvent::ToolUpdate {
                     id: value["tool_id"].as_str().unwrap_or_default().to_string(),
