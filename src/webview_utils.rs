@@ -8,27 +8,27 @@ use crate::browser;
 
 /// Copy UTF-8 text to the macOS general pasteboard.
 pub fn copy_text_to_pasteboard(text: &str) {
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::{NSArray, NSString};
+	use objc2::runtime::AnyObject;
+	use objc2::{class, msg_send};
+	use objc2_foundation::{NSArray, NSString};
 
-    unsafe {
-        let pasteboard: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
-        let _: () = msg_send![pasteboard, clearContents];
-        let text = NSString::from_str(text);
-        let objects = NSArray::arrayWithObject(&*text);
-        let _: bool = msg_send![pasteboard, writeObjects: &*objects];
-    }
+	unsafe {
+		let pasteboard: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+		let _: () = msg_send![pasteboard, clearContents];
+		let text = NSString::from_str(text);
+		let objects = NSArray::arrayWithObject(&*text);
+		let _: bool = msg_send![pasteboard, writeObjects: &*objects];
+	}
 }
 
 /// Reveal a downloaded file in Finder.
 pub fn reveal_file_in_finder(path: &str) {
-    use objc2_app_kit::NSWorkspace;
-    use objc2_foundation::{NSArray, NSString, NSURL};
+	use objc2_app_kit::NSWorkspace;
+	use objc2_foundation::{NSArray, NSString, NSURL};
 
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    let urls = NSArray::arrayWithObject(&*url);
-    NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
+	let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+	let urls = NSArray::arrayWithObject(&*url);
+	NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&urls);
 }
 
 /// Navigation policy for the right-hand pane pages (notes, mail): each loads
@@ -38,18 +38,18 @@ pub fn reveal_file_in_finder(path: &str) {
 /// then draw nothing yet still cover the page beneath it. The first
 /// `about:blank` is the page's own HTML (`loadHTMLString` reports it so).
 pub fn pane_navigation_policy() -> impl Fn(String) -> bool {
-    let loaded = std::cell::Cell::new(false);
-    move |url: String| {
-        let allowed = match url.as_str() {
-            "about:blank" => !loaded.replace(true),
-            "about:srcdoc" => true,
-            _ => url.starts_with("blob:"),
-        };
-        // Debug, not warn: every new iframe asks for its own `about:blank`
-        // first, and refusing it is harmless — its srcdoc or blob follows.
-        tracing::debug!(url, allowed, "pane navigation");
-        allowed
-    }
+	let loaded = std::cell::Cell::new(false);
+	move |url: String| {
+		let allowed = match url.as_str() {
+			"about:blank" => !loaded.replace(true),
+			"about:srcdoc" => true,
+			_ => url.starts_with("blob:"),
+		};
+		// Debug, not warn: every new iframe asks for its own `about:blank`
+		// first, and refusing it is harmless — its srcdoc or blob follows.
+		tracing::debug!(url, allowed, "pane navigation");
+		allowed
+	}
 }
 
 /// Source prefix of the `window.ipc` user script wry adds to every WebView
@@ -66,44 +66,41 @@ const WRY_IPC_SCRIPT_PREFIX: &[u8] = b"Object.defineProperty(window, 'ipc'";
 /// the handler that wrapper called anyway. Must run right after the WebView is
 /// built, before its first document exists.
 pub fn remove_ipc_global(wv_ptr: usize) {
-    use objc2::msg_send;
-    use objc2::rc::Retained;
-    use objc2::runtime::AnyObject;
-    use std::ffi::{c_char, CStr};
+	use objc2::msg_send;
+	use objc2::rc::Retained;
+	use objc2::runtime::AnyObject;
+	use std::ffi::{c_char, CStr};
 
-    unsafe {
-        let wv = wv_ptr as *mut AnyObject;
-        let config: *mut AnyObject = msg_send![wv, configuration];
-        let ucc: *mut AnyObject = msg_send![config, userContentController];
-        let scripts: *mut AnyObject = msg_send![ucc, userScripts];
-        let count: usize = msg_send![scripts, count];
-        let mut kept: Vec<Retained<AnyObject>> = Vec::with_capacity(count);
-        for i in 0..count {
-            let script: *mut AnyObject = msg_send![scripts, objectAtIndex: i];
-            let source: *mut AnyObject = msg_send![script, source];
-            let utf8: *const c_char = msg_send![source, UTF8String];
-            if CStr::from_ptr(utf8)
-                .to_bytes()
-                .starts_with(WRY_IPC_SCRIPT_PREFIX)
-            {
-                continue;
-            }
-            kept.push(Retained::retain(script).expect("WKUserScript is non-null"));
-        }
-        if kept.len() == count {
-            tracing::error!(
-                "wry's window.ipc user script not found — pages declaring a global `ipc` \
+	unsafe {
+		let wv = wv_ptr as *mut AnyObject;
+		let config: *mut AnyObject = msg_send![wv, configuration];
+		let ucc: *mut AnyObject = msg_send![config, userContentController];
+		let scripts: *mut AnyObject = msg_send![ucc, userScripts];
+		let count: usize = msg_send![scripts, count];
+		let mut kept: Vec<Retained<AnyObject>> = Vec::with_capacity(count);
+		for i in 0..count {
+			let script: *mut AnyObject = msg_send![scripts, objectAtIndex: i];
+			let source: *mut AnyObject = msg_send![script, source];
+			let utf8: *const c_char = msg_send![source, UTF8String];
+			if CStr::from_ptr(utf8).to_bytes().starts_with(WRY_IPC_SCRIPT_PREFIX) {
+				continue;
+			}
+			kept.push(Retained::retain(script).expect("WKUserScript is non-null"));
+		}
+		if kept.len() == count {
+			tracing::error!(
+				"wry's window.ipc user script not found — pages declaring a global `ipc` \
                  will break; update WRY_IPC_SCRIPT_PREFIX to wry's current source"
-            );
-            return;
-        }
-        // Order and injection settings are preserved: the same WKUserScript
-        // objects go back in their original sequence.
-        let _: () = msg_send![ucc, removeAllUserScripts];
-        for script in &kept {
-            let _: () = msg_send![ucc, addUserScript: &**script];
-        }
-    }
+			);
+			return;
+		}
+		// Order and injection settings are preserved: the same WKUserScript
+		// objects go back in their original sequence.
+		let _: () = msg_send![ucc, removeAllUserScripts];
+		for script in &kept {
+			let _: () = msg_send![ucc, addUserScript: &**script];
+		}
+	}
 }
 
 /// Give pages the real window frame behind `outerWidth`, `outerHeight`,
@@ -115,51 +112,51 @@ pub fn remove_ipc_global(wv_ptr: usize) {
 /// `innerWidth` to detect browser zoom, so a 0 made it draw its grid canvas at
 /// a quarter of the display's resolution.
 pub fn expose_window_frame(wv_ptr: usize) {
-    use objc2::runtime::{AnyClass, AnyObject, Sel};
-    use objc2::{msg_send, sel};
+	use objc2::runtime::{AnyClass, AnyObject, Sel};
+	use objc2::{msg_send, sel};
 
-    unsafe {
-        let wv = wv_ptr as *mut AnyObject;
-        let delegate: *mut AnyObject = msg_send![wv, UIDelegate];
-        let class: *const AnyClass = msg_send![delegate, class];
-        let added = objc2::ffi::class_addMethod(
-            class as *mut _,
-            sel!(_webView:getWindowFrameWithCompletionHandler:),
-            std::mem::transmute::<
-                extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
-                unsafe extern "C-unwind" fn(),
-            >(window_frame),
-            c"v@:@@".as_ptr(),
-        );
-        // WebKit records which methods a delegate has when it is set, and wry
-        // set this WebView's before the class gained the method.
-        if added.as_bool() {
-            let _: () = msg_send![wv, setUIDelegate: delegate];
-        }
-    }
+	unsafe {
+		let wv = wv_ptr as *mut AnyObject;
+		let delegate: *mut AnyObject = msg_send![wv, UIDelegate];
+		let class: *const AnyClass = msg_send![delegate, class];
+		let added = objc2::ffi::class_addMethod(
+			class as *mut _,
+			sel!(_webView:getWindowFrameWithCompletionHandler:),
+			std::mem::transmute::<
+				extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject),
+				unsafe extern "C-unwind" fn(),
+			>(window_frame),
+			c"v@:@@".as_ptr(),
+		);
+		// WebKit records which methods a delegate has when it is set, and wry
+		// set this WebView's before the class gained the method.
+		if added.as_bool() {
+			let _: () = msg_send![wv, setUIDelegate: delegate];
+		}
+	}
 }
 
 extern "C-unwind" fn window_frame(
-    _delegate: *mut objc2::runtime::AnyObject,
-    _sel: objc2::runtime::Sel,
-    webview: *mut objc2::runtime::AnyObject,
-    completion_handler: *mut objc2::runtime::AnyObject,
+	_delegate: *mut objc2::runtime::AnyObject,
+	_sel: objc2::runtime::Sel,
+	webview: *mut objc2::runtime::AnyObject,
+	completion_handler: *mut objc2::runtime::AnyObject,
 ) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    use objc2_core_foundation::CGRect;
+	use objc2::msg_send;
+	use objc2::runtime::AnyObject;
+	use objc2_core_foundation::CGRect;
 
-    unsafe {
-        let window: *mut AnyObject = msg_send![webview, window];
-        // A WebView outside any window (mid-teardown) keeps WebKit's zero frame.
-        let frame = if window.is_null() {
-            CGRect::ZERO
-        } else {
-            msg_send![window, frame]
-        };
-        let block = completion_handler as *const block2::Block<dyn Fn(CGRect)>;
-        (*block).call((frame,));
-    }
+	unsafe {
+		let window: *mut AnyObject = msg_send![webview, window];
+		// A WebView outside any window (mid-teardown) keeps WebKit's zero frame.
+		let frame = if window.is_null() {
+			CGRect::ZERO
+		} else {
+			msg_send![window, frame]
+		};
+		let block = completion_handler as *const block2::Block<dyn Fn(CGRect)>;
+		(*block).call((frame,));
+	}
 }
 
 /// Single JS script injected into every tab page at document-start.
@@ -968,100 +965,96 @@ pub const SUBFRAME_MEDIA_SCRIPT: &str = r#"
 /// protocol (empty string if uncached) instead of inline base64 data-URIs —
 /// keeps this payload small even at ~400 items.
 pub fn build_items_json(
-    tabs: &[browser::Tab],
-    history: &[browser::HistoryEntry],
-    favicons: &HashMap<String, String>,
-    hibernated: &std::collections::HashSet<usize>,
-    rss_mb: &HashMap<usize, u64>,
-    later: &[crate::later::LaterItem],
+	tabs: &[browser::Tab],
+	history: &[browser::HistoryEntry],
+	favicons: &HashMap<String, String>,
+	hibernated: &std::collections::HashSet<usize>,
+	rss_mb: &HashMap<usize, u64>,
+	later: &[crate::later::LaterItem],
 ) -> String {
-    let mut items: Vec<serde_json::Value> = Vec::new();
+	let mut items: Vec<serde_json::Value> = Vec::new();
 
-    // ── Later queue — pinned to the top of the empty-query list ─────────────
-    for it in later {
-        items.push(serde_json::json!({
-            "kind": "later",
-            "title": it.title,
-            "url": it.url,
-            "favicon": favicon_ref(&it.url, favicons),
-            "visit_count": 0u32,
-            "visited_at": it.saved_at,
-        }));
-    }
+	// ── Later queue — pinned to the top of the empty-query list ─────────────
+	for it in later {
+		items.push(serde_json::json!({
+			"kind": "later",
+			"title": it.title,
+			"url": it.url,
+			"favicon": favicon_ref(&it.url, favicons),
+			"visit_count": 0u32,
+			"visited_at": it.saved_at,
+		}));
+	}
 
-    // ── Tabs ──────────────────────────────────────────────────────────────────
-    let open_urls: std::collections::HashSet<&str> =
-        tabs.iter().map(|t| t.url.trim_end_matches('/')).collect();
-    let visits_by_url: HashMap<&str, u32> = history
-        .iter()
-        .map(|e| (e.url.trim_end_matches('/'), e.visit_count))
-        .collect();
+	// ── Tabs ──────────────────────────────────────────────────────────────────
+	let open_urls: std::collections::HashSet<&str> = tabs.iter().map(|t| t.url.trim_end_matches('/')).collect();
+	let visits_by_url: HashMap<&str, u32> = history
+		.iter()
+		.map(|e| (e.url.trim_end_matches('/'), e.visit_count))
+		.collect();
 
-    for tab in tabs {
-        // Look up this tab's visit count from history (it's stored there)
-        let visits = visits_by_url
-            .get(tab.url.trim_end_matches('/'))
-            .copied()
-            .unwrap_or(0);
-        items.push(serde_json::json!({
-            "kind": "tab",
-            "tab_id": tab.id,
-            "title": tab.title,
-            "url": tab.url,
-            "favicon": favicon_ref(&tab.url, favicons),
-            "visit_count": visits,
-            "visited_at": 0u64,  // tabs are live — recency handled in JS as "now"
-            "hibernated": hibernated.contains(&tab.id),
-            "incognito": tab.incognito,
-            "rss_mb": rss_mb.get(&tab.id).copied(),
-        }));
-    }
+	for tab in tabs {
+		// Look up this tab's visit count from history (it's stored there)
+		let visits = visits_by_url.get(tab.url.trim_end_matches('/')).copied().unwrap_or(0);
+		items.push(serde_json::json!({
+			"kind": "tab",
+			"tab_id": tab.id,
+			"title": tab.title,
+			"url": tab.url,
+			"favicon": favicon_ref(&tab.url, favicons),
+			"visit_count": visits,
+			"visited_at": 0u64,  // tabs are live — recency handled in JS as "now"
+			"hibernated": hibernated.contains(&tab.id),
+			"incognito": tab.incognito,
+			"rss_mb": rss_mb.get(&tab.id).copied(),
+		}));
+	}
 
-    // ── History ───────────────────────────────────────────────────────────────
-    // Newest-first (iter().rev()), skip URLs already shown as tabs, cap at 200.
-    // Skip blank/internal pages — they're noise in the palette.
-    let mut history_count = 0;
-    for entry in history.iter().rev() {
-        if history_count >= 200 {
-            break;
-        }
-        if entry.url.is_empty() || entry.url == "about:blank" {
-            continue;
-        }
-        if open_urls.contains(entry.url.trim_end_matches('/')) {
-            continue;
-        }
-        items.push(serde_json::json!({
-            "kind": "history",
-            "title": entry.title,
-            "url": entry.url,
-            "favicon": favicon_ref(&entry.url, favicons),
-            "visit_count": entry.visit_count,
-            "visited_at": entry.visited_at,
-        }));
-        history_count += 1;
-    }
+	// ── History ───────────────────────────────────────────────────────────────
+	// Newest-first (iter().rev()), skip URLs already shown as tabs, cap at 200.
+	// Skip blank/internal pages — they're noise in the palette.
+	let mut history_count = 0;
+	for entry in history.iter().rev() {
+		if history_count >= 200 {
+			break;
+		}
+		if entry.url.is_empty() || entry.url == "about:blank" {
+			continue;
+		}
+		if open_urls.contains(entry.url.trim_end_matches('/')) {
+			continue;
+		}
+		items.push(serde_json::json!({
+			"kind": "history",
+			"title": entry.title,
+			"url": entry.url,
+			"favicon": favicon_ref(&entry.url, favicons),
+			"visit_count": entry.visit_count,
+			"visited_at": entry.visited_at,
+		}));
+		history_count += 1;
+	}
 
-    serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
+	serde_json::to_string(&items).unwrap_or_else(|_| "[]".into())
 }
 
 /// Escape a string for safe embedding in a JS template literal (backtick string).
 /// Handles: backslash, backtick, `${` (template interpolation), and `</` (script injection).
 pub fn escape_js_template(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + s.len() / 8);
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '`' => out.push_str("\\`"),
-            // Escape ${ to prevent template literal interpolation
-            '$' if s.as_bytes().get(i + 1) == Some(&b'{') => out.push_str("\\$"),
-            // Break up </script> to prevent early HTML parser termination: `<\`
-            // here plus the `/` the loop emits next is `<\/`, which reads back as `</`
-            '<' if s.as_bytes().get(i + 1) == Some(&b'/') => out.push_str("<\\"),
-            _ => out.push(ch),
-        }
-    }
-    out
+	let mut out = String::with_capacity(s.len() + s.len() / 8);
+	for (i, ch) in s.char_indices() {
+		match ch {
+			'\\' => out.push_str("\\\\"),
+			'`' => out.push_str("\\`"),
+			// Escape ${ to prevent template literal interpolation
+			'$' if s.as_bytes().get(i + 1) == Some(&b'{') => out.push_str("\\$"),
+			// Break up </script> to prevent early HTML parser termination: `<\`
+			// here plus the `/` the loop emits next is `<\/`, which reads back as `</`
+			'<' if s.as_bytes().get(i + 1) == Some(&b'/') => out.push_str("<\\"),
+			_ => out.push(ch),
+		}
+	}
+	out
 }
 
 /// Wrap a JS *expression* so its string result is well-formed UTF-16 before it
@@ -1079,23 +1072,23 @@ pub fn escape_js_template(s: &str) -> String {
 /// serializer never fails. Guarded so a non-string result or an older engine
 /// passes through unchanged.
 pub fn well_formed_js(expr: &str) -> String {
-    format!("(function(){{var v=({expr});return (typeof v==='string'&&v.toWellFormed)?v.toWellFormed():v;}})()")
+	format!("(function(){{var v=({expr});return (typeof v==='string'&&v.toWellFormed)?v.toWellFormed():v;}})()")
 }
 
 /// Look up a cached favicon data-URI by domain extracted from the URL.
 pub fn cached_favicon<'a>(url: &str, favicons: &'a HashMap<String, String>) -> Option<&'a str> {
-    let domain = extract_domain(url)?;
-    favicons.get(domain).map(|s| s.as_str())
+	let domain = extract_domain(url)?;
+	favicons.get(domain).map(|s| s.as_str())
 }
 
 /// Lazy favicon reference for `build_items_json` — an `octoweb-fav://<domain>`
 /// URL when the domain has a cached favicon, empty string otherwise (matches
 /// the previous "no favicon" semantics, which JS already treats as falsy).
 fn favicon_ref(url: &str, favicons: &HashMap<String, String>) -> String {
-    match extract_domain(url) {
-        Some(domain) if favicons.contains_key(domain) => format!("octoweb-fav://{domain}"),
-        _ => String::new(),
-    }
+	match extract_domain(url) {
+		Some(domain) if favicons.contains_key(domain) => format!("octoweb-fav://{domain}"),
+		_ => String::new(),
+	}
 }
 
 /// Build the `octoweb-fav://<domain>` response body for the overlay and
@@ -1103,82 +1096,77 @@ fn favicon_ref(url: &str, favicons: &HashMap<String, String>) -> String {
 /// into raw image bytes so it never has to be inlined into the bulk item JSON.
 /// Unknown domain or malformed cache entry → 404 with an empty body.
 pub fn favicon_protocol_response(
-    domain: &str,
-    favicons: &HashMap<String, String>,
+	domain: &str,
+	favicons: &HashMap<String, String>,
 ) -> Response<std::borrow::Cow<'static, [u8]>> {
-    let not_found = || -> Response<std::borrow::Cow<'static, [u8]>> {
-        Response::builder()
-            .status(404)
-            .body(Vec::new().into())
-            .unwrap()
-    };
-    let Some(data_uri) = favicons.get(domain) else {
-        return not_found();
-    };
-    let Some((mime, b64)) = data_uri
-        .strip_prefix("data:")
-        .and_then(|rest| rest.split_once(";base64,"))
-    else {
-        return not_found();
-    };
-    use base64::Engine;
-    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
-        return not_found();
-    };
-    Response::builder()
-        .header("Content-Type", mime)
-        .header("Access-Control-Allow-Origin", "*")
-        .body(bytes.into())
-        .unwrap()
+	let not_found = || -> Response<std::borrow::Cow<'static, [u8]>> {
+		Response::builder().status(404).body(Vec::new().into()).unwrap()
+	};
+	let Some(data_uri) = favicons.get(domain) else {
+		return not_found();
+	};
+	let Some((mime, b64)) = data_uri
+		.strip_prefix("data:")
+		.and_then(|rest| rest.split_once(";base64,"))
+	else {
+		return not_found();
+	};
+	use base64::Engine;
+	let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+		return not_found();
+	};
+	Response::builder()
+		.header("Content-Type", mime)
+		.header("Access-Control-Allow-Origin", "*")
+		.body(bytes.into())
+		.unwrap()
 }
 
 /// `octoweb-fav://<domain>` for the mail pane's sender logos. Mail comes from
 /// a subdomain of the site more often than not (`mail.notion.so`), so this
 /// tries the domain, its `www.` form, then each parent down to two labels.
 pub fn sender_favicon_response(
-    domain: &str,
-    favicons: &HashMap<String, String>,
+	domain: &str,
+	favicons: &HashMap<String, String>,
 ) -> Response<std::borrow::Cow<'static, [u8]>> {
-    let mut d = domain;
-    loop {
-        for key in [d.to_string(), format!("www.{d}")] {
-            if favicons.contains_key(&key) {
-                return favicon_protocol_response(&key, favicons);
-            }
-        }
-        match d.split_once('.') {
-            Some((_, parent)) if parent.contains('.') => d = parent,
-            _ => return favicon_protocol_response(domain, favicons),
-        }
-    }
+	let mut d = domain;
+	loop {
+		for key in [d.to_string(), format!("www.{d}")] {
+			if favicons.contains_key(&key) {
+				return favicon_protocol_response(&key, favicons);
+			}
+		}
+		match d.split_once('.') {
+			Some((_, parent)) if parent.contains('.') => d = parent,
+			_ => return favicon_protocol_response(domain, favicons),
+		}
+	}
 }
 
 /// Extract the domain (host) from a URL, e.g. "https://example.com/path" → "example.com".
 pub fn extract_domain(url: &str) -> Option<&str> {
-    let after_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    after_scheme.split('/').next().filter(|h| !h.is_empty())
+	let after_scheme = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+	after_scheme.split('/').next().filter(|h| !h.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn pane_pages_load_once_and_keep_their_frames() {
-        let allow = super::pane_navigation_policy();
-        assert!(allow("about:blank".into()), "the page's own HTML");
-        assert!(allow("about:srcdoc".into()), "a mail body");
-        assert!(allow("blob:null/0b1c".into()), "an attachment preview");
-        assert!(!allow("about:blank".into()), "back to the blank page");
-        assert!(!allow("https://example.com/".into()));
-    }
+	#[test]
+	fn pane_pages_load_once_and_keep_their_frames() {
+		let allow = super::pane_navigation_policy();
+		assert!(allow("about:blank".into()), "the page's own HTML");
+		assert!(allow("about:srcdoc".into()), "a mail body");
+		assert!(allow("blob:null/0b1c".into()), "an attachment preview");
+		assert!(!allow("about:blank".into()), "back to the blank page");
+		assert!(!allow("https://example.com/".into()));
+	}
 
-    /// `</` is broken up for the HTML parser yet must read back as itself —
-    /// an extra `/` turned every closing tag in chat text into `<//tag>`.
-    #[test]
-    fn closing_tags_escape_to_themselves() {
-        let escaped = super::escape_js_template("<b>x</b></script>");
-        assert_eq!(escaped, r"<b>x<\/b><\/script>");
-        assert!(!escaped.contains("</"));
-    }
+	/// `</` is broken up for the HTML parser yet must read back as itself —
+	/// an extra `/` turned every closing tag in chat text into `<//tag>`.
+	#[test]
+	fn closing_tags_escape_to_themselves() {
+		let escaped = super::escape_js_template("<b>x</b></script>");
+		assert_eq!(escaped, r"<b>x<\/b><\/script>");
+		assert!(!escaped.contains("</"));
+	}
 }

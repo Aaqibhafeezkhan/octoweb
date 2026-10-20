@@ -4,7 +4,7 @@
 /// Call `createPromptHistory(inputEl, ghostEl, placeholder, onResize)` to wire
 /// up Ctrl+P/N navigation, Ctrl+R reverse search, and Ctrl+E ghost completion.
 pub fn prompt_history_js() -> &'static str {
-    r#"
+	r#"
 function createPromptHistory(inputEl, ghostEl, defaultPlaceholder, onResize) {
   var history = [];
   var histIdx = -1;

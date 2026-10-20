@@ -2,7 +2,7 @@
 /// Compact card anchored under the toolbar — not a full-screen modal like settings.
 /// IPC messages: workspace_switch, workspace_jump_tab, workspace_rename, workspace_delete, workspace_create, workspace_close.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

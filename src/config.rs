@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionTab {
-    pub url: String,
-    #[serde(default)]
-    pub title: String,
+	pub url: String,
+	#[serde(default)]
+	pub title: String,
 }
 
 /// One workspace's persisted tabs + identity. `data_store_id` is `None` for
@@ -15,113 +15,113 @@ pub struct SessionTab {
 /// workspace created afterward (its own `WKWebsiteDataStore`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSession {
-    pub id: String,
-    pub name: String,
-    pub color: String,
-    #[serde(default)]
-    pub data_store_id: Option<[u8; 16]>,
-    /// Tabs — accepts both new `[{url, title}]` and legacy `["url"]` formats.
-    #[serde(deserialize_with = "deserialize_tabs")]
-    pub tabs: Vec<SessionTab>,
-    #[serde(default)]
-    pub active_tab_url: String,
+	pub id: String,
+	pub name: String,
+	pub color: String,
+	#[serde(default)]
+	pub data_store_id: Option<[u8; 16]>,
+	/// Tabs — accepts both new `[{url, title}]` and legacy `["url"]` formats.
+	#[serde(deserialize_with = "deserialize_tabs")]
+	pub tabs: Vec<SessionTab>,
+	#[serde(default)]
+	pub active_tab_url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionData {
-    pub workspaces: Vec<WorkspaceSession>,
-    pub active_workspace_id: String,
+	pub workspaces: Vec<WorkspaceSession>,
+	pub active_workspace_id: String,
 }
 
 /// Pre-workspaces flat shape — only used to detect and migrate old session
 /// files (no `workspaces` key) into a single "Default" workspace.
 #[derive(Debug, Deserialize)]
 struct LegacySessionData {
-    #[serde(deserialize_with = "deserialize_tabs")]
-    tabs: Vec<SessionTab>,
-    active_url: String,
+	#[serde(deserialize_with = "deserialize_tabs")]
+	tabs: Vec<SessionTab>,
+	active_url: String,
 }
 
 pub fn save_session(workspaces: &[WorkspaceSession], active_workspace_id: &str) {
-    let data = SessionData {
-        workspaces: workspaces.to_vec(),
-        active_workspace_id: active_workspace_id.to_string(),
-    };
-    let path = session_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    match serde_json::to_string(&data) {
-        Ok(s) => {
-            let _ = fs::write(&path, s);
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize session"),
-    }
+	let data = SessionData {
+		workspaces: workspaces.to_vec(),
+		active_workspace_id: active_workspace_id.to_string(),
+	};
+	let path = session_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	match serde_json::to_string(&data) {
+		Ok(s) => {
+			let _ = fs::write(&path, s);
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize session"),
+	}
 }
 
 /// Backward-compatible deserializer: accepts `["url"]` (legacy) or `[{url, title}]` (new).
 fn deserialize_tabs<'de, D>(deserializer: D) -> Result<Vec<SessionTab>, D::Error>
 where
-    D: serde::Deserializer<'de>,
+	D: serde::Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum TabOrString {
-        Tab(SessionTab),
-        Url(String),
-    }
+	#[derive(Deserialize)]
+	#[serde(untagged)]
+	enum TabOrString {
+		Tab(SessionTab),
+		Url(String),
+	}
 
-    let items: Vec<TabOrString> = Vec::deserialize(deserializer)?;
-    Ok(items
-        .into_iter()
-        .map(|item| match item {
-            TabOrString::Tab(t) => t,
-            TabOrString::Url(url) => SessionTab {
-                url,
-                title: String::new(),
-            },
-        })
-        .collect())
+	let items: Vec<TabOrString> = Vec::deserialize(deserializer)?;
+	Ok(items
+		.into_iter()
+		.map(|item| match item {
+			TabOrString::Tab(t) => t,
+			TabOrString::Url(url) => SessionTab {
+				url,
+				title: String::new(),
+			},
+		})
+		.collect())
 }
 
 pub fn load_session() -> Option<SessionData> {
-    let path = session_path();
-    let raw = fs::read_to_string(&path).ok()?;
-    if let Ok(data) = serde_json::from_str::<SessionData>(&raw) {
-        return Some(data);
-    }
-    // Migration: old flat `{tabs, active_url}` shape has no `workspaces` key
-    // and fails the parse above — wrap it into a single "Default" workspace
-    // on the default persistent data store. Only migrates in memory; the
-    // file itself is rewritten in the new shape on the next save_session().
-    let legacy: LegacySessionData = serde_json::from_str(&raw).ok()?;
-    Some(SessionData {
-        workspaces: vec![WorkspaceSession {
-            id: "default".to_string(),
-            name: "Default".to_string(),
-            color: "#7C5CFF".to_string(),
-            data_store_id: None,
-            tabs: legacy.tabs,
-            active_tab_url: legacy.active_url,
-        }],
-        active_workspace_id: "default".to_string(),
-    })
+	let path = session_path();
+	let raw = fs::read_to_string(&path).ok()?;
+	if let Ok(data) = serde_json::from_str::<SessionData>(&raw) {
+		return Some(data);
+	}
+	// Migration: old flat `{tabs, active_url}` shape has no `workspaces` key
+	// and fails the parse above — wrap it into a single "Default" workspace
+	// on the default persistent data store. Only migrates in memory; the
+	// file itself is rewritten in the new shape on the next save_session().
+	let legacy: LegacySessionData = serde_json::from_str(&raw).ok()?;
+	Some(SessionData {
+		workspaces: vec![WorkspaceSession {
+			id: "default".to_string(),
+			name: "Default".to_string(),
+			color: "#7C5CFF".to_string(),
+			data_store_id: None,
+			tabs: legacy.tabs,
+			active_tab_url: legacy.active_url,
+		}],
+		active_workspace_id: "default".to_string(),
+	})
 }
 
 /// Base directory for all persisted state (config, session, history, ...).
 /// `OCTOWEB_CONFIG_DIR` overrides the platform default — lets isolated
 /// instances run side-by-side (e2e test profile next to the daily browser).
 pub fn base_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("OCTOWEB_CONFIG_DIR") {
-        if !dir.trim().is_empty() {
-            return PathBuf::from(dir);
-        }
-    }
-    dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")))
+	if let Ok(dir) = std::env::var("OCTOWEB_CONFIG_DIR") {
+		if !dir.trim().is_empty() {
+			return PathBuf::from(dir);
+		}
+	}
+	dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")))
 }
 
 fn session_path() -> PathBuf {
-    base_dir().join("octoweb").join("session.json")
+	base_dir().join("octoweb").join("session.json")
 }
 
 // ── Favicon cache ─────────────────────────────────────────────────────────────
@@ -129,28 +129,28 @@ fn session_path() -> PathBuf {
 // Persisted to disk so favicons are available instantly on next launch.
 
 pub fn save_favicons(cache: &std::collections::HashMap<String, String>) {
-    let path = favicons_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    match serde_json::to_string(cache) {
-        Ok(s) => {
-            let _ = fs::write(&path, s);
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize favicon cache"),
-    }
+	let path = favicons_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	match serde_json::to_string(cache) {
+		Ok(s) => {
+			let _ = fs::write(&path, s);
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize favicon cache"),
+	}
 }
 
 pub fn load_favicons() -> std::collections::HashMap<String, String> {
-    let path = favicons_path();
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+	let path = favicons_path();
+	fs::read_to_string(&path)
+		.ok()
+		.and_then(|s| serde_json::from_str(&s).ok())
+		.unwrap_or_default()
 }
 
 fn favicons_path() -> PathBuf {
-    base_dir().join("octoweb").join("favicons.json")
+	base_dir().join("octoweb").join("favicons.json")
 }
 
 // ── History persistence ────────────────────────────────────────────────────────
@@ -158,71 +158,71 @@ fn favicons_path() -> PathBuf {
 // Capped at max_history entries on load — oldest entries are dropped first.
 
 pub fn save_history(entries: &[crate::browser::HistoryEntry]) {
-    let path = history_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    match serde_json::to_string(entries) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&tmp, &s) {
-                tracing::warn!(error = %e, "Failed to write history tmp");
-                return;
-            }
-            // Atomic rename — APFS guarantees this won't corrupt history.json on crash
-            if let Err(e) = fs::rename(&tmp, &path) {
-                tracing::warn!(error = %e, "Failed to rename history tmp");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize history"),
-    }
+	let path = history_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	let tmp = path.with_extension("json.tmp");
+	match serde_json::to_string(entries) {
+		Ok(s) => {
+			if let Err(e) = fs::write(&tmp, &s) {
+				tracing::warn!(error = %e, "Failed to write history tmp");
+				return;
+			}
+			// Atomic rename — APFS guarantees this won't corrupt history.json on crash
+			if let Err(e) = fs::rename(&tmp, &path) {
+				tracing::warn!(error = %e, "Failed to rename history tmp");
+			}
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize history"),
+	}
 }
 
 pub fn load_history() -> Vec<crate::browser::HistoryEntry> {
-    let path = history_path();
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+	let path = history_path();
+	fs::read_to_string(&path)
+		.ok()
+		.and_then(|s| serde_json::from_str(&s).ok())
+		.unwrap_or_default()
 }
 
 fn history_path() -> PathBuf {
-    base_dir().join("octoweb").join("history.json")
+	base_dir().join("octoweb").join("history.json")
 }
 
 // ── Prompt history persistence ────────────────────────────────────────────────
 // Inline AI edit (⌘⇧E) prompt history — MRU-first Vec<String>.
 
 pub fn save_prompt_history(entries: &[String]) {
-    let path = prompt_history_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    match serde_json::to_string(entries) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&tmp, &s) {
-                tracing::warn!(error = %e, "Failed to write prompt history tmp");
-                return;
-            }
-            if let Err(e) = fs::rename(&tmp, &path) {
-                tracing::warn!(error = %e, "Failed to rename prompt history tmp");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize prompt history"),
-    }
+	let path = prompt_history_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	let tmp = path.with_extension("json.tmp");
+	match serde_json::to_string(entries) {
+		Ok(s) => {
+			if let Err(e) = fs::write(&tmp, &s) {
+				tracing::warn!(error = %e, "Failed to write prompt history tmp");
+				return;
+			}
+			if let Err(e) = fs::rename(&tmp, &path) {
+				tracing::warn!(error = %e, "Failed to rename prompt history tmp");
+			}
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize prompt history"),
+	}
 }
 
 pub fn load_prompt_history() -> Vec<String> {
-    let path = prompt_history_path();
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+	let path = prompt_history_path();
+	fs::read_to_string(&path)
+		.ok()
+		.and_then(|s| serde_json::from_str(&s).ok())
+		.unwrap_or_default()
 }
 
 fn prompt_history_path() -> PathBuf {
-    base_dir().join("octoweb").join("prompt_history.json")
+	base_dir().join("octoweb").join("prompt_history.json")
 }
 
 // ── AI sidebar prompt history persistence ─────────────────────────────────────
@@ -232,35 +232,35 @@ fn prompt_history_path() -> PathBuf {
 // produced it.
 
 pub fn save_ai_prompt_history(entries: &[String]) {
-    let path = ai_prompt_history_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    match serde_json::to_string(entries) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&tmp, &s) {
-                tracing::warn!(error = %e, "Failed to write AI prompt history tmp");
-                return;
-            }
-            if let Err(e) = fs::rename(&tmp, &path) {
-                tracing::warn!(error = %e, "Failed to rename AI prompt history tmp");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize AI prompt history"),
-    }
+	let path = ai_prompt_history_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	let tmp = path.with_extension("json.tmp");
+	match serde_json::to_string(entries) {
+		Ok(s) => {
+			if let Err(e) = fs::write(&tmp, &s) {
+				tracing::warn!(error = %e, "Failed to write AI prompt history tmp");
+				return;
+			}
+			if let Err(e) = fs::rename(&tmp, &path) {
+				tracing::warn!(error = %e, "Failed to rename AI prompt history tmp");
+			}
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize AI prompt history"),
+	}
 }
 
 pub fn load_ai_prompt_history() -> Vec<String> {
-    let path = ai_prompt_history_path();
-    fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+	let path = ai_prompt_history_path();
+	fs::read_to_string(&path)
+		.ok()
+		.and_then(|s| serde_json::from_str(&s).ok())
+		.unwrap_or_default()
 }
 
 fn ai_prompt_history_path() -> PathBuf {
-    base_dir().join("octoweb").join("ai_prompt_history.json")
+	base_dir().join("octoweb").join("ai_prompt_history.json")
 }
 
 // ── ACP chat history persistence ──────────────────────────────────────────────
@@ -274,71 +274,71 @@ fn ai_prompt_history_path() -> PathBuf {
 /// can be rebuilt (and re-inspected) after a restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpToolRecord {
-    pub kind: String,
-    pub title: String,
-    /// "completed" | "failed" | "running" (= interrupted by cancel/restart)
-    pub status: String,
-    #[serde(default)]
-    pub duration_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_input: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub locations: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_output: Option<serde_json::Value>,
+	pub kind: String,
+	pub title: String,
+	/// "completed" | "failed" | "running" (= interrupted by cancel/restart)
+	pub status: String,
+	#[serde(default)]
+	pub duration_ms: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub raw_input: Option<serde_json::Value>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub locations: Vec<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub raw_output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpMessage {
-    /// "user" | "agent" | "specialist" | "error" | "ui"
-    pub role: String,
-    /// Raw text. Markdown for agent, plain otherwise. For role="ui" this
-    /// holds the envelope file id (so replay can rebuild the bubble).
-    pub text: String,
-    /// Unix epoch milliseconds at the time the message was committed.
-    #[serde(default)]
-    pub ts: u64,
-    /// For role="ui": the full A2UI envelope body so we can re-render the
-    /// surface bubble on cold-start. None for all other roles.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub a2ui: Option<serde_json::Value>,
-    /// Tool runs of this agent turn (role="agent" only) — drives the steps
-    /// group on replay. Empty for other roles.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<AcpToolRecord>,
-    /// Wall-clock duration of the whole turn in ms (role="agent" only).
-    #[serde(default)]
-    pub turn_ms: u64,
+	/// "user" | "agent" | "specialist" | "error" | "ui"
+	pub role: String,
+	/// Raw text. Markdown for agent, plain otherwise. For role="ui" this
+	/// holds the envelope file id (so replay can rebuild the bubble).
+	pub text: String,
+	/// Unix epoch milliseconds at the time the message was committed.
+	#[serde(default)]
+	pub ts: u64,
+	/// For role="ui": the full A2UI envelope body so we can re-render the
+	/// surface bubble on cold-start. None for all other roles.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub a2ui: Option<serde_json::Value>,
+	/// Tool runs of this agent turn (role="agent" only) — drives the steps
+	/// group on replay. Empty for other roles.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub tools: Vec<AcpToolRecord>,
+	/// Wall-clock duration of the whole turn in ms (role="agent" only).
+	#[serde(default)]
+	pub turn_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcpSessionSnapshot {
-    pub id: u64,
-    pub title: String,
-    pub tag: String,
-    /// ACP-protocol session id reported by the agent on Connected. Passed back
-    /// as `--resume <id>` on next launch so the agent restores its in-memory
-    /// conversation context. None if the agent never connected successfully.
-    #[serde(default)]
-    pub acp_session_id: Option<String>,
-    #[serde(default)]
-    pub messages: Vec<AcpMessage>,
+	pub id: u64,
+	pub title: String,
+	pub tag: String,
+	/// ACP-protocol session id reported by the agent on Connected. Passed back
+	/// as `--resume <id>` on next launch so the agent restores its in-memory
+	/// conversation context. None if the agent never connected successfully.
+	#[serde(default)]
+	pub acp_session_id: Option<String>,
+	#[serde(default)]
+	pub messages: Vec<AcpMessage>,
 }
 
 /// One workspace's ACP session history — session list + which one was
 /// foreground, restored verbatim when that workspace becomes active again.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkspaceAcpHistory {
-    pub sessions: Vec<AcpSessionSnapshot>,
-    /// Last-active session id. Restored as the foreground session.
-    #[serde(default)]
-    pub active_id: u64,
+	pub sessions: Vec<AcpSessionSnapshot>,
+	/// Last-active session id. Restored as the foreground session.
+	#[serde(default)]
+	pub active_id: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AcpHistory {
-    /// Keyed by `Workspace::id`.
-    pub workspaces: std::collections::HashMap<String, WorkspaceAcpHistory>,
+	/// Keyed by `Workspace::id`.
+	pub workspaces: std::collections::HashMap<String, WorkspaceAcpHistory>,
 }
 
 /// Pre-workspaces flat shape — only used to detect and migrate old
@@ -346,54 +346,54 @@ pub struct AcpHistory {
 /// workspace slot, mirroring `config::load_session`'s migration.
 #[derive(Debug, Deserialize)]
 struct LegacyAcpHistory {
-    sessions: Vec<AcpSessionSnapshot>,
-    #[serde(default)]
-    active_id: u64,
+	sessions: Vec<AcpSessionSnapshot>,
+	#[serde(default)]
+	active_id: u64,
 }
 
 pub fn save_acp_history(history: &AcpHistory) {
-    let path = acp_history_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    match serde_json::to_string(history) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&tmp, &s) {
-                tracing::warn!(error = %e, "Failed to write ACP history tmp");
-                return;
-            }
-            if let Err(e) = fs::rename(&tmp, &path) {
-                tracing::warn!(error = %e, "Failed to rename ACP history tmp");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize ACP history"),
-    }
+	let path = acp_history_path();
+	if let Some(parent) = path.parent() {
+		let _ = fs::create_dir_all(parent);
+	}
+	let tmp = path.with_extension("json.tmp");
+	match serde_json::to_string(history) {
+		Ok(s) => {
+			if let Err(e) = fs::write(&tmp, &s) {
+				tracing::warn!(error = %e, "Failed to write ACP history tmp");
+				return;
+			}
+			if let Err(e) = fs::rename(&tmp, &path) {
+				tracing::warn!(error = %e, "Failed to rename ACP history tmp");
+			}
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize ACP history"),
+	}
 }
 
 pub fn load_acp_history() -> Option<AcpHistory> {
-    let path = acp_history_path();
-    let raw = fs::read_to_string(&path).ok()?;
-    if let Ok(h) = serde_json::from_str::<AcpHistory>(&raw) {
-        return Some(h);
-    }
-    // Migration: old flat `{sessions, active_id}` shape has no `workspaces`
-    // key and fails the parse above — wrap it under the "default" workspace.
-    // Only migrates in memory; rewritten in the new shape on next save.
-    let legacy: LegacyAcpHistory = serde_json::from_str(&raw).ok()?;
-    let mut workspaces = std::collections::HashMap::new();
-    workspaces.insert(
-        "default".to_string(),
-        WorkspaceAcpHistory {
-            sessions: legacy.sessions,
-            active_id: legacy.active_id,
-        },
-    );
-    Some(AcpHistory { workspaces })
+	let path = acp_history_path();
+	let raw = fs::read_to_string(&path).ok()?;
+	if let Ok(h) = serde_json::from_str::<AcpHistory>(&raw) {
+		return Some(h);
+	}
+	// Migration: old flat `{sessions, active_id}` shape has no `workspaces`
+	// key and fails the parse above — wrap it under the "default" workspace.
+	// Only migrates in memory; rewritten in the new shape on next save.
+	let legacy: LegacyAcpHistory = serde_json::from_str(&raw).ok()?;
+	let mut workspaces = std::collections::HashMap::new();
+	workspaces.insert(
+		"default".to_string(),
+		WorkspaceAcpHistory {
+			sessions: legacy.sessions,
+			active_id: legacy.active_id,
+		},
+	);
+	Some(AcpHistory { workspaces })
 }
 
 fn acp_history_path() -> PathBuf {
-    base_dir().join("octoweb").join("acp_history.json")
+	base_dir().join("octoweb").join("acp_history.json")
 }
 
 // ── Terminal panel persistence ───────────────────────────────────────────────────────
@@ -406,559 +406,555 @@ fn acp_history_path() -> PathBuf {
 /// One terminal pane's shell as last seen.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SavedShell {
-    pub cwd: Option<PathBuf>,
-    /// Raw terminal output, replayed into the pane.
-    pub history: Vec<u8>,
+	pub cwd: Option<PathBuf>,
+	/// Raw terminal output, replayed into the pane.
+	pub history: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SavedTerminals {
-    /// Panel layout per `Workspace::id`.
-    pub layouts: std::collections::HashMap<String, serde_json::Value>,
-    /// Keyed by pane id.
-    pub shells: std::collections::HashMap<u32, SavedShell>,
+	/// Panel layout per `Workspace::id`.
+	pub layouts: std::collections::HashMap<String, serde_json::Value>,
+	/// Keyed by pane id.
+	pub shells: std::collections::HashMap<u32, SavedShell>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct TerminalStateFile {
-    layouts: std::collections::HashMap<String, serde_json::Value>,
-    cwds: std::collections::HashMap<u32, PathBuf>,
+	layouts: std::collections::HashMap<String, serde_json::Value>,
+	cwds: std::collections::HashMap<u32, PathBuf>,
 }
 
 pub fn save_terminals(saved: &SavedTerminals) {
-    write_terminals(&terminals_dir(), saved);
+	write_terminals(&terminals_dir(), saved);
 }
 
 pub fn load_terminals() -> SavedTerminals {
-    read_terminals(&terminals_dir())
+	read_terminals(&terminals_dir())
 }
 
 fn write_terminals(dir: &std::path::Path, saved: &SavedTerminals) {
-    if let Err(e) = fs::create_dir_all(dir) {
-        tracing::warn!(error = %e, "Failed to create the terminals dir");
-        return;
-    }
-    for (id, shell) in &saved.shells {
-        if let Err(e) = fs::write(dir.join(format!("{id}.log")), &shell.history) {
-            tracing::warn!(error = %e, id, "Failed to write terminal output");
-        }
-    }
-    // Output of panes closed since the last save.
-    for (id, path) in terminal_logs(dir) {
-        if !saved.shells.contains_key(&id) {
-            let _ = fs::remove_file(path);
-        }
-    }
-    let state = TerminalStateFile {
-        layouts: saved.layouts.clone(),
-        cwds: saved
-            .shells
-            .iter()
-            .filter_map(|(id, shell)| Some((*id, shell.cwd.clone()?)))
-            .collect(),
-    };
-    let path = dir.join("state.json");
-    let tmp = path.with_extension("json.tmp");
-    match serde_json::to_string(&state) {
-        Ok(s) => {
-            if let Err(e) = fs::write(&tmp, &s) {
-                tracing::warn!(error = %e, "Failed to write terminal state tmp");
-                return;
-            }
-            if let Err(e) = fs::rename(&tmp, &path) {
-                tracing::warn!(error = %e, "Failed to rename terminal state tmp");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize terminal state"),
-    }
+	if let Err(e) = fs::create_dir_all(dir) {
+		tracing::warn!(error = %e, "Failed to create the terminals dir");
+		return;
+	}
+	for (id, shell) in &saved.shells {
+		if let Err(e) = fs::write(dir.join(format!("{id}.log")), &shell.history) {
+			tracing::warn!(error = %e, id, "Failed to write terminal output");
+		}
+	}
+	// Output of panes closed since the last save.
+	for (id, path) in terminal_logs(dir) {
+		if !saved.shells.contains_key(&id) {
+			let _ = fs::remove_file(path);
+		}
+	}
+	let state = TerminalStateFile {
+		layouts: saved.layouts.clone(),
+		cwds: saved
+			.shells
+			.iter()
+			.filter_map(|(id, shell)| Some((*id, shell.cwd.clone()?)))
+			.collect(),
+	};
+	let path = dir.join("state.json");
+	let tmp = path.with_extension("json.tmp");
+	match serde_json::to_string(&state) {
+		Ok(s) => {
+			if let Err(e) = fs::write(&tmp, &s) {
+				tracing::warn!(error = %e, "Failed to write terminal state tmp");
+				return;
+			}
+			if let Err(e) = fs::rename(&tmp, &path) {
+				tracing::warn!(error = %e, "Failed to rename terminal state tmp");
+			}
+		}
+		Err(e) => tracing::warn!(error = %e, "Failed to serialize terminal state"),
+	}
 }
 
 fn read_terminals(dir: &std::path::Path) -> SavedTerminals {
-    let Some(state) = fs::read_to_string(dir.join("state.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<TerminalStateFile>(&s).ok())
-    else {
-        return SavedTerminals::default();
-    };
-    let mut shells: std::collections::HashMap<u32, SavedShell> = state
-        .cwds
-        .into_iter()
-        .map(|(id, cwd)| {
-            let shell = SavedShell {
-                cwd: Some(cwd),
-                history: Vec::new(),
-            };
-            (id, shell)
-        })
-        .collect();
-    for (id, path) in terminal_logs(dir) {
-        match fs::read(&path) {
-            Ok(history) => shells.entry(id).or_default().history = history,
-            Err(e) => tracing::warn!(error = %e, id, "Failed to read terminal output"),
-        }
-    }
-    SavedTerminals {
-        layouts: state.layouts,
-        shells,
-    }
+	let Some(state) = fs::read_to_string(dir.join("state.json"))
+		.ok()
+		.and_then(|s| serde_json::from_str::<TerminalStateFile>(&s).ok())
+	else {
+		return SavedTerminals::default();
+	};
+	let mut shells: std::collections::HashMap<u32, SavedShell> = state
+		.cwds
+		.into_iter()
+		.map(|(id, cwd)| {
+			let shell = SavedShell {
+				cwd: Some(cwd),
+				history: Vec::new(),
+			};
+			(id, shell)
+		})
+		.collect();
+	for (id, path) in terminal_logs(dir) {
+		match fs::read(&path) {
+			Ok(history) => shells.entry(id).or_default().history = history,
+			Err(e) => tracing::warn!(error = %e, id, "Failed to read terminal output"),
+		}
+	}
+	SavedTerminals {
+		layouts: state.layouts,
+		shells,
+	}
 }
 
 /// `<pane>.log` files in `dir`, by pane id.
 fn terminal_logs(dir: &std::path::Path) -> Vec<(u32, PathBuf)> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
-        .filter_map(|path| {
-            let id = path.file_stem()?.to_str()?.parse::<u32>().ok()?;
-            Some((id, path))
-        })
-        .collect()
+	let Ok(entries) = fs::read_dir(dir) else {
+		return Vec::new();
+	};
+	entries
+		.flatten()
+		.map(|entry| entry.path())
+		.filter(|path| path.extension().is_some_and(|ext| ext == "log"))
+		.filter_map(|path| {
+			let id = path.file_stem()?.to_str()?.parse::<u32>().ok()?;
+			Some((id, path))
+		})
+		.collect()
 }
 
 fn terminals_dir() -> PathBuf {
-    base_dir().join("octoweb").join("terminals")
+	base_dir().join("octoweb").join("terminals")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    /// URL to load on startup
-    pub home_page: String,
-    /// Search engine URL — `{}` is replaced with the encoded query
-    pub search_engine: String,
-    /// Max history entries to keep in memory
-    pub max_history: usize,
-    /// Initial window width
-    pub window_width: u32,
-    /// Initial window height
-    pub window_height: u32,
-    /// AI sidebar width in logical pixels
-    #[serde(default = "default_sidebar_width")]
-    pub sidebar_width: u32,
-    /// Notes column width in logical pixels
-    #[serde(default = "default_notes_width")]
-    pub notes_width: u32,
-    /// Terminal panel height in logical pixels
-    #[serde(default = "default_terminal_height")]
-    pub terminal_height: u32,
-    /// Light, dark, or follow macOS — for the chrome and every page alike
-    #[serde(default)]
-    pub appearance: Appearance,
-    /// The terminal panel follows `appearance`, or stays light or dark
-    #[serde(default)]
-    pub terminal_appearance: TerminalAppearance,
-    /// ⌥ in the terminal sends Meta (ESC-prefixed keys) for the shell's word
-    /// keys, rather than typing ⌥ characters such as ƒ
-    #[serde(default = "default_terminal_option_as_meta")]
-    pub terminal_option_as_meta: bool,
-    /// The sidebar's account card shows usage details, not just its row
-    #[serde(default)]
-    pub account_expanded: bool,
-    /// ⌘⇧F link hints stay up through clicks, scrolling and page loads in
-    /// their tab until the chord is pressed again.
-    #[serde(default)]
-    pub link_hints_sticky: bool,
-    /// Auto-hide inline AI edit modal after submitting (show loading cursor instead)
-    #[serde(default)]
-    pub ai_edit_auto_hide: bool,
-    /// Max prompt history entries to keep for inline AI edit (⌘⇧E)
-    #[serde(default = "default_max_prompt_history")]
-    pub max_prompt_history: usize,
-    /// Max prompt history entries to keep for AI sidebar assistant
-    #[serde(default = "default_max_ai_prompt_history")]
-    pub max_ai_prompt_history: usize,
-    /// Max persisted messages to keep per ACP chat session — older messages
-    /// are dropped from disk (FIFO) once a session exceeds this cap.
-    #[serde(default = "default_max_acp_session_messages")]
-    pub max_acp_session_messages: usize,
-    /// Enable proactive background learning from browsing history.
-    ///
-    /// Off by default: it runs an agent that reads the user's open tabs, history
-    /// and page text every 30 minutes and writes durable inferences about them.
-    /// That is a reasonable thing to opt into and not a reasonable thing to have
-    /// happen without being asked. Turn it on in Settings (⌘,).
-    #[serde(default)]
-    pub proactive_learning: bool,
-    /// How often to run the learning agent, in minutes
-    #[serde(default = "default_learning_interval")]
-    pub learning_interval_min: u64,
-    /// Use the legacy aggressive hibernation curve (sqrt scaling). When false
-    /// (default) the modern-laptop friendly curve is used — tabs survive longer
-    /// on 16 GB+ machines. Turn on for tight-RAM setups or eager reclamation.
-    #[serde(default)]
-    pub aggressive_hibernation: bool,
-    /// Max open tabs. Least-recently-used tabs above the cap are closed
-    /// automatically — their pages remain reachable via history. 0 disables.
-    #[serde(default = "default_max_tabs")]
-    pub max_tabs: usize,
-    /// Days a "save for later" item stays in the queue before it drops out.
-    /// Its page text remains searchable in page memory. 0 keeps items forever.
-    #[serde(default = "default_later_days")]
-    pub later_days: usize,
-    /// Whether the first-run welcome toast has been shown. Internal flag.
-    #[serde(default)]
-    pub first_run_completed: bool,
-    /// Hold back remote images in mail until allowed per message or sender.
-    /// Off by default: mail renders as its sender designed it.
-    #[serde(default)]
-    pub mail_block_images: bool,
-    /// The few sounds the app makes: mail sent, done, AI draft ready, new
-    /// Important mail. Off is silent mode.
-    #[serde(default = "default_sounds")]
-    pub sounds: bool,
-    /// Mail AI features (summaries, drafts, brief, task extraction). Off until
-    /// the user turns them on: mail text then goes to the configured agent.
-    #[serde(default)]
-    pub mail_ai: bool,
-    /// One-line AI summaries of Important conversations as they arrive.
-    #[serde(default)]
-    pub mail_ai_summaries: bool,
-    /// Ask the assistant for the daily brief each morning.
-    #[serde(default)]
-    pub mail_brief_morning: bool,
-    /// Local date (`YYYY-MM-DD`) of the last morning brief. Internal.
-    #[serde(default)]
-    pub mail_brief_last: String,
-    /// Mail accounts (Settings → Mail). Before `proxies`: both are TOML
-    /// arrays of tables, which must follow every plain value.
-    #[serde(default)]
-    pub mail_accounts: Vec<MailAccount>,
-    /// Per-site proxies (Settings → Proxies). Kept last: TOML emits it as
-    /// `[[proxies]]` tables, which must follow every plain value.
-    #[serde(default)]
-    pub proxies: Vec<ProxyRule>,
+	/// URL to load on startup
+	pub home_page: String,
+	/// Search engine URL — `{}` is replaced with the encoded query
+	pub search_engine: String,
+	/// Max history entries to keep in memory
+	pub max_history: usize,
+	/// Initial window width
+	pub window_width: u32,
+	/// Initial window height
+	pub window_height: u32,
+	/// AI sidebar width in logical pixels
+	#[serde(default = "default_sidebar_width")]
+	pub sidebar_width: u32,
+	/// Notes column width in logical pixels
+	#[serde(default = "default_notes_width")]
+	pub notes_width: u32,
+	/// Terminal panel height in logical pixels
+	#[serde(default = "default_terminal_height")]
+	pub terminal_height: u32,
+	/// Light, dark, or follow macOS — for the chrome and every page alike
+	#[serde(default)]
+	pub appearance: Appearance,
+	/// The terminal panel follows `appearance`, or stays light or dark
+	#[serde(default)]
+	pub terminal_appearance: TerminalAppearance,
+	/// ⌥ in the terminal sends Meta (ESC-prefixed keys) for the shell's word
+	/// keys, rather than typing ⌥ characters such as ƒ
+	#[serde(default = "default_terminal_option_as_meta")]
+	pub terminal_option_as_meta: bool,
+	/// The sidebar's account card shows usage details, not just its row
+	#[serde(default)]
+	pub account_expanded: bool,
+	/// ⌘⇧F link hints stay up through clicks, scrolling and page loads in
+	/// their tab until the chord is pressed again.
+	#[serde(default)]
+	pub link_hints_sticky: bool,
+	/// Auto-hide inline AI edit modal after submitting (show loading cursor instead)
+	#[serde(default)]
+	pub ai_edit_auto_hide: bool,
+	/// Max prompt history entries to keep for inline AI edit (⌘⇧E)
+	#[serde(default = "default_max_prompt_history")]
+	pub max_prompt_history: usize,
+	/// Max prompt history entries to keep for AI sidebar assistant
+	#[serde(default = "default_max_ai_prompt_history")]
+	pub max_ai_prompt_history: usize,
+	/// Max persisted messages to keep per ACP chat session — older messages
+	/// are dropped from disk (FIFO) once a session exceeds this cap.
+	#[serde(default = "default_max_acp_session_messages")]
+	pub max_acp_session_messages: usize,
+	/// Enable proactive background learning from browsing history.
+	///
+	/// Off by default: it runs an agent that reads the user's open tabs, history
+	/// and page text every 30 minutes and writes durable inferences about them.
+	/// That is a reasonable thing to opt into and not a reasonable thing to have
+	/// happen without being asked. Turn it on in Settings (⌘,).
+	#[serde(default)]
+	pub proactive_learning: bool,
+	/// How often to run the learning agent, in minutes
+	#[serde(default = "default_learning_interval")]
+	pub learning_interval_min: u64,
+	/// Use the legacy aggressive hibernation curve (sqrt scaling). When false
+	/// (default) the modern-laptop friendly curve is used — tabs survive longer
+	/// on 16 GB+ machines. Turn on for tight-RAM setups or eager reclamation.
+	#[serde(default)]
+	pub aggressive_hibernation: bool,
+	/// Max open tabs. Least-recently-used tabs above the cap are closed
+	/// automatically — their pages remain reachable via history. 0 disables.
+	#[serde(default = "default_max_tabs")]
+	pub max_tabs: usize,
+	/// Days a "save for later" item stays in the queue before it drops out.
+	/// Its page text remains searchable in page memory. 0 keeps items forever.
+	#[serde(default = "default_later_days")]
+	pub later_days: usize,
+	/// Whether the first-run welcome toast has been shown. Internal flag.
+	#[serde(default)]
+	pub first_run_completed: bool,
+	/// Hold back remote images in mail until allowed per message or sender.
+	/// Off by default: mail renders as its sender designed it.
+	#[serde(default)]
+	pub mail_block_images: bool,
+	/// The few sounds the app makes: mail sent, done, AI draft ready, new
+	/// Important mail. Off is silent mode.
+	#[serde(default = "default_sounds")]
+	pub sounds: bool,
+	/// Mail AI features (summaries, drafts, brief, task extraction). Off until
+	/// the user turns them on: mail text then goes to the configured agent.
+	#[serde(default)]
+	pub mail_ai: bool,
+	/// One-line AI summaries of Important conversations as they arrive.
+	#[serde(default)]
+	pub mail_ai_summaries: bool,
+	/// Ask the assistant for the daily brief each morning.
+	#[serde(default)]
+	pub mail_brief_morning: bool,
+	/// Local date (`YYYY-MM-DD`) of the last morning brief. Internal.
+	#[serde(default)]
+	pub mail_brief_last: String,
+	/// Mail accounts (Settings → Mail). Before `proxies`: both are TOML
+	/// arrays of tables, which must follow every plain value.
+	#[serde(default)]
+	pub mail_accounts: Vec<MailAccount>,
+	/// Per-site proxies (Settings → Proxies). Kept last: TOML emits it as
+	/// `[[proxies]]` tables, which must follow every plain value.
+	#[serde(default)]
+	pub proxies: Vec<ProxyRule>,
 }
 
 /// One proxy and the sites whose tabs go through it. See `site_proxy`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProxyRule {
-    /// Random, assigned once by the settings UI. Seeds this proxy's
-    /// WKWebsiteDataStore id and Keychain entry, so it never changes.
-    pub id: [u8; 16],
-    /// Label in Settings; empty shows the server instead.
-    #[serde(default)]
-    pub name: String,
-    pub enabled: bool,
-    pub kind: ProxyKind,
-    /// SOCKS5/HTTP proxy host. Unused for SSH — the tunnel listens on 127.0.0.1.
-    pub host: String,
-    /// SOCKS5/HTTP proxy port; for SSH, the tunnel's local port.
-    pub port: u16,
-    /// SSH destination as given to `ssh`: `user@server`,
-    /// `ssh://user@server:2222` or a `~/.ssh/config` host.
-    #[serde(default)]
-    pub ssh: String,
-    /// An SSH password is stored in the Keychain (see `ssh_tunnel`).
-    #[serde(default)]
-    pub has_password: bool,
-    /// Password typed in Settings, moved to the Keychain on arrival;
-    /// `Some("")` forgets it. Never persisted.
-    #[serde(default, skip_serializing)]
-    pub password: Option<String>,
-    /// Domains or pasted URLs; each also covers its subdomains.
-    pub sites: Vec<String>,
+	/// Random, assigned once by the settings UI. Seeds this proxy's
+	/// WKWebsiteDataStore id and Keychain entry, so it never changes.
+	pub id: [u8; 16],
+	/// Label in Settings; empty shows the server instead.
+	#[serde(default)]
+	pub name: String,
+	pub enabled: bool,
+	pub kind: ProxyKind,
+	/// SOCKS5/HTTP proxy host. Unused for SSH — the tunnel listens on 127.0.0.1.
+	pub host: String,
+	/// SOCKS5/HTTP proxy port; for SSH, the tunnel's local port.
+	pub port: u16,
+	/// SSH destination as given to `ssh`: `user@server`,
+	/// `ssh://user@server:2222` or a `~/.ssh/config` host.
+	#[serde(default)]
+	pub ssh: String,
+	/// An SSH password is stored in the Keychain (see `ssh_tunnel`).
+	#[serde(default)]
+	pub has_password: bool,
+	/// Password typed in Settings, moved to the Keychain on arrival;
+	/// `Some("")` forgets it. Never persisted.
+	#[serde(default, skip_serializing)]
+	pub password: Option<String>,
+	/// Domains or pasted URLs; each also covers its subdomains.
+	pub sites: Vec<String>,
 }
 
 /// One mail account. Servers come from `provider`'s preset unless it is
 /// `Other`; the password lives in the Keychain (see `mail::save_password`).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct MailAccount {
-    /// Random, assigned once by the settings UI; keys the Keychain entry and
-    /// the account's local mail.
-    pub id: [u8; 16],
-    pub provider: MailProvider,
-    pub address: String,
-    /// Display name on sent mail.
-    #[serde(default)]
-    pub name: String,
-    /// Dot shown on its messages, `#rrggbb`.
-    #[serde(default)]
-    pub color: String,
-    #[serde(default)]
-    pub signature: String,
-    #[serde(default)]
-    pub gatekeeper: bool,
-    #[serde(default)]
-    pub scope: crate::extension_store::Scope,
-    /// `Other` only: servers and login.
-    #[serde(default)]
-    pub imap_host: String,
-    #[serde(default)]
-    pub imap_port: u16,
-    #[serde(default)]
-    pub smtp_host: String,
-    #[serde(default)]
-    pub smtp_port: u16,
-    #[serde(default)]
-    pub smtp_security: SmtpSecurity,
-    /// Login name when it is not the address.
-    #[serde(default)]
-    pub login: String,
-    /// Folder Done moves mail to; empty finds it on the server.
-    #[serde(default)]
-    pub archive_folder: String,
-    #[serde(default)]
-    pub auth: MailAuth,
-    /// The user's own OAuth client (Gmail, Outlook).
-    #[serde(default)]
-    pub oauth_client_id: String,
-    /// The OAuth client secret is stored in the Keychain.
-    #[serde(default)]
-    pub has_client_secret: bool,
-    /// Typed in Settings, moved to the Keychain on arrival. Never persisted.
-    #[serde(default, skip_serializing)]
-    pub client_secret: Option<String>,
-    #[serde(default)]
-    pub has_password: bool,
-    /// Typed in Settings, moved to the Keychain on arrival. Never persisted.
-    #[serde(default, skip_serializing)]
-    pub password: Option<String>,
+	/// Random, assigned once by the settings UI; keys the Keychain entry and
+	/// the account's local mail.
+	pub id: [u8; 16],
+	pub provider: MailProvider,
+	pub address: String,
+	/// Display name on sent mail.
+	#[serde(default)]
+	pub name: String,
+	/// Dot shown on its messages, `#rrggbb`.
+	#[serde(default)]
+	pub color: String,
+	#[serde(default)]
+	pub signature: String,
+	#[serde(default)]
+	pub gatekeeper: bool,
+	#[serde(default)]
+	pub scope: crate::extension_store::Scope,
+	/// `Other` only: servers and login.
+	#[serde(default)]
+	pub imap_host: String,
+	#[serde(default)]
+	pub imap_port: u16,
+	#[serde(default)]
+	pub smtp_host: String,
+	#[serde(default)]
+	pub smtp_port: u16,
+	#[serde(default)]
+	pub smtp_security: SmtpSecurity,
+	/// Login name when it is not the address.
+	#[serde(default)]
+	pub login: String,
+	/// Folder Done moves mail to; empty finds it on the server.
+	#[serde(default)]
+	pub archive_folder: String,
+	#[serde(default)]
+	pub auth: MailAuth,
+	/// The user's own OAuth client (Gmail, Outlook).
+	#[serde(default)]
+	pub oauth_client_id: String,
+	/// The OAuth client secret is stored in the Keychain.
+	#[serde(default)]
+	pub has_client_secret: bool,
+	/// Typed in Settings, moved to the Keychain on arrival. Never persisted.
+	#[serde(default, skip_serializing)]
+	pub client_secret: Option<String>,
+	#[serde(default)]
+	pub has_password: bool,
+	/// Typed in Settings, moved to the Keychain on arrival. Never persisted.
+	#[serde(default, skip_serializing)]
+	pub password: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MailProvider {
-    Gmail,
-    Icloud,
-    Privateemail,
-    /// Outlook.com and Microsoft 365: OAuth only, Microsoft turned off passwords.
-    Outlook,
-    Other,
+	Gmail,
+	Icloud,
+	Privateemail,
+	/// Outlook.com and Microsoft 365: OAuth only, Microsoft turned off passwords.
+	Outlook,
+	Other,
 }
 
 /// How an account signs in.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MailAuth {
-    /// A password or app password.
-    #[default]
-    Password,
-    /// The user's own OAuth client; the refresh token takes the password's
-    /// place in the Keychain (see `mail_oauth`).
-    Oauth,
+	/// A password or app password.
+	#[default]
+	Password,
+	/// The user's own OAuth client; the refresh token takes the password's
+	/// place in the Keychain (see `mail_oauth`).
+	Oauth,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SmtpSecurity {
-    /// Implicit TLS, usually port 465.
-    #[default]
-    Tls,
-    /// STARTTLS, usually port 587.
-    Starttls,
-    /// No encryption: allowed only to this machine (a local bridge or test server).
-    Plain,
+	/// Implicit TLS, usually port 465.
+	#[default]
+	Tls,
+	/// STARTTLS, usually port 587.
+	Starttls,
+	/// No encryption: allowed only to this machine (a local bridge or test server).
+	Plain,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Appearance {
-    /// Follow the macOS appearance.
-    #[default]
-    Auto,
-    Light,
-    Dark,
+	/// Follow the macOS appearance.
+	#[default]
+	Auto,
+	Light,
+	Dark,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalAppearance {
-    /// Follow `Config::appearance`.
-    #[default]
-    General,
-    Light,
-    Dark,
+	/// Follow `Config::appearance`.
+	#[default]
+	General,
+	Light,
+	Dark,
 }
 
 impl TerminalAppearance {
-    /// `Some(dark)` when locked, `None` when it follows `Config::appearance`.
-    pub fn locked_dark(self) -> Option<bool> {
-        match self {
-            Self::General => None,
-            Self::Light => Some(false),
-            Self::Dark => Some(true),
-        }
-    }
+	/// `Some(dark)` when locked, `None` when it follows `Config::appearance`.
+	pub fn locked_dark(self) -> Option<bool> {
+		match self {
+			Self::General => None,
+			Self::Light => Some(false),
+			Self::Dark => Some(true),
+		}
+	}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProxyKind {
-    Socks5,
-    Http,
-    /// `ssh -D` tunnel run by octoweb, used as a local SOCKS5 proxy.
-    Ssh,
+	Socks5,
+	Http,
+	/// `ssh -D` tunnel run by octoweb, used as a local SOCKS5 proxy.
+	Ssh,
 }
 
 fn default_max_prompt_history() -> usize {
-    50
+	50
 }
 
 fn default_sidebar_width() -> u32 {
-    440
+	440
 }
 
 fn default_notes_width() -> u32 {
-    360
+	360
 }
 
 fn default_terminal_height() -> u32 {
-    320
+	320
 }
 
 fn default_terminal_option_as_meta() -> bool {
-    true
+	true
 }
 
 fn default_sounds() -> bool {
-    true
+	true
 }
 
 fn default_max_ai_prompt_history() -> usize {
-    50
+	50
 }
 
 fn default_max_acp_session_messages() -> usize {
-    500
+	500
 }
 
 fn default_later_days() -> usize {
-    14
+	14
 }
 
 fn default_max_tabs() -> usize {
-    500
+	500
 }
 
 fn default_learning_interval() -> u64 {
-    30
+	30
 }
 
 impl Default for Config {
-    fn default() -> Self {
-        Self {
-            home_page: "https://www.google.com".into(),
-            search_engine: "https://www.google.com/search?q={}".into(),
-            max_history: 1000,
-            window_width: 1280,
-            window_height: 800,
-            sidebar_width: default_sidebar_width(),
-            notes_width: default_notes_width(),
-            terminal_height: default_terminal_height(),
-            appearance: Appearance::Auto,
-            terminal_appearance: TerminalAppearance::General,
-            terminal_option_as_meta: default_terminal_option_as_meta(),
-            account_expanded: false,
-            link_hints_sticky: false,
-            ai_edit_auto_hide: false,
-            max_prompt_history: 50,
-            max_ai_prompt_history: 50,
-            max_acp_session_messages: 500,
-            proactive_learning: false,
-            learning_interval_min: 30,
-            aggressive_hibernation: false,
-            max_tabs: 500,
-            later_days: 14,
-            first_run_completed: false,
-            mail_ai: false,
-            mail_ai_summaries: false,
-            mail_block_images: false,
-            sounds: true,
-            mail_brief_morning: false,
-            mail_brief_last: String::new(),
-            mail_accounts: Vec::new(),
-            proxies: Vec::new(),
-        }
-    }
+	fn default() -> Self {
+		Self {
+			home_page: "https://www.google.com".into(),
+			search_engine: "https://www.google.com/search?q={}".into(),
+			max_history: 1000,
+			window_width: 1280,
+			window_height: 800,
+			sidebar_width: default_sidebar_width(),
+			notes_width: default_notes_width(),
+			terminal_height: default_terminal_height(),
+			appearance: Appearance::Auto,
+			terminal_appearance: TerminalAppearance::General,
+			terminal_option_as_meta: default_terminal_option_as_meta(),
+			account_expanded: false,
+			link_hints_sticky: false,
+			ai_edit_auto_hide: false,
+			max_prompt_history: 50,
+			max_ai_prompt_history: 50,
+			max_acp_session_messages: 500,
+			proactive_learning: false,
+			learning_interval_min: 30,
+			aggressive_hibernation: false,
+			max_tabs: 500,
+			later_days: 14,
+			first_run_completed: false,
+			mail_ai: false,
+			mail_ai_summaries: false,
+			mail_block_images: false,
+			sounds: true,
+			mail_brief_morning: false,
+			mail_brief_last: String::new(),
+			mail_accounts: Vec::new(),
+			proxies: Vec::new(),
+		}
+	}
 }
 
 impl Config {
-    pub fn load() -> Self {
-        let path = config_path();
+	pub fn load() -> Self {
+		let path = config_path();
 
-        if !path.exists() {
-            let cfg = Config::default();
-            cfg.save();
-            return cfg;
-        }
+		if !path.exists() {
+			let cfg = Config::default();
+			cfg.save();
+			return cfg;
+		}
 
-        let raw = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(path = %path.display(), error = %e, "Failed to read config");
-                return Config::default();
-            }
-        };
+		let raw = match fs::read_to_string(&path) {
+			Ok(s) => s,
+			Err(e) => {
+				tracing::error!(path = %path.display(), error = %e, "Failed to read config");
+				return Config::default();
+			}
+		};
 
-        match toml::from_str::<Config>(&raw) {
-            Ok(mut cfg) => {
-                // Floor matches the settings UI — a zero/tiny interval would make
-                // the learning agent run back-to-back, continuously spending tokens.
-                cfg.learning_interval_min = cfg.learning_interval_min.max(5);
-                cfg
-            }
-            Err(e) => {
-                tracing::error!(path = %path.display(), error = %e, "Invalid config");
-                Config::default()
-            }
-        }
-    }
+		match toml::from_str::<Config>(&raw) {
+			Ok(mut cfg) => {
+				// Floor matches the settings UI — a zero/tiny interval would make
+				// the learning agent run back-to-back, continuously spending tokens.
+				cfg.learning_interval_min = cfg.learning_interval_min.max(5);
+				cfg
+			}
+			Err(e) => {
+				tracing::error!(path = %path.display(), error = %e, "Invalid config");
+				Config::default()
+			}
+		}
+	}
 
-    pub fn save(&self) {
-        let path = config_path();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        match toml::to_string_pretty(self) {
-            Ok(s) => {
-                if let Err(e) = fs::write(&path, s) {
-                    tracing::warn!(error = %e, "Failed to write config");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to serialize config"),
-        }
-    }
+	pub fn save(&self) {
+		let path = config_path();
+		if let Some(parent) = path.parent() {
+			let _ = fs::create_dir_all(parent);
+		}
+		match toml::to_string_pretty(self) {
+			Ok(s) => {
+				if let Err(e) = fs::write(&path, s) {
+					tracing::warn!(error = %e, "Failed to write config");
+				}
+			}
+			Err(e) => tracing::warn!(error = %e, "Failed to serialize config"),
+		}
+	}
 }
 
 fn config_path() -> PathBuf {
-    base_dir().join("octoweb").join("config.toml")
+	base_dir().join("octoweb").join("config.toml")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn terminals_round_trip_and_drop_closed_panes() {
-        let dir = std::env::temp_dir().join(format!("octoweb-terminals-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        // Output of a pane closed since the last save.
-        fs::write(dir.join("7.log"), b"gone").unwrap();
-        let saved = SavedTerminals {
-            layouts: [(
-                "ws".to_string(),
-                serde_json::json!({ "active": 0, "tabs": [] }),
-            )]
-            .into(),
-            shells: [
-                (
-                    1,
-                    SavedShell {
-                        cwd: Some(PathBuf::from("/tmp")),
-                        history: b"$ ls\r\n".to_vec(),
-                    },
-                ),
-                (2, SavedShell::default()),
-            ]
-            .into(),
-        };
-        write_terminals(&dir, &saved);
-        assert_eq!(read_terminals(&dir), saved);
-        assert!(!dir.join("7.log").exists());
-        fs::remove_dir_all(&dir).unwrap();
-    }
+	#[test]
+	fn terminals_round_trip_and_drop_closed_panes() {
+		let dir = std::env::temp_dir().join(format!("octoweb-terminals-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		fs::create_dir_all(&dir).unwrap();
+		// Output of a pane closed since the last save.
+		fs::write(dir.join("7.log"), b"gone").unwrap();
+		let saved = SavedTerminals {
+			layouts: [("ws".to_string(), serde_json::json!({ "active": 0, "tabs": [] }))].into(),
+			shells: [
+				(
+					1,
+					SavedShell {
+						cwd: Some(PathBuf::from("/tmp")),
+						history: b"$ ls\r\n".to_vec(),
+					},
+				),
+				(2, SavedShell::default()),
+			]
+			.into(),
+		};
+		write_terminals(&dir, &saved);
+		assert_eq!(read_terminals(&dir), saved);
+		assert!(!dir.join("7.log").exists());
+		fs::remove_dir_all(&dir).unwrap();
+	}
 }

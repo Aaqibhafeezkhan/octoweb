@@ -12,7 +12,7 @@
 ///   window.__updateSlots(jsonArray, activeUrl?)  — refresh slot data and current marker
 ///   window.__setActiveUrl(activeUrl?)            — refresh only the current marker
 pub fn html() -> String {
-    let template = r#"<!DOCTYPE html>
+	let template = r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -363,8 +363,8 @@ pub fn html() -> String {
 </script>
 </body>
 </html>"#;
-    template
-        .replace("/*@@THEME@@*/", crate::theme::CSS)
-        .replace("/*@@HOLD_REORDER@@*/", crate::hold_reorder_js::JS)
-        .replace("@@ICON_PLUS@@", crate::icons::PLUS)
+	template
+		.replace("/*@@THEME@@*/", crate::theme::CSS)
+		.replace("/*@@HOLD_REORDER@@*/", crate::hold_reorder_js::JS)
+		.replace("@@ICON_PLUS@@", crate::icons::PLUS)
 }

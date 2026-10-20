@@ -5,7 +5,7 @@
 ///
 /// Each column owns an independent list so separators stop at its final row.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

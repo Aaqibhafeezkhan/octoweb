@@ -17,7 +17,7 @@
 //!   window.__setShortcuts(data)                — update control titles
 
 pub fn html(keybindings_json: &str) -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

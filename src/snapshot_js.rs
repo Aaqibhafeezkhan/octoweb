@@ -30,37 +30,32 @@ pub const DEFAULT_LIMIT: usize = 200;
 /// to scope the scan; `diff` limits output to changes since the previous
 /// snapshot of the same tab; `find` keeps only lines containing that text; and
 /// `limit` caps how many lines are emitted (0 = uncapped).
-pub fn snapshot_script(
-    within: Option<&str>,
-    diff: bool,
-    find: Option<&str>,
-    limit: usize,
-) -> String {
-    let root_expr = match within {
-        Some(sel) if sel.starts_with('@') => {
-            let s = serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into());
-            format!("(window.__octoweb_refs && window.__octoweb_refs.get({s})) || null")
-        }
-        Some(sel) => {
-            let s = serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into());
-            format!("(function(){{ try {{ return document.querySelector({s}); }} catch(e) {{ return null; }} }})()")
-        }
-        None => "document".into(),
-    };
-    let within_desc = match within {
-        Some(sel) => serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into()),
-        None => "null".into(),
-    };
-    let find_expr = match find.filter(|f| !f.trim().is_empty()) {
-        Some(f) => serde_json::to_string(f).unwrap_or_else(|_| "null".into()),
-        None => "null".into(),
-    };
-    SNAPSHOT_TEMPLATE
-        .replace("__ROOT__", &root_expr)
-        .replace("__WITHIN__", &within_desc)
-        .replace("__DIFF__", if diff { "true" } else { "false" })
-        .replace("__FIND__", &find_expr)
-        .replace("__LIMIT__", &limit.to_string())
+pub fn snapshot_script(within: Option<&str>, diff: bool, find: Option<&str>, limit: usize) -> String {
+	let root_expr = match within {
+		Some(sel) if sel.starts_with('@') => {
+			let s = serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into());
+			format!("(window.__octoweb_refs && window.__octoweb_refs.get({s})) || null")
+		}
+		Some(sel) => {
+			let s = serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into());
+			format!("(function(){{ try {{ return document.querySelector({s}); }} catch(e) {{ return null; }} }})()")
+		}
+		None => "document".into(),
+	};
+	let within_desc = match within {
+		Some(sel) => serde_json::to_string(sel).unwrap_or_else(|_| "\"\"".into()),
+		None => "null".into(),
+	};
+	let find_expr = match find.filter(|f| !f.trim().is_empty()) {
+		Some(f) => serde_json::to_string(f).unwrap_or_else(|_| "null".into()),
+		None => "null".into(),
+	};
+	SNAPSHOT_TEMPLATE
+		.replace("__ROOT__", &root_expr)
+		.replace("__WITHIN__", &within_desc)
+		.replace("__DIFF__", if diff { "true" } else { "false" })
+		.replace("__FIND__", &find_expr)
+		.replace("__LIMIT__", &limit.to_string())
 }
 
 const SNAPSHOT_TEMPLATE: &str = r#"
@@ -456,36 +451,36 @@ const SNAPSHOT_TEMPLATE: &str = r#"
 
 #[cfg(test)]
 mod tests {
-    use super::snapshot_script;
+	use super::snapshot_script;
 
-    #[test]
-    fn root_expression_by_mode() {
-        // No `within` → scans the whole document.
-        assert!(snapshot_script(None, false, None, 200).contains("var root = document;"));
-        // CSS selector → querySelector, JSON-escaped.
-        let css = snapshot_script(Some(".dialog"), false, None, 200);
-        assert!(css.contains("document.querySelector(\".dialog\")"));
-        assert!(css.contains("var WITHIN = \".dialog\";"));
-        // @ref → resolved through the live ref map.
-        let refd = snapshot_script(Some("@7"), true, None, 200);
-        assert!(refd.contains("window.__octoweb_refs.get(\"@7\")"));
-        assert!(refd.contains("var DIFF = true;"));
-    }
+	#[test]
+	fn root_expression_by_mode() {
+		// No `within` → scans the whole document.
+		assert!(snapshot_script(None, false, None, 200).contains("var root = document;"));
+		// CSS selector → querySelector, JSON-escaped.
+		let css = snapshot_script(Some(".dialog"), false, None, 200);
+		assert!(css.contains("document.querySelector(\".dialog\")"));
+		assert!(css.contains("var WITHIN = \".dialog\";"));
+		// @ref → resolved through the live ref map.
+		let refd = snapshot_script(Some("@7"), true, None, 200);
+		assert!(refd.contains("window.__octoweb_refs.get(\"@7\")"));
+		assert!(refd.contains("var DIFF = true;"));
+	}
 
-    #[test]
-    fn is_a_bare_expression() {
-        for s in [
-            snapshot_script(None, false, None, 200),
-            snapshot_script(Some("#form"), true, Some("save"), 0),
-        ] {
-            assert!(!s.trim_end().ends_with(';'), "trailing semicolon");
-            assert!(
-                !s.contains("__ROOT__")
-                    && !s.contains("__DIFF__")
-                    && !s.contains("__WITHIN__")
-                    && !s.contains("__FIND__")
-                    && !s.contains("__LIMIT__")
-            );
-        }
-    }
+	#[test]
+	fn is_a_bare_expression() {
+		for s in [
+			snapshot_script(None, false, None, 200),
+			snapshot_script(Some("#form"), true, Some("save"), 0),
+		] {
+			assert!(!s.trim_end().ends_with(';'), "trailing semicolon");
+			assert!(
+				!s.contains("__ROOT__")
+					&& !s.contains("__DIFF__")
+					&& !s.contains("__WITHIN__")
+					&& !s.contains("__FIND__")
+					&& !s.contains("__LIMIT__")
+			);
+		}
+	}
 }

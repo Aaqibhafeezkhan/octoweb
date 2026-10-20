@@ -27,213 +27,198 @@ static REGISTRY: OnceLock<Mutex<HashMap<usize, ErrorCallback>>> = OnceLock::new(
 static TERMINATION_REGISTRY: OnceLock<Mutex<HashMap<usize, TerminationCallback>>> = OnceLock::new();
 
 fn registry() -> &'static Mutex<HashMap<usize, ErrorCallback>> {
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+	REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn termination_registry() -> &'static Mutex<HashMap<usize, TerminationCallback>> {
-    TERMINATION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+	TERMINATION_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Register an error callback for a WKWebView instance.
 /// `ptr` is the raw WKWebView pointer cast to usize.
 /// Called from the main thread after building each tab WebView.
 pub fn register(ptr: usize, callback: impl Fn(String, i64) + Send + 'static) {
-    tracing::debug!(ptr, "Registering nav-error callback");
-    registry().lock().unwrap().insert(ptr, Box::new(callback));
+	tracing::debug!(ptr, "Registering nav-error callback");
+	registry().lock().unwrap().insert(ptr, Box::new(callback));
 }
 
 /// Remove the callback for a WKWebView that is being destroyed.
 pub fn unregister(ptr: usize) {
-    registry().lock().unwrap().remove(&ptr);
+	registry().lock().unwrap().remove(&ptr);
 }
 
 /// Register a callback for when the WebContent process is terminated by the OS.
 /// This fires when WKWebView's XPC process dies (memory pressure, GPU crash, etc.).
 pub fn register_termination(ptr: usize, callback: impl Fn() + Send + 'static) {
-    tracing::debug!(ptr, "Registering process-termination callback");
-    termination_registry()
-        .lock()
-        .unwrap()
-        .insert(ptr, Box::new(callback));
+	tracing::debug!(ptr, "Registering process-termination callback");
+	termination_registry().lock().unwrap().insert(ptr, Box::new(callback));
 }
 
 /// Remove the termination callback for a WKWebView that is being destroyed.
 pub fn unregister_termination(ptr: usize) {
-    termination_registry().lock().unwrap().remove(&ptr);
+	termination_registry().lock().unwrap().remove(&ptr);
 }
 
 /// Inject error methods by getting the delegate class from a WebView instance.
 /// Call this after the first WebView is created, passing the WKWebView pointer.
 pub fn inject_from_webview(webview_ptr: usize) {
-    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+	static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-    if DONE.load(std::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
+	if DONE.load(std::sync::atomic::Ordering::SeqCst) {
+		return;
+	}
 
-    tracing::debug!(ptr = webview_ptr, "Injecting nav-error delegate methods");
+	tracing::debug!(ptr = webview_ptr, "Injecting nav-error delegate methods");
 
-    // Get the navigation delegate from the WKWebView
-    unsafe {
-        let wv: *mut AnyObject = webview_ptr as *mut AnyObject;
-        let delegate: *mut AnyObject = msg_send![wv, navigationDelegate];
+	// Get the navigation delegate from the WKWebView
+	unsafe {
+		let wv: *mut AnyObject = webview_ptr as *mut AnyObject;
+		let delegate: *mut AnyObject = msg_send![wv, navigationDelegate];
 
-        if delegate.is_null() {
-            tracing::debug!("navigationDelegate is null");
-            return;
-        }
+		if delegate.is_null() {
+			tracing::debug!("navigationDelegate is null");
+			return;
+		}
 
-        // Get the class of the delegate
-        let delegate_class: *const AnyClass = msg_send![delegate, class];
-        let class_name: *const i8 = msg_send![delegate_class, className];
-        let name = std::ffi::CStr::from_ptr(class_name);
-        tracing::debug!(?name, "Nav-error delegate class");
+		// Get the class of the delegate
+		let delegate_class: *const AnyClass = msg_send![delegate, class];
+		let class_name: *const i8 = msg_send![delegate_class, className];
+		let name = std::ffi::CStr::from_ptr(class_name);
+		tracing::debug!(?name, "Nav-error delegate class");
 
-        // Inject methods
-        let types = c"v@:@@@";
-        objc2::ffi::class_addMethod(
-            delegate_class as *mut _,
-            sel!(webView:didFailProvisionalNavigation:withError:),
-            std::mem::transmute::<
-                extern "C-unwind" fn(
-                    *mut AnyObject,
-                    Sel,
-                    *mut AnyObject,
-                    *mut AnyObject,
-                    *mut AnyObject,
-                ),
-                unsafe extern "C-unwind" fn(),
-            >(did_fail_provisional),
-            types.as_ptr(),
-        );
-        objc2::ffi::class_addMethod(
-            delegate_class as *mut _,
-            sel!(webView:didFailNavigation:withError:),
-            std::mem::transmute::<
-                extern "C-unwind" fn(
-                    *mut AnyObject,
-                    Sel,
-                    *mut AnyObject,
-                    *mut AnyObject,
-                    *mut AnyObject,
-                ),
-                unsafe extern "C-unwind" fn(),
-            >(did_fail),
-            types.as_ptr(),
-        );
+		// Inject methods
+		let types = c"v@:@@@";
+		objc2::ffi::class_addMethod(
+			delegate_class as *mut _,
+			sel!(webView:didFailProvisionalNavigation:withError:),
+			std::mem::transmute::<
+				extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
+				unsafe extern "C-unwind" fn(),
+			>(did_fail_provisional),
+			types.as_ptr(),
+		);
+		objc2::ffi::class_addMethod(
+			delegate_class as *mut _,
+			sel!(webView:didFailNavigation:withError:),
+			std::mem::transmute::<
+				extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject, *mut AnyObject),
+				unsafe extern "C-unwind" fn(),
+			>(did_fail),
+			types.as_ptr(),
+		);
 
-        // webView:webContentProcessDidTerminate: — fires when the WebContent
-        // XPC process is killed by the OS (memory pressure, GPU crash, watchdog).
-        // Signature: void (self, sel, webview) → "v@:@"
-        let term_types = c"v@:@";
-        objc2::ffi::class_addMethod(
-            delegate_class as *mut _,
-            sel!(webView:webContentProcessDidTerminate:),
-            std::mem::transmute::<
-                extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
-                unsafe extern "C-unwind" fn(),
-            >(did_terminate),
-            term_types.as_ptr(),
-        );
+		// webView:webContentProcessDidTerminate: — fires when the WebContent
+		// XPC process is killed by the OS (memory pressure, GPU crash, watchdog).
+		// Signature: void (self, sel, webview) → "v@:@"
+		let term_types = c"v@:@";
+		objc2::ffi::class_addMethod(
+			delegate_class as *mut _,
+			sel!(webView:webContentProcessDidTerminate:),
+			std::mem::transmute::<
+				extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject),
+				unsafe extern "C-unwind" fn(),
+			>(did_terminate),
+			term_types.as_ptr(),
+		);
 
-        tracing::debug!("Nav-error + termination methods injected");
-        DONE.store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+		tracing::debug!("Nav-error + termination methods injected");
+		DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+	}
 }
 
 /// C callback for `webView:didFailProvisionalNavigation:withError:`.
 /// Fires for DNS failures, timeouts, SSL errors — anything that fails before the
 /// server responds (provisional navigation phase).
 extern "C-unwind" fn did_fail_provisional(
-    _delegate: *mut AnyObject,
-    _sel: Sel,
-    webview: *mut AnyObject,
-    _navigation: *mut AnyObject,
-    error: *mut AnyObject,
+	_delegate: *mut AnyObject,
+	_sel: Sel,
+	webview: *mut AnyObject,
+	_navigation: *mut AnyObject,
+	error: *mut AnyObject,
 ) {
-    fire_error_callback(webview, error);
+	fire_error_callback(webview, error);
 }
 
 /// C callback for `webView:didFailNavigation:withError:`.
 /// Fires for errors that occur after the server has started responding.
 extern "C-unwind" fn did_fail(
-    _delegate: *mut AnyObject,
-    _sel: Sel,
-    webview: *mut AnyObject,
-    _navigation: *mut AnyObject,
-    error: *mut AnyObject,
+	_delegate: *mut AnyObject,
+	_sel: Sel,
+	webview: *mut AnyObject,
+	_navigation: *mut AnyObject,
+	error: *mut AnyObject,
 ) {
-    fire_error_callback(webview, error);
+	fire_error_callback(webview, error);
 }
 
 /// C callback for `webView:webContentProcessDidTerminate:`.
 /// Fires when the WebContent XPC process is killed (memory pressure, GPU crash,
 /// watchdog timeout). During WebRTC video calls this is the most common crash vector.
 extern "C-unwind" fn did_terminate(_delegate: *mut AnyObject, _sel: Sel, webview: *mut AnyObject) {
-    if webview.is_null() {
-        return;
-    }
-    let ptr = webview as usize;
-    tracing::warn!(ptr, "WebContent process terminated — will attempt reload");
-    if let Some(cb) = termination_registry().lock().unwrap().get(&ptr) {
-        cb();
-    }
+	if webview.is_null() {
+		return;
+	}
+	let ptr = webview as usize;
+	tracing::warn!(ptr, "WebContent process terminated — will attempt reload");
+	if let Some(cb) = termination_registry().lock().unwrap().get(&ptr) {
+		cb();
+	}
 }
 
 fn fire_error_callback(webview: *mut AnyObject, error: *mut AnyObject) {
-    if webview.is_null() || error.is_null() {
-        return;
-    }
+	if webview.is_null() || error.is_null() {
+		return;
+	}
 
-    // Extract error code (NSInteger) and URL string from NSError
-    let code: c_long = unsafe { msg_send![&*error, code] };
+	// Extract error code (NSInteger) and URL string from NSError
+	let code: c_long = unsafe { msg_send![&*error, code] };
 
-    // NSURLErrorCancelled (-999): fires routinely when WKWebView cancels in-flight
-    // requests during back/forward swipe gestures or rapid navigation. Not a real error.
-    // WebKitErrorPlugInWillHandleLoad (204): standalone audio/video documents — the
-    // media player took over the load and WebKit cancels the frame load as a formality.
-    // WebKitErrorFrameLoadInterruptedByPolicyChange (102): the navigation became a
-    // download (download_patch / wry policy); the tab keeps its current page.
-    // Noise codes (-999 cancelled / 204 media takeover / 102 became download)
-    // are not real failures, but they are still forwarded to the app: when the
-    // FIRST load of a fresh hidden tab dies this way, dropping the event here
-    // strands pending_swap forever (no PageLoadStarted will ever come). The
-    // NavigationError handler decides per-tab whether to act on them.
-    if code == -999 || code == 204 || code == 102 {
-        tracing::debug!(code, ?webview, "Forwarding non-error nav failure to app");
-    }
+	// NSURLErrorCancelled (-999): fires routinely when WKWebView cancels in-flight
+	// requests during back/forward swipe gestures or rapid navigation. Not a real error.
+	// WebKitErrorPlugInWillHandleLoad (204): standalone audio/video documents — the
+	// media player took over the load and WebKit cancels the frame load as a formality.
+	// WebKitErrorFrameLoadInterruptedByPolicyChange (102): the navigation became a
+	// download (download_patch / wry policy); the tab keeps its current page.
+	// Noise codes (-999 cancelled / 204 media takeover / 102 became download)
+	// are not real failures, but they are still forwarded to the app: when the
+	// FIRST load of a fresh hidden tab dies this way, dropping the event here
+	// strands pending_swap forever (no PageLoadStarted will ever come). The
+	// NavigationError handler decides per-tab whether to act on them.
+	if code == -999 || code == 204 || code == 102 {
+		tracing::debug!(code, ?webview, "Forwarding non-error nav failure to app");
+	}
 
-    tracing::debug!(code, ?webview, "Nav-error callback fired");
+	tracing::debug!(code, ?webview, "Nav-error callback fired");
 
-    // Get the failing URL from NSError.userInfo[NSURLErrorFailingURLStringErrorKey]
-    // Falls back to empty string — the Rust side already knows the URL from NavigateTo.
-    let url_str: String = unsafe {
-        let user_info: *mut AnyObject = msg_send![&*error, userInfo];
-        if user_info.is_null() {
-            String::new()
-        } else {
-            let key: *mut AnyObject = msg_send![
-                objc2::class!(NSString),
-                stringWithUTF8String: c"NSErrorFailingURLStringKey".as_ptr()
-            ];
-            let val: *mut AnyObject = msg_send![&*user_info, objectForKey: key];
-            if val.is_null() {
-                String::new()
-            } else {
-                let bytes: *const u8 = msg_send![&*val, UTF8String];
-                if bytes.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(bytes.cast()).to_string_lossy().into_owned()
-                }
-            }
-        }
-    };
+	// Get the failing URL from NSError.userInfo[NSURLErrorFailingURLStringErrorKey]
+	// Falls back to empty string — the Rust side already knows the URL from NavigateTo.
+	let url_str: String = unsafe {
+		let user_info: *mut AnyObject = msg_send![&*error, userInfo];
+		if user_info.is_null() {
+			String::new()
+		} else {
+			let key: *mut AnyObject = msg_send![
+				objc2::class!(NSString),
+				stringWithUTF8String: c"NSErrorFailingURLStringKey".as_ptr()
+			];
+			let val: *mut AnyObject = msg_send![&*user_info, objectForKey: key];
+			if val.is_null() {
+				String::new()
+			} else {
+				let bytes: *const u8 = msg_send![&*val, UTF8String];
+				if bytes.is_null() {
+					String::new()
+				} else {
+					CStr::from_ptr(bytes.cast()).to_string_lossy().into_owned()
+				}
+			}
+		}
+	};
 
-    let ptr = webview as usize;
-    if let Ok(guard) = registry().lock() {
-        if let Some(cb) = guard.get(&ptr) {
-            cb(url_str, code as i64);
-        }
-    }
+	let ptr = webview as usize;
+	if let Ok(guard) = registry().lock() {
+		if let Some(cb) = guard.get(&ptr) {
+			cb(url_str, code as i64);
+		}
+	}
 }

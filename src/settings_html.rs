@@ -2,7 +2,7 @@
 /// Frosted-glass panel with form controls for all Config fields.
 /// IPC messages: settings_close, settings_update.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

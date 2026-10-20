@@ -22,7 +22,7 @@
 //!   window.__setShortcuts(data)
 
 pub fn html(keybindings_json: &str) -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -2462,20 +2462,20 @@ pub fn html(keybindings_json: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn native_search_rejects_stale_answers_and_shows_errors() {
-        let source = format!(
-            "{}\ncheckSearch({});",
-            include_str!("mail_search_test.js"),
-            serde_json::to_string(&super::html("null")).unwrap(),
-        );
-        let Some(out) = crate::a2ui_js::run_node("mail_search", &source, &[]) else {
-            return;
-        };
-        assert!(
-            out.status.success(),
-            "mail search failed:\n{}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-    }
+	#[test]
+	fn native_search_rejects_stale_answers_and_shows_errors() {
+		let source = format!(
+			"{}\ncheckSearch({});",
+			include_str!("mail_search_test.js"),
+			serde_json::to_string(&super::html("null")).unwrap(),
+		);
+		let Some(out) = crate::a2ui_js::run_node("mail_search", &source, &[]) else {
+			return;
+		};
+		assert!(
+			out.status.success(),
+			"mail search failed:\n{}",
+			String::from_utf8_lossy(&out.stderr),
+		);
+	}
 }

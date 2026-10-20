@@ -358,27 +358,20 @@ new Promise(function(__resolve){
 
 /// Build a script from the harness. `sel_json` must already be a JSON string
 /// literal (or `null`); `expect_json` a `{kind,value}` literal or `null`.
-fn build(
-    sel_json: &str,
-    gate: &str,
-    stability: bool,
-    occlusion: bool,
-    expect_json: &str,
-    act: &str,
-) -> String {
-    HARNESS
-        .replace("__SEL__", sel_json)
-        .replace("__RETRY_MS__", &RETRY_MS.to_string())
-        .replace("__PRE__", EFFECT_PRE_JS)
-        .replace("__EFFECT_MS__", &EFFECT_MS.to_string())
-        .replace("__SETTLE_MS__", &SETTLE_MS.to_string())
-        .replace("__KEY_WAIT_MS__", &KEY_WAIT_MS.to_string())
-        .replace("__EXPECT__", expect_json)
-        .replace("__GATE__", gate)
-        .replace("__STABILITY__", if stability { "true" } else { "false" })
-        .replace("__OCCLUSION__", if occlusion { "true" } else { "false" })
-        .replace("__EFFECT__", "true")
-        .replace("__ACT__", act)
+fn build(sel_json: &str, gate: &str, stability: bool, occlusion: bool, expect_json: &str, act: &str) -> String {
+	HARNESS
+		.replace("__SEL__", sel_json)
+		.replace("__RETRY_MS__", &RETRY_MS.to_string())
+		.replace("__PRE__", EFFECT_PRE_JS)
+		.replace("__EFFECT_MS__", &EFFECT_MS.to_string())
+		.replace("__SETTLE_MS__", &SETTLE_MS.to_string())
+		.replace("__KEY_WAIT_MS__", &KEY_WAIT_MS.to_string())
+		.replace("__EXPECT__", expect_json)
+		.replace("__GATE__", gate)
+		.replace("__STABILITY__", if stability { "true" } else { "false" })
+		.replace("__OCCLUSION__", if occlusion { "true" } else { "false" })
+		.replace("__EFFECT__", "true")
+		.replace("__ACT__", act)
 }
 
 /// Translate the `expect` DSL into a `{kind,value}` JSON literal (or `null`).
@@ -386,25 +379,25 @@ fn build(
 /// `url:…`, `selector:…`/`css:…`, `selector_gone:…`. A value containing a
 /// colon but no known prefix (e.g. a URL) is treated as plain text.
 pub fn expect_json(expect: Option<&str>) -> String {
-    let Some(raw) = expect.map(str::trim).filter(|s| !s.is_empty()) else {
-        return "null".into();
-    };
-    let (kind, value) = match raw.split_once(':') {
-        Some((k, v)) => match k.trim() {
-            "text" => ("text", v.trim()),
-            "gone" | "text_gone" => ("text_gone", v.trim()),
-            "url" => ("url", v.trim()),
-            "selector" | "css" => ("selector", v.trim()),
-            "selector_gone" | "gone_selector" => ("selector_gone", v.trim()),
-            _ => ("text", raw),
-        },
-        None => ("text", raw),
-    };
-    format!("{{\"kind\":{},\"value\":{}}}", json(kind), json(value))
+	let Some(raw) = expect.map(str::trim).filter(|s| !s.is_empty()) else {
+		return "null".into();
+	};
+	let (kind, value) = match raw.split_once(':') {
+		Some((k, v)) => match k.trim() {
+			"text" => ("text", v.trim()),
+			"gone" | "text_gone" => ("text_gone", v.trim()),
+			"url" => ("url", v.trim()),
+			"selector" | "css" => ("selector", v.trim()),
+			"selector_gone" | "gone_selector" => ("selector_gone", v.trim()),
+			_ => ("text", raw),
+		},
+		None => ("text", raw),
+	};
+	format!("{{\"kind\":{},\"value\":{}}}", json(kind), json(value))
 }
 
 fn json(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+	serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
 const GATE_ENABLED: &str = "if (el.disabled) { lastErr = 'disabled'; return retry(); }";
@@ -418,27 +411,27 @@ const GATE_TYPE: &str = "if (!(el.isContentEditable || el.tagName === 'INPUT' ||
 /// the effect summary ("clicked button 'Request access' → …").
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct Target {
-    pub x: f64,
-    pub y: f64,
-    #[serde(default)]
-    pub desc: String,
+	pub x: f64,
+	pub y: f64,
+	#[serde(default)]
+	pub desc: String,
 }
 
 /// Parse a harness result: `Ok(Some(target))` when the script located the
 /// element, `Ok(None)` when it finished the action itself (`'true'`, used for
 /// file inputs), `Err(status)` for the failure statuses.
 pub fn parse_target(val: &str) -> Result<Option<Target>, String> {
-    let inner: String = serde_json::from_str(val).unwrap_or_else(|_| val.to_string());
-    let s = inner.trim();
-    if s == "true" {
-        return Ok(None);
-    }
-    if s.starts_with('{') {
-        return serde_json::from_str::<Target>(s)
-            .map(Some)
-            .map_err(|e| format!("bad target payload: {e}"));
-    }
-    Err(s.to_string())
+	let inner: String = serde_json::from_str(val).unwrap_or_else(|_| val.to_string());
+	let s = inner.trim();
+	if s == "true" {
+		return Ok(None);
+	}
+	if s.starts_with('{') {
+		return serde_json::from_str::<Target>(s)
+			.map(Some)
+			.map_err(|e| format!("bad target payload: {e}"));
+	}
+	Err(s.to_string())
 }
 
 const LOCATE_ACT: &str = r#"
@@ -451,10 +444,10 @@ const LOCATE_ACT: &str = r#"
 /// path opens the armed chooser); everything else is returned as coordinates
 /// for a trusted native click.
 pub fn click_locate_script(selector: &str) -> String {
-    let act = format!(
+	let act = format!(
         "if (el.tagName === 'INPUT' && el.type === 'file') {{ try {{ el.click(); }} catch (e) {{}} return __resolve('true'); }}{LOCATE_ACT}"
     );
-    build(&json(selector), GATE_ENABLED, true, true, "null", &act)
+	build(&json(selector), GATE_ENABLED, true, true, "null", &act)
 }
 
 /// Locate a hover target (no occlusion gate — hovering the overlay is fine),
@@ -465,7 +458,7 @@ pub fn click_locate_script(selector: &str) -> String {
 /// gate on isTrusted); the native move that follows still upgrades a visible
 /// tab to a trusted hover.
 pub fn hover_locate_script(selector: &str) -> String {
-    let act = r#"
+	let act = r#"
     var o = { bubbles: true, cancelable: true, composed: true, view: W, clientX: x, clientY: y };
     var p = Object.assign({}, o, { pointerId: 1, pointerType: 'mouse', isPrimary: true });
     fire(el, new PointerEvent('pointerover', p));
@@ -478,35 +471,35 @@ pub fn hover_locate_script(selector: &str) -> String {
     var pt = top(el, x, y);
     __resolve(JSON.stringify({ x: pt.x, y: pt.y, desc: el.tagName.toLowerCase() + (d ? ' "' + d + '"' : '') }));
 "#;
-    build(&json(selector), "", true, false, "null", act)
+	build(&json(selector), "", true, false, "null", act)
 }
 
 /// Focus the key target (or keep the current focus when `selector` is None)
 /// and arm effect capture; the key itself is delivered natively.
 pub fn key_focus_script(selector: Option<&str>) -> String {
-    let act = r#"
+	let act = r#"
     if (SEL !== null && el.focus) try { el.focus(); } catch (e) {}
     var d = (el.getAttribute('aria-label') || el.placeholder || el.name || el.innerText || '').trim().replace(/\s+/g, ' ').substring(0, 40);
     var p = top(el, x, y);
     __resolve(JSON.stringify({ x: p.x, y: p.y, desc: el.tagName.toLowerCase() + (d ? ' "' + d + '"' : '') }));
 "#;
-    let sel_json = match selector {
-        Some(s) => json(s),
-        None => "null".into(),
-    };
-    build(&sel_json, "", false, false, "null", act)
+	let sel_json = match selector {
+		Some(s) => json(s),
+		None => "null".into(),
+	};
+	build(&sel_json, "", false, false, "null", act)
 }
 
 /// The dismiss control an overlay scan located.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct DismissTarget {
-    /// Present when a safe control (reject/close) was found and should be clicked.
-    pub x: Option<f64>,
-    pub y: Option<f64>,
-    #[serde(default)]
-    pub desc: String,
-    /// "reject" | "close" | "accept-only" | "none".
-    pub kind: String,
+	/// Present when a safe control (reject/close) was found and should be clicked.
+	pub x: Option<f64>,
+	pub y: Option<f64>,
+	#[serde(default)]
+	pub desc: String,
+	/// "reject" | "close" | "accept-only" | "none".
+	pub kind: String,
 }
 
 /// Scan the page (main document, open shadow roots, same-origin iframes) for a
@@ -516,13 +509,13 @@ pub struct DismissTarget {
 /// user's decision — it's only reported as `accept-only` so the agent can
 /// choose. This clears the single most common blocker on real sites.
 pub fn dismiss_overlay_script() -> String {
-    // `return (` on the same line — DISMISS_BODY starts with a newline, so a bare
-    // `return` would trip ASI into `return;` and drop the Promise.
-    format!(
-        "(function(){{{pre}\nreturn ({body});}})()",
-        pre = EFFECT_PRE_JS.replace("__KEY_WAIT_MS__", &KEY_WAIT_MS.to_string()),
-        body = DISMISS_BODY
-    )
+	// `return (` on the same line — DISMISS_BODY starts with a newline, so a bare
+	// `return` would trip ASI into `return;` and drop the Promise.
+	format!(
+		"(function(){{{pre}\nreturn ({body});}})()",
+		pre = EFFECT_PRE_JS.replace("__KEY_WAIT_MS__", &KEY_WAIT_MS.to_string()),
+		body = DISMISS_BODY
+	)
 }
 
 const DISMISS_BODY: &str = r##"
@@ -591,9 +584,8 @@ new Promise(function(__resolve){
 
 /// Parse the overlay scan result.
 pub fn parse_dismiss(val: &str) -> Result<DismissTarget, String> {
-    let inner: String = serde_json::from_str(val).unwrap_or_else(|_| val.to_string());
-    serde_json::from_str::<DismissTarget>(inner.trim())
-        .map_err(|e| format!("bad dismiss payload: {e}"))
+	let inner: String = serde_json::from_str(val).unwrap_or_else(|_| val.to_string());
+	serde_json::from_str::<DismissTarget>(inner.trim()).map_err(|e| format!("bad dismiss payload: {e}"))
 }
 
 /// Standalone effect+expectation probe for the native-input path (click / hover
@@ -603,54 +595,54 @@ pub fn parse_dismiss(val: &str) -> Result<DismissTarget, String> {
 /// `browser_type` left in `__octoweb_verify`. With no expectation it waits
 /// `EFFECT_MS`; with one it polls up to `SETTLE_MS` for it to hold.
 pub fn effect_script(expect: Option<&str>) -> String {
-    let exp = expect_json(expect);
-    format!(
+	let exp = expect_json(expect);
+	format!(
         "new Promise(function(r){{ var p = window.__octoweb_pre;          if (!p) return r(JSON.stringify({{ diff: {{}}, met: {no_exp} }}));          p.settle({exp}, {EFFECT_MS}, {SETTLE_MS}).then(function(x){{            var f = window.__octoweb_verify;            if (f) {{ try {{ delete window.__octoweb_verify; }} catch (e) {{}} try {{ x.val = f(); }} catch (e) {{ x.val = {{ ok: false }}; }} }}            r(JSON.stringify(x)); }}); }})",
         no_exp = if exp == "null" { "true" } else { "false" },
     )
 }
 
 pub fn type_script(selector: &str, text: &str, expect: Option<&str>, keys_only: bool) -> String {
-    // Two paths, both replace (don't append) per the tool contract:
-    //
-    //  - contenteditable → a fallback chain, because no single primitive works
-    //    across editors AND background tabs:
-    //      1. Synthetic `paste` (DataTransfer text/plain, plus text/html with
-    //         one <p> per line when there are several). Model-backed editors
-    //         (Lexical, DraftJS, ProseMirror, Medium) keep their own model and
-    //         have paste handlers that route through it, so the model updates
-    //         and any submit button gated on it enables. Focus-independent, so
-    //         it works on background tabs too. Medium puts plain-text lines
-    //         into one block; the HTML gives it a title and real paragraphs.
-    //      2. If the paste didn't land (plain contenteditable has no paste
-    //         handler), WebKit's editing commands — one block per line, so
-    //         paragraphs survive instead of collapsing into one.
-    //      3. If neither landed, resolve `'keys'`: the target is focused and
-    //         cleared, and Rust types the text with trusted native keystrokes
-    //         (native_input::type_text) — the one input every editor accepts.
-    //    "Landed" is judged by the editor's own DOM, not a literal substring:
-    //    rich editors split lines into blocks (textContent loses the `\n`),
-    //    swap spaces for nbsp and re-typeset quotes, so a literal match on the
-    //    pasted text fails on exactly the editors the paste path exists for —
-    //    and a false "failed" would double-insert via the next step.
-    //    Nothing is deleted ahead of the paste: deleting the whole target also
-    //    deleted the block structure the editor's model hangs on (Medium's
-    //    title and body grafs), and the text that followed landed as loose
-    //    DIVs the editor did not recognise. An empty target (placeholders
-    //    only) gets a caret in its first block; a filled one gets its content
-    //    selected, which the editor's paste replaces. Only the editing-command
-    //    fallback deletes — that path is for editors with no model to break.
-    //
-    //  - <input>/<textarea> → set value via the prototype setter (bypasses
-    //    React's controlled-input cache) and fire input+change.
-    //
-    // `keys_only` skips the paste/command attempts: aim the same way, then
-    // `'keys'` — keystrokes typed over a selection replace it natively.
-    //
-    // Value setter must come from the element's own interface AND window
-    // (iframe elements have their own constructors); WebKit brand-checks
-    // prototype setters, so HTMLInputElement's setter throws on <textarea>.
-    let act = r#"
+	// Two paths, both replace (don't append) per the tool contract:
+	//
+	//  - contenteditable → a fallback chain, because no single primitive works
+	//    across editors AND background tabs:
+	//      1. Synthetic `paste` (DataTransfer text/plain, plus text/html with
+	//         one <p> per line when there are several). Model-backed editors
+	//         (Lexical, DraftJS, ProseMirror, Medium) keep their own model and
+	//         have paste handlers that route through it, so the model updates
+	//         and any submit button gated on it enables. Focus-independent, so
+	//         it works on background tabs too. Medium puts plain-text lines
+	//         into one block; the HTML gives it a title and real paragraphs.
+	//      2. If the paste didn't land (plain contenteditable has no paste
+	//         handler), WebKit's editing commands — one block per line, so
+	//         paragraphs survive instead of collapsing into one.
+	//      3. If neither landed, resolve `'keys'`: the target is focused and
+	//         cleared, and Rust types the text with trusted native keystrokes
+	//         (native_input::type_text) — the one input every editor accepts.
+	//    "Landed" is judged by the editor's own DOM, not a literal substring:
+	//    rich editors split lines into blocks (textContent loses the `\n`),
+	//    swap spaces for nbsp and re-typeset quotes, so a literal match on the
+	//    pasted text fails on exactly the editors the paste path exists for —
+	//    and a false "failed" would double-insert via the next step.
+	//    Nothing is deleted ahead of the paste: deleting the whole target also
+	//    deleted the block structure the editor's model hangs on (Medium's
+	//    title and body grafs), and the text that followed landed as loose
+	//    DIVs the editor did not recognise. An empty target (placeholders
+	//    only) gets a caret in its first block; a filled one gets its content
+	//    selected, which the editor's paste replaces. Only the editing-command
+	//    fallback deletes — that path is for editors with no model to break.
+	//
+	//  - <input>/<textarea> → set value via the prototype setter (bypasses
+	//    React's controlled-input cache) and fire input+change.
+	//
+	// `keys_only` skips the paste/command attempts: aim the same way, then
+	// `'keys'` — keystrokes typed over a selection replace it natively.
+	//
+	// Value setter must come from the element's own interface AND window
+	// (iframe elements have their own constructors); WebKit brand-checks
+	// prototype setters, so HTMLInputElement's setter throws on <textarea>.
+	let act = r#"
     var TXT = __TXT__, KEYS_ONLY = __KEYS_ONLY__;
     // One keyup per character Rust is about to send — `\r` is the only one it
     // drops. Absolute target, not a reset, so a stray keyup cannot uncount it.
@@ -838,19 +830,12 @@ pub fn type_script(selector: &str, text: &str, expect: Option<&str>, keys_only: 
 "#
     .replace("__TXT__", &json(text))
     .replace("__KEYS_ONLY__", if keys_only { "true" } else { "false" });
-    build(
-        &json(selector),
-        GATE_TYPE,
-        false,
-        false,
-        &expect_json(expect),
-        &act,
-    )
+	build(&json(selector), GATE_TYPE, false, false, &expect_json(expect), &act)
 }
 
 pub fn select_option_script(selector: &str, value: &str, expect: Option<&str>) -> String {
-    // Matches by option value first, visible label second.
-    let act = r#"
+	// Matches by option value first, visible label second.
+	let act = r#"
     if (el.tagName !== 'SELECT') return __done('not-select');
     var VAL = __VAL__;
     var opt = Array.prototype.find.call(el.options, function (o) { return o.value === VAL; })
@@ -861,22 +846,15 @@ pub fn select_option_script(selector: &str, value: &str, expect: Option<&str>) -
     fire(el, new Event('change', { bubbles: true }));
     __done('true');
 "#
-    .replace("__VAL__", &json(value));
-    build(
-        &json(selector),
-        GATE_ENABLED,
-        false,
-        false,
-        &expect_json(expect),
-        &act,
-    )
+	.replace("__VAL__", &json(value));
+	build(&json(selector), GATE_ENABLED, false, false, &expect_json(expect), &act)
 }
 
 /// Scroll the nearest scrollable container of `selector` (or the element
 /// itself when it scrolls). Used when `browser_scroll` gets a selector;
 /// window scrolling stays on the cheap non-callback path in main.rs.
 pub fn scroll_script(selector: &str, direction: &str, pixels: Option<i32>) -> String {
-    let act = r#"
+	let act = r#"
     var DIR = __DIR__, PX = __PX__;
     function container(n) {
       for (var c = n; c && c !== n.ownerDocument.body && c !== n.ownerDocument.documentElement; c = c.parentElement) {
@@ -898,124 +876,114 @@ pub fn scroll_script(selector: &str, direction: &str, pixels: Option<i32>) -> St
     // not free text. Element-scoped scrolls therefore report no position.
     __resolve('true');
 "#
-    .replace("__DIR__", &json(direction))
-    .replace(
-        "__PX__",
-        &pixels.map(|p| p.to_string()).unwrap_or_else(|| "null".into()),
-    );
-    build(&json(selector), "", false, false, "null", &act)
+	.replace("__DIR__", &json(direction))
+	.replace(
+		"__PX__",
+		&pixels.map(|p| p.to_string()).unwrap_or_else(|| "null".into()),
+	);
+	build(&json(selector), "", false, false, "null", &act)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn parse_target_variants() {
-        assert_eq!(parse_target("\"true\""), Ok(None));
-        let t = parse_target(
-            "\"{\\\"x\\\":10.5,\\\"y\\\":20,\\\"desc\\\":\\\"button \\\\\\\"Go\\\\\\\"\\\"}\"",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!((t.x, t.y), (10.5, 20.0));
-        assert_eq!(t.desc, "button \"Go\"");
-        assert_eq!(
-            parse_target("\"occluded:div#overlay\""),
-            Err("occluded:div#overlay".into())
-        );
-        assert_eq!(parse_target("\"stale\""), Err("stale".into()));
-    }
+	#[test]
+	fn parse_target_variants() {
+		assert_eq!(parse_target("\"true\""), Ok(None));
+		let t = parse_target("\"{\\\"x\\\":10.5,\\\"y\\\":20,\\\"desc\\\":\\\"button \\\\\\\"Go\\\\\\\"\\\"}\"")
+			.unwrap()
+			.unwrap();
+		assert_eq!((t.x, t.y), (10.5, 20.0));
+		assert_eq!(t.desc, "button \"Go\"");
+		assert_eq!(
+			parse_target("\"occluded:div#overlay\""),
+			Err("occluded:div#overlay".into())
+		);
+		assert_eq!(parse_target("\"stale\""), Err("stale".into()));
+	}
 
-    #[test]
-    fn scripts_are_bare_expressions() {
-        // async_eval wraps every script as `return (<expr>);` — a trailing
-        // semicolon or leftover placeholder would be a SyntaxError at runtime.
-        for s in [
-            click_locate_script("@1"),
-            hover_locate_script("#a"),
-            key_focus_script(None),
-            key_focus_script(Some("@2")),
-            type_script("#t", "he\"llo", None, false),
-            type_script("#t", "x", Some("text:Saved"), false),
-            type_script("#t", "a\nb", None, true),
-            select_option_script("#s", "v", None),
-            scroll_script("#c", "down", Some(10)),
-            effect_script(None),
-            effect_script(Some("url:/next")),
-            dismiss_overlay_script(),
-        ] {
-            assert!(!s.trim_end().ends_with(';'), "trailing semicolon in {s}");
-            // Placeholders are `__UPPER__`; every runtime name in these scripts
-            // (__resolve, __done, __vfy, __octoweb_pre) is lowercase after the
-            // underscores. Scanning beats a list nobody remembers to extend.
-            assert!(
-                !s.match_indices("__")
-                    .any(|(i, _)| s[i + 2..].starts_with(|c: char| c.is_ascii_uppercase())),
-                "unreplaced placeholder in {s}"
-            );
-        }
-    }
+	#[test]
+	fn scripts_are_bare_expressions() {
+		// async_eval wraps every script as `return (<expr>);` — a trailing
+		// semicolon or leftover placeholder would be a SyntaxError at runtime.
+		for s in [
+			click_locate_script("@1"),
+			hover_locate_script("#a"),
+			key_focus_script(None),
+			key_focus_script(Some("@2")),
+			type_script("#t", "he\"llo", None, false),
+			type_script("#t", "x", Some("text:Saved"), false),
+			type_script("#t", "a\nb", None, true),
+			select_option_script("#s", "v", None),
+			scroll_script("#c", "down", Some(10)),
+			effect_script(None),
+			effect_script(Some("url:/next")),
+			dismiss_overlay_script(),
+		] {
+			assert!(!s.trim_end().ends_with(';'), "trailing semicolon in {s}");
+			// Placeholders are `__UPPER__`; every runtime name in these scripts
+			// (__resolve, __done, __vfy, __octoweb_pre) is lowercase after the
+			// underscores. Scanning beats a list nobody remembers to extend.
+			assert!(
+				!s.match_indices("__")
+					.any(|(i, _)| s[i + 2..].starts_with(|c: char| c.is_ascii_uppercase())),
+				"unreplaced placeholder in {s}"
+			);
+		}
+	}
 
-    #[test]
-    fn expect_dsl_maps_kinds() {
-        assert_eq!(expect_json(None), "null");
-        assert_eq!(expect_json(Some("")), "null");
-        assert_eq!(
-            expect_json(Some("Request sent")),
-            "{\"kind\":\"text\",\"value\":\"Request sent\"}"
-        );
-        assert_eq!(
-            expect_json(Some("text:hi")),
-            "{\"kind\":\"text\",\"value\":\"hi\"}"
-        );
-        assert_eq!(
-            expect_json(Some("gone:Loading")),
-            "{\"kind\":\"text_gone\",\"value\":\"Loading\"}"
-        );
-        assert_eq!(
-            expect_json(Some("url:/dashboard")),
-            "{\"kind\":\"url\",\"value\":\"/dashboard\"}"
-        );
-        assert_eq!(
-            expect_json(Some("selector:.ok")),
-            "{\"kind\":\"selector\",\"value\":\".ok\"}"
-        );
-        assert_eq!(
-            expect_json(Some("selector_gone:.spinner")),
-            "{\"kind\":\"selector_gone\",\"value\":\".spinner\"}"
-        );
-        // Unknown prefix (a URL value) → treated as plain text, kept whole.
-        assert_eq!(
-            expect_json(Some("https://x.test/a")),
-            "{\"kind\":\"text\",\"value\":\"https://x.test/a\"}"
-        );
-    }
+	#[test]
+	fn expect_dsl_maps_kinds() {
+		assert_eq!(expect_json(None), "null");
+		assert_eq!(expect_json(Some("")), "null");
+		assert_eq!(
+			expect_json(Some("Request sent")),
+			"{\"kind\":\"text\",\"value\":\"Request sent\"}"
+		);
+		assert_eq!(expect_json(Some("text:hi")), "{\"kind\":\"text\",\"value\":\"hi\"}");
+		assert_eq!(
+			expect_json(Some("gone:Loading")),
+			"{\"kind\":\"text_gone\",\"value\":\"Loading\"}"
+		);
+		assert_eq!(
+			expect_json(Some("url:/dashboard")),
+			"{\"kind\":\"url\",\"value\":\"/dashboard\"}"
+		);
+		assert_eq!(
+			expect_json(Some("selector:.ok")),
+			"{\"kind\":\"selector\",\"value\":\".ok\"}"
+		);
+		assert_eq!(
+			expect_json(Some("selector_gone:.spinner")),
+			"{\"kind\":\"selector_gone\",\"value\":\".spinner\"}"
+		);
+		// Unknown prefix (a URL value) → treated as plain text, kept whole.
+		assert_eq!(
+			expect_json(Some("https://x.test/a")),
+			"{\"kind\":\"text\",\"value\":\"https://x.test/a\"}"
+		);
+	}
 
-    #[test]
-    fn parse_dismiss_variants() {
-        let r = parse_dismiss("\"{\\\"x\\\":12,\\\"y\\\":34,\\\"desc\\\":\\\"Reject all\\\",\\\"kind\\\":\\\"reject\\\"}\"").unwrap();
-        assert_eq!(
-            (r.x, r.y, r.kind.as_str()),
-            (Some(12.0), Some(34.0), "reject")
-        );
-        let n = parse_dismiss("\"{\\\"kind\\\":\\\"none\\\"}\"").unwrap();
-        assert_eq!(n.kind, "none");
-        assert!(n.x.is_none());
-        let a =
-            parse_dismiss("\"{\\\"kind\\\":\\\"accept-only\\\",\\\"desc\\\":\\\"Accept all\\\"}\"")
-                .unwrap();
-        assert_eq!(
-            (a.kind.as_str(), a.desc.as_str()),
-            ("accept-only", "Accept all")
-        );
-    }
+	#[test]
+	fn parse_dismiss_variants() {
+		let r = parse_dismiss(
+			"\"{\\\"x\\\":12,\\\"y\\\":34,\\\"desc\\\":\\\"Reject all\\\",\\\"kind\\\":\\\"reject\\\"}\"",
+		)
+		.unwrap();
+		assert_eq!((r.x, r.y, r.kind.as_str()), (Some(12.0), Some(34.0), "reject"));
+		let n = parse_dismiss("\"{\\\"kind\\\":\\\"none\\\"}\"").unwrap();
+		assert_eq!(n.kind, "none");
+		assert!(n.x.is_none());
+		let a = parse_dismiss("\"{\\\"kind\\\":\\\"accept-only\\\",\\\"desc\\\":\\\"Accept all\\\"}\"").unwrap();
+		assert_eq!((a.kind.as_str(), a.desc.as_str()), ("accept-only", "Accept all"));
+	}
 
-    #[test]
-    fn selector_is_json_escaped() {
-        let s = click_locate_script("a[href=\"x\"]");
-        assert!(s.contains("var SEL = \"a[href=\\\"x\\\"]\";"));
-        let k = key_focus_script(None);
-        assert!(k.contains("var SEL = null;"));
-    }
+	#[test]
+	fn selector_is_json_escaped() {
+		let s = click_locate_script("a[href=\"x\"]");
+		assert!(s.contains("var SEL = \"a[href=\\\"x\\\"]\";"));
+		let k = key_focus_script(None);
+		assert!(k.contains("var SEL = null;"));
+	}
 }

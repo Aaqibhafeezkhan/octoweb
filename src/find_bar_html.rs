@@ -2,7 +2,7 @@
 /// Tahoe-style pill, positioned top-right, dark/light adaptive.
 /// IPC messages: find_query, find_next, find_prev, find_close.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

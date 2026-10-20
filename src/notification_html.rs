@@ -16,7 +16,7 @@
 ///   { type: "reveal_file", path: string }  — reveal a download in Finder
 ///   { type: "dismiss_notification" }  — user clicked the X button
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

@@ -21,25 +21,25 @@
 /// What an evaluation of [`script`] does to the overlay in the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Toggle a one-shot overlay.
-    Once,
-    /// Open the sticky overlay, taking focus away from a text field.
-    On,
-    /// Bring the sticky overlay back after a page load; a no-op when it is up.
-    Restore,
-    /// Close whatever overlay is open.
-    Off,
+	/// Toggle a one-shot overlay.
+	Once,
+	/// Open the sticky overlay, taking focus away from a text field.
+	On,
+	/// Bring the sticky overlay back after a page load; a no-op when it is up.
+	Restore,
+	/// Close whatever overlay is open.
+	Off,
 }
 
 /// The script for `mode`, ready for `evaluate_script`.
 pub fn script(mode: Mode) -> String {
-    let mode = match mode {
-        Mode::Once => "once",
-        Mode::On => "on",
-        Mode::Restore => "restore",
-        Mode::Off => "off",
-    };
-    format!("{SCRIPT}('{mode}');")
+	let mode = match mode {
+		Mode::Once => "once",
+		Mode::On => "on",
+		Mode::Restore => "restore",
+		Mode::Off => "off",
+	};
+	format!("{SCRIPT}('{mode}');")
 }
 
 const SCRIPT: &str = r#"(function (mode) {

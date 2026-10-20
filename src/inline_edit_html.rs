@@ -3,8 +3,8 @@
 /// Features: prompt history (Ctrl+P/N), reverse search (Ctrl+R), ghost autocomplete (Ctrl+E).
 /// IPC messages: inline_edit_submit, inline_edit_close, inline_edit_resize.
 pub fn html() -> String {
-    let prompt_history_js = crate::prompt_history_js::prompt_history_js();
-    r#"<!DOCTYPE html>
+	let prompt_history_js = crate::prompt_history_js::prompt_history_js();
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

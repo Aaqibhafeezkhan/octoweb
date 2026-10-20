@@ -41,106 +41,104 @@ pub const PARK_X: i32 = -100_000;
 /// `_windowOcclusionDetectionEnabled` (macOS 10.13.4+); a WebKit without it
 /// leaves the tab throttled, as before.
 pub fn keep_rendering(wv: &wry::WebView, on: bool) {
-    use objc2::{msg_send, sel};
-    let wk = wv.webview();
-    unsafe {
-        let available: bool =
-            msg_send![&*wk, respondsToSelector: sel!(_setWindowOcclusionDetectionEnabled:)];
-        if available {
-            let _: () = msg_send![&*wk, _setWindowOcclusionDetectionEnabled: !on];
-        }
-    }
+	use objc2::{msg_send, sel};
+	let wk = wv.webview();
+	unsafe {
+		let available: bool = msg_send![&*wk, respondsToSelector: sel!(_setWindowOcclusionDetectionEnabled:)];
+		if available {
+			let _: () = msg_send![&*wk, _setWindowOcclusionDetectionEnabled: !on];
+		}
+	}
 }
 
 #[derive(Default)]
 pub struct AgentTabs {
-    last_call: HashMap<usize, Instant>,
+	last_call: HashMap<usize, Instant>,
 }
 
 impl AgentTabs {
-    /// Record an MCP call that acts on `tab_id`.
-    pub fn touch(&mut self, tab_id: usize, now: Instant) {
-        self.last_call.insert(tab_id, now);
-    }
+	/// Record an MCP call that acts on `tab_id`.
+	pub fn touch(&mut self, tab_id: usize, now: Instant) {
+		self.last_call.insert(tab_id, now);
+	}
 
-    pub fn forget(&mut self, tab_id: usize) {
-        self.last_call.remove(&tab_id);
-    }
+	pub fn forget(&mut self, tab_id: usize) {
+		self.last_call.remove(&tab_id);
+	}
 
-    /// Should this tab render like a visible page?
-    pub fn is_awake(&self, tab_id: usize, now: Instant) -> bool {
-        self.last_call
-            .get(&tab_id)
-            .is_some_and(|&at| now.duration_since(at) < AWAKE)
-    }
+	/// Should this tab render like a visible page?
+	pub fn is_awake(&self, tab_id: usize, now: Instant) -> bool {
+		self.last_call
+			.get(&tab_id)
+			.is_some_and(|&at| now.duration_since(at) < AWAKE)
+	}
 
-    /// Tabs hibernation must leave alone.
-    pub fn protected(&self, now: Instant) -> HashSet<usize> {
-        self.last_call
-            .iter()
-            .filter(|(_, &at)| now.duration_since(at) < PROTECT)
-            .map(|(&id, _)| id)
-            .collect()
-    }
+	/// Tabs hibernation must leave alone.
+	pub fn protected(&self, now: Instant) -> HashSet<usize> {
+		self.last_call
+			.iter()
+			.filter(|(_, &at)| now.duration_since(at) < PROTECT)
+			.map(|(&id, _)| id)
+			.collect()
+	}
 
-    /// Drop records past [`PROTECT`] and split the rest into tabs to keep
-    /// awake and tabs that have gone back to sleep.
-    pub fn sweep(&mut self, now: Instant) -> (Vec<usize>, Vec<usize>) {
-        self.last_call
-            .retain(|_, at| now.duration_since(*at) < PROTECT);
-        let (awake, asleep): (Vec<_>, Vec<_>) = self
-            .last_call
-            .iter()
-            .partition(|(_, &at)| now.duration_since(at) < AWAKE);
-        (
-            awake.into_iter().map(|(&id, _)| id).collect(),
-            asleep.into_iter().map(|(&id, _)| id).collect(),
-        )
-    }
+	/// Drop records past [`PROTECT`] and split the rest into tabs to keep
+	/// awake and tabs that have gone back to sleep.
+	pub fn sweep(&mut self, now: Instant) -> (Vec<usize>, Vec<usize>) {
+		self.last_call.retain(|_, at| now.duration_since(*at) < PROTECT);
+		let (awake, asleep): (Vec<_>, Vec<_>) = self
+			.last_call
+			.iter()
+			.partition(|(_, &at)| now.duration_since(at) < AWAKE);
+		(
+			awake.into_iter().map(|(&id, _)| id).collect(),
+			asleep.into_iter().map(|(&id, _)| id).collect(),
+		)
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn touched_tab_is_awake_then_protected_then_forgotten() {
-        let t0 = Instant::now();
-        let mut tabs = AgentTabs::default();
-        tabs.touch(7, t0);
-        assert!(tabs.is_awake(7, t0));
-        assert!(tabs.protected(t0).contains(&7));
+	#[test]
+	fn touched_tab_is_awake_then_protected_then_forgotten() {
+		let t0 = Instant::now();
+		let mut tabs = AgentTabs::default();
+		tabs.touch(7, t0);
+		assert!(tabs.is_awake(7, t0));
+		assert!(tabs.protected(t0).contains(&7));
 
-        let later = t0 + AWAKE + Duration::from_secs(1);
-        assert!(!tabs.is_awake(7, later));
-        assert!(tabs.protected(later).contains(&7));
-        assert_eq!(tabs.sweep(later), (vec![], vec![7]));
+		let later = t0 + AWAKE + Duration::from_secs(1);
+		assert!(!tabs.is_awake(7, later));
+		assert!(tabs.protected(later).contains(&7));
+		assert_eq!(tabs.sweep(later), (vec![], vec![7]));
 
-        let gone = t0 + PROTECT + Duration::from_secs(1);
-        assert!(tabs.protected(gone).is_empty());
-        assert_eq!(tabs.sweep(gone), (vec![], vec![]));
-        assert!(!tabs.is_awake(7, t0));
-    }
+		let gone = t0 + PROTECT + Duration::from_secs(1);
+		assert!(tabs.protected(gone).is_empty());
+		assert_eq!(tabs.sweep(gone), (vec![], vec![]));
+		assert!(!tabs.is_awake(7, t0));
+	}
 
-    #[test]
-    fn a_new_call_wakes_a_sleeping_tab() {
-        let t0 = Instant::now();
-        let mut tabs = AgentTabs::default();
-        tabs.touch(3, t0);
-        let later = t0 + AWAKE + Duration::from_secs(5);
-        assert!(!tabs.is_awake(3, later));
-        tabs.touch(3, later);
-        assert!(tabs.is_awake(3, later));
-        assert_eq!(tabs.sweep(later), (vec![3], vec![]));
-    }
+	#[test]
+	fn a_new_call_wakes_a_sleeping_tab() {
+		let t0 = Instant::now();
+		let mut tabs = AgentTabs::default();
+		tabs.touch(3, t0);
+		let later = t0 + AWAKE + Duration::from_secs(5);
+		assert!(!tabs.is_awake(3, later));
+		tabs.touch(3, later);
+		assert!(tabs.is_awake(3, later));
+		assert_eq!(tabs.sweep(later), (vec![3], vec![]));
+	}
 
-    #[test]
-    fn unknown_tabs_are_neither_awake_nor_protected() {
-        let now = Instant::now();
-        let mut tabs = AgentTabs::default();
-        tabs.touch(1, now);
-        tabs.forget(1);
-        assert!(!tabs.is_awake(1, now));
-        assert!(tabs.protected(now).is_empty());
-    }
+	#[test]
+	fn unknown_tabs_are_neither_awake_nor_protected() {
+		let now = Instant::now();
+		let mut tabs = AgentTabs::default();
+		tabs.touch(1, now);
+		tabs.forget(1);
+		assert!(!tabs.is_awake(1, now));
+		assert!(tabs.protected(now).is_empty());
+	}
 }

@@ -1,57 +1,45 @@
 /// Returns the HTML for a custom error page (WKWebView load failure).
 /// The URL and error code are baked directly into the HTML so no JS call is needed after load.
 pub fn html(url: &str, error_code: &str) -> String {
-    let (reason, is_certificate_error) = match error_code {
-        "-1001" => ("The request timed out before the page responded.", false),
-        "-1003" => ("The server for this address could not be found.", false),
-        "-1004" => ("Octoweb could not connect to the server.", false),
-        "-1005" => (
-            "The network connection was lost while loading the page.",
-            false,
-        ),
-        "-1009" => ("Your Mac appears to be offline.", false),
-        "-1100" => (
-            "The address refers to a missing file or a URL Octoweb cannot open.",
-            false,
-        ),
-        "-1200" => (
-            "A secure connection to the server could not be established.",
-            false,
-        ),
-        "-1201" => (
-            "The website’s certificate has expired or is not yet valid.",
-            true,
-        ),
-        "-1202" => ("The website’s certificate is not trusted.", true),
-        "-1203" => ("The website’s certificate has an unknown root.", true),
-        // Not a WebKit code — octoweb's own, for a page whose renderer keeps
-        // dying. See AppEvent::WebContentTerminated.
-        "renderer-crash" => (
-            "This page repeatedly crashed the renderer process. Reload to try again.",
-            false,
-        ),
-        _ => (
-            "The page could not be loaded because of an unknown error.",
-            false,
-        ),
-    };
+	let (reason, is_certificate_error) = match error_code {
+		"-1001" => ("The request timed out before the page responded.", false),
+		"-1003" => ("The server for this address could not be found.", false),
+		"-1004" => ("Octoweb could not connect to the server.", false),
+		"-1005" => ("The network connection was lost while loading the page.", false),
+		"-1009" => ("Your Mac appears to be offline.", false),
+		"-1100" => (
+			"The address refers to a missing file or a URL Octoweb cannot open.",
+			false,
+		),
+		"-1200" => ("A secure connection to the server could not be established.", false),
+		"-1201" => ("The website’s certificate has expired or is not yet valid.", true),
+		"-1202" => ("The website’s certificate is not trusted.", true),
+		"-1203" => ("The website’s certificate has an unknown root.", true),
+		// Not a WebKit code — octoweb's own, for a page whose renderer keeps
+		// dying. See AppEvent::WebContentTerminated.
+		"renderer-crash" => (
+			"This page repeatedly crashed the renderer process. Reload to try again.",
+			false,
+		),
+		_ => ("The page could not be loaded because of an unknown error.", false),
+	};
 
-    let safe_url = html_escape(url);
-    let safe_code = html_escape(error_code);
-    let safe_reason = html_escape(reason);
-    let json_url = serde_json::to_string(url)
-        .unwrap_or_else(|_| "\"\"".to_string())
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026");
-    let back_button = if is_certificate_error {
-        r#"<button class="secondary-btn" id="backBtn" type="button">Go back</button>"#
-    } else {
-        ""
-    };
+	let safe_url = html_escape(url);
+	let safe_code = html_escape(error_code);
+	let safe_reason = html_escape(reason);
+	let json_url = serde_json::to_string(url)
+		.unwrap_or_else(|_| "\"\"".to_string())
+		.replace('<', "\\u003c")
+		.replace('>', "\\u003e")
+		.replace('&', "\\u0026");
+	let back_button = if is_certificate_error {
+		r#"<button class="secondary-btn" id="backBtn" type="button">Go back</button>"#
+	} else {
+		""
+	};
 
-    format!(
-        r#"<!DOCTYPE html>
+	format!(
+		r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -87,15 +75,15 @@ if (backBtn) backBtn.addEventListener('click', function() {{ history.back(); }})
 </script>
 </body>
 </html>"#,
-        css = ERROR_PAGE_CSS,
-        safe_reason = safe_reason,
-        safe_url = safe_url,
-        safe_code = safe_code,
-        json_url = json_url,
-        back_button = back_button,
-    )
-    .replace("/*@@THEME@@*/", crate::theme::CSS)
-    .replace("@@ERROR_SYMBOL@@", crate::icons::SHIELD_ALERT)
+		css = ERROR_PAGE_CSS,
+		safe_reason = safe_reason,
+		safe_url = safe_url,
+		safe_code = safe_code,
+		json_url = json_url,
+		back_button = back_button,
+	)
+	.replace("/*@@THEME@@*/", crate::theme::CSS)
+	.replace("@@ERROR_SYMBOL@@", crate::icons::SHIELD_ALERT)
 }
 
 const ERROR_PAGE_CSS: &str = r#"  * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -211,8 +199,8 @@ const ERROR_PAGE_CSS: &str = r#"  * { box-sizing: border-box; margin: 0; padding
 "#;
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+	s.replace('&', "&amp;")
+		.replace('<', "&lt;")
+		.replace('>', "&gt;")
+		.replace('"', "&quot;")
 }

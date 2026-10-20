@@ -47,40 +47,37 @@ static PENDING: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 ///
 /// Must be called on the main thread before the event loop starts.
 pub fn init(mtm: MainThreadMarker) {
-    let store = match unsafe { WKContentRuleListStore::defaultStore(mtm) } {
-        Some(s) => s,
-        None => {
-            tracing::warn!("WKContentRuleListStore unavailable — content blocking disabled");
-            return;
-        }
-    };
+	let store = match unsafe { WKContentRuleListStore::defaultStore(mtm) } {
+		Some(s) => s,
+		None => {
+			tracing::warn!("WKContentRuleListStore unavailable — content blocking disabled");
+			return;
+		}
+	};
 
-    let identifier = NSString::from_str(RULE_LIST_ID);
+	let identifier = NSString::from_str(RULE_LIST_ID);
 
-    // Try cache first; if not found the completion handler gets a null list
-    // and we fall through to compilation.
-    let lookup_block = block2::RcBlock::new({
-        let store = Retained::clone(&store);
-        let identifier = Retained::clone(&identifier);
-        move |list: *mut WKContentRuleList, _error: *mut objc2_foundation::NSError| {
-            if !list.is_null() {
-                // Cache hit — retain and store immediately.
-                tracing::debug!("content rules: cache hit, applying immediately");
-                store_and_apply(list);
-            } else {
-                // Cache miss — compile from embedded JSON.
-                tracing::debug!("content rules: cache miss, compiling blocklist");
-                compile(&store, &identifier);
-            }
-        }
-    });
+	// Try cache first; if not found the completion handler gets a null list
+	// and we fall through to compilation.
+	let lookup_block = block2::RcBlock::new({
+		let store = Retained::clone(&store);
+		let identifier = Retained::clone(&identifier);
+		move |list: *mut WKContentRuleList, _error: *mut objc2_foundation::NSError| {
+			if !list.is_null() {
+				// Cache hit — retain and store immediately.
+				tracing::debug!("content rules: cache hit, applying immediately");
+				store_and_apply(list);
+			} else {
+				// Cache miss — compile from embedded JSON.
+				tracing::debug!("content rules: cache miss, compiling blocklist");
+				compile(&store, &identifier);
+			}
+		}
+	});
 
-    unsafe {
-        store.lookUpContentRuleListForIdentifier_completionHandler(
-            Some(&identifier),
-            Some(&*lookup_block),
-        );
-    }
+	unsafe {
+		store.lookUpContentRuleListForIdentifier_completionHandler(Some(&identifier), Some(&*lookup_block));
+	}
 }
 
 /// Apply compiled content rules to a newly-created WebView.
@@ -91,66 +88,64 @@ pub fn init(mtm: MainThreadMarker) {
 /// `wv_ptr` is the raw WKWebView pointer cast to usize (from
 /// `objc2::rc::Retained::as_ptr(&wv.webview()) as usize`).
 pub fn apply_to_webview(wv_ptr: usize) {
-    if let Some(&list_ptr) = RULE_LIST_PTR.get() {
-        unsafe { do_apply(wv_ptr, list_ptr) };
-    } else {
-        PENDING.lock().unwrap().push(wv_ptr);
-    }
+	if let Some(&list_ptr) = RULE_LIST_PTR.get() {
+		unsafe { do_apply(wv_ptr, list_ptr) };
+	} else {
+		PENDING.lock().unwrap().push(wv_ptr);
+	}
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn compile(store: &WKContentRuleListStore, identifier: &NSString) {
-    let json = NSString::from_str(BLOCK_LIST_JSON);
-    let compile_block = block2::RcBlock::new(
-        |list: *mut WKContentRuleList, error: *mut objc2_foundation::NSError| {
-            if list.is_null() {
-                let desc: *mut AnyObject = if error.is_null() {
-                    std::ptr::null_mut()
-                } else {
-                    unsafe { msg_send![error, localizedDescription] }
-                };
-                // A single malformed rule rejects the entire list, leaving the
-                // browser with no blocking at all — never let that pass quietly.
-                tracing::error!(
-                    ?desc,
-                    "content rules: compilation FAILED — ad/tracker blocking is DISABLED. \
+	let json = NSString::from_str(BLOCK_LIST_JSON);
+	let compile_block = block2::RcBlock::new(|list: *mut WKContentRuleList, error: *mut objc2_foundation::NSError| {
+		if list.is_null() {
+			let desc: *mut AnyObject = if error.is_null() {
+				std::ptr::null_mut()
+			} else {
+				unsafe { msg_send![error, localizedDescription] }
+			};
+			// A single malformed rule rejects the entire list, leaving the
+			// browser with no blocking at all — never let that pass quietly.
+			tracing::error!(
+				?desc,
+				"content rules: compilation FAILED — ad/tracker blocking is DISABLED. \
                      One bad rule rejects the whole list; fix assets/blocklist.json"
-                );
-                return;
-            }
-            tracing::debug!("content rules: compilation succeeded");
-            store_and_apply(list);
-        },
-    );
+			);
+			return;
+		}
+		tracing::debug!("content rules: compilation succeeded");
+		store_and_apply(list);
+	});
 
-    unsafe {
-        store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
-            Some(identifier),
-            Some(&json),
-            Some(&*compile_block),
-        );
-    }
+	unsafe {
+		store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(
+			Some(identifier),
+			Some(&json),
+			Some(&*compile_block),
+		);
+	}
 }
 
 /// Retain the rule list, store it globally, and apply to all queued WebViews.
 fn store_and_apply(list: *mut WKContentRuleList) {
-    // Retain the rule list so it outlives the completion block.
-    let retained: Retained<WKContentRuleList> =
-        unsafe { Retained::retain(list) }.expect("WKContentRuleList retain failed");
-    let ptr = Retained::as_ptr(&retained) as usize;
-    // Intentionally forget the Retained — the object lives for the app lifetime.
-    std::mem::forget(retained);
+	// Retain the rule list so it outlives the completion block.
+	let retained: Retained<WKContentRuleList> =
+		unsafe { Retained::retain(list) }.expect("WKContentRuleList retain failed");
+	let ptr = Retained::as_ptr(&retained) as usize;
+	// Intentionally forget the Retained — the object lives for the app lifetime.
+	std::mem::forget(retained);
 
-    // Store once; if already set (shouldn't happen) just use existing.
-    let _ = RULE_LIST_PTR.set(ptr);
-    let actual_ptr = *RULE_LIST_PTR.get().unwrap();
+	// Store once; if already set (shouldn't happen) just use existing.
+	let _ = RULE_LIST_PTR.set(ptr);
+	let actual_ptr = *RULE_LIST_PTR.get().unwrap();
 
-    // Apply to all WebViews that were created before rules were ready.
-    let pending: Vec<usize> = std::mem::take(&mut *PENDING.lock().unwrap());
-    for wv_ptr in pending {
-        unsafe { do_apply(wv_ptr, actual_ptr) };
-    }
+	// Apply to all WebViews that were created before rules were ready.
+	let pending: Vec<usize> = std::mem::take(&mut *PENDING.lock().unwrap());
+	for wv_ptr in pending {
+		unsafe { do_apply(wv_ptr, actual_ptr) };
+	}
 }
 
 /// Add the content rule list to a WebView's WKUserContentController.
@@ -159,19 +154,19 @@ fn store_and_apply(list: *mut WKContentRuleList) {
 /// inside is the live shared object — mutations via the copy affect the
 /// running WebView. This is the standard post-creation injection pattern.
 unsafe fn do_apply(wv_ptr: usize, list_ptr: usize) {
-    if wv_ptr == 0 || list_ptr == 0 {
-        return;
-    }
-    let wv = wv_ptr as *mut AnyObject;
-    let config: *mut AnyObject = msg_send![wv, configuration];
-    if config.is_null() {
-        return;
-    }
-    let ucc: *mut AnyObject = msg_send![config, userContentController];
-    if ucc.is_null() {
-        return;
-    }
-    let list = list_ptr as *mut AnyObject;
-    let _: () = msg_send![ucc, addContentRuleList: list];
-    tracing::debug!(wv_ptr, "content rules applied to webview");
+	if wv_ptr == 0 || list_ptr == 0 {
+		return;
+	}
+	let wv = wv_ptr as *mut AnyObject;
+	let config: *mut AnyObject = msg_send![wv, configuration];
+	if config.is_null() {
+		return;
+	}
+	let ucc: *mut AnyObject = msg_send![config, userContentController];
+	if ucc.is_null() {
+		return;
+	}
+	let list = list_ptr as *mut AnyObject;
+	let _: () = msg_send![ucc, addContentRuleList: list];
+	tracing::debug!(wv_ptr, "content rules applied to webview");
 }

@@ -9,91 +9,89 @@
 /// `search_engine` is a URL template with `{}` as the query placeholder
 /// (e.g. `"https://www.google.com/search?q={}"`)
 pub fn resolve_url(input: &str, search_engine: &str) -> String {
-    let s = input.trim();
-    if s.is_empty() {
-        return "about:blank".to_string();
-    }
+	let s = input.trim();
+	if s.is_empty() {
+		return "about:blank".to_string();
+	}
 
-    if has_url_scheme(s) {
-        return s.to_string();
-    }
+	if has_url_scheme(s) {
+		return s.to_string();
+	}
 
-    if !s.chars().any(char::is_whitespace) {
-        if looks_like_localhost(s) {
-            return format!("http://{s}");
-        }
-        if looks_like_ipv4(s) || looks_like_domain(s) {
-            return format!("https://{s}");
-        }
-    }
+	if !s.chars().any(char::is_whitespace) {
+		if looks_like_localhost(s) {
+			return format!("http://{s}");
+		}
+		if looks_like_ipv4(s) || looks_like_domain(s) {
+			return format!("https://{s}");
+		}
+	}
 
-    search_engine.replace("{}", &encode_uri(s))
+	search_engine.replace("{}", &encode_uri(s))
 }
 
 fn has_url_scheme(s: &str) -> bool {
-    let Some((scheme, rest)) = s.split_once(':') else {
-        return false;
-    };
-    !scheme.is_empty()
-        && scheme
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
-        && !is_host_port(scheme, rest)
+	let Some((scheme, rest)) = s.split_once(':') else {
+		return false;
+	};
+	!scheme.is_empty()
+		&& scheme
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+		&& !is_host_port(scheme, rest)
 }
 
 /// `localhost:5173/app` and `example.com:8080` parse as a scheme by the URL
 /// grammar, but a host followed by a port is what was typed. A dot or
 /// `localhost` tells it apart from `tel:5551234`.
 fn is_host_port(host: &str, rest: &str) -> bool {
-    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-    digits > 0
-        && matches!(rest.as_bytes().get(digits), None | Some(b'/' | b'?' | b'#'))
-        && (host == "localhost" || host.contains('.'))
+	let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+	digits > 0
+		&& matches!(rest.as_bytes().get(digits), None | Some(b'/' | b'?' | b'#'))
+		&& (host == "localhost" || host.contains('.'))
 }
 
 fn host_part(input: &str) -> &str {
-    input.split(['/', '?', '#']).next().unwrap_or(input)
+	input.split(['/', '?', '#']).next().unwrap_or(input)
 }
 
 fn looks_like_localhost(input: &str) -> bool {
-    let host = host_part(input);
-    if host == "localhost" {
-        return true;
-    }
-    host.strip_prefix("localhost:")
-        .map(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or(false)
+	let host = host_part(input);
+	if host == "localhost" {
+		return true;
+	}
+	host.strip_prefix("localhost:")
+		.map(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+		.unwrap_or(false)
 }
 
 fn looks_like_ipv4(input: &str) -> bool {
-    let host = host_part(input);
-    let ip = host.split(':').next().unwrap_or(host);
-    let parts: Vec<&str> = ip.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
-    parts.iter().all(|p| p.parse::<u8>().is_ok())
+	let host = host_part(input);
+	let ip = host.split(':').next().unwrap_or(host);
+	let parts: Vec<&str> = ip.split('.').collect();
+	if parts.len() != 4 {
+		return false;
+	}
+	parts.iter().all(|p| p.parse::<u8>().is_ok())
 }
 
 fn looks_like_domain(input: &str) -> bool {
-    let host = host_part(input);
-    let domain = host.split(':').next().unwrap_or(host);
-    if !domain.contains('.') {
-        return false;
-    }
+	let host = host_part(input);
+	let domain = host.split(':').next().unwrap_or(host);
+	if !domain.contains('.') {
+		return false;
+	}
 
-    let labels: Vec<&str> = domain.split('.').collect();
-    if labels.iter().any(|label| label.is_empty()) {
-        return false;
-    }
+	let labels: Vec<&str> = domain.split('.').collect();
+	if labels.iter().any(|label| label.is_empty()) {
+		return false;
+	}
 
-    labels.iter().all(|label| {
-        label
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    })
+	labels.iter().all(|label| {
+		label.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+			&& !label.starts_with('-')
+			&& !label.ends_with('-')
+	})
 }
 
 /// Returns `true` if the URL uses a scheme that should be opened by an external
@@ -102,25 +100,25 @@ fn looks_like_domain(input: &str) -> bool {
 ///
 /// We whitelist the schemes the browser handles natively; everything else is external.
 pub fn is_external_scheme(url: &str) -> bool {
-    let Some(idx) = url.find(':') else {
-        return false;
-    };
-    let scheme = &url[..idx];
-    if scheme.is_empty() {
-        return false;
-    }
-    // Must be a valid scheme (ASCII alphanumeric + '+' / '-' / '.')
-    if !scheme
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
-    {
-        return false;
-    }
-    // Schemes the browser handles natively — everything else is external.
-    !matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "about" | "data" | "blob" | "javascript" | "file" | "webkit-extension"
-    )
+	let Some(idx) = url.find(':') else {
+		return false;
+	};
+	let scheme = &url[..idx];
+	if scheme.is_empty() {
+		return false;
+	}
+	// Must be a valid scheme (ASCII alphanumeric + '+' / '-' / '.')
+	if !scheme
+		.chars()
+		.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+	{
+		return false;
+	}
+	// Schemes the browser handles natively — everything else is external.
+	!matches!(
+		scheme.to_ascii_lowercase().as_str(),
+		"http" | "https" | "about" | "data" | "blob" | "javascript" | "file" | "webkit-extension"
+	)
 }
 
 /// Schemes an agent must never be able to navigate to.
@@ -133,125 +131,114 @@ pub fn is_external_scheme(url: &str) -> bool {
 /// typing these in the address bar is making their own choice; a tool call is
 /// not, because the URL usually came from a page the agent just read.
 pub fn is_agent_forbidden_scheme(url: &str) -> bool {
-    // No colon means no scheme — a bare search term like "javascript" is not a
-    // javascript: URL.
-    if !url.contains(':') {
-        return false;
-    }
-    // The URL parser strips ASCII whitespace and control characters before
-    // reading the scheme, so `java\tscript:` is `javascript:` — strip them too
-    // or the check is trivially bypassed.
-    let scheme: String = url
-        .chars()
-        .take_while(|&c| c != ':')
-        .filter(|c| !c.is_whitespace() && !c.is_control())
-        .flat_map(char::to_lowercase)
-        .collect();
-    matches!(
-        scheme.as_str(),
-        "javascript" | "data" | "blob" | "file" | "webkit-extension"
-    )
+	// No colon means no scheme — a bare search term like "javascript" is not a
+	// javascript: URL.
+	if !url.contains(':') {
+		return false;
+	}
+	// The URL parser strips ASCII whitespace and control characters before
+	// reading the scheme, so `java\tscript:` is `javascript:` — strip them too
+	// or the check is trivially bypassed.
+	let scheme: String = url
+		.chars()
+		.take_while(|&c| c != ':')
+		.filter(|c| !c.is_whitespace() && !c.is_control())
+		.flat_map(char::to_lowercase)
+		.collect();
+	matches!(
+		scheme.as_str(),
+		"javascript" | "data" | "blob" | "file" | "webkit-extension"
+	)
 }
 
 /// Percent-encode a query string for use in a URL (encodes everything except unreserved chars)
 fn encode_uri(s: &str) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(s.len() * 2);
-    for &b in s.as_bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
+	use std::fmt::Write;
+	let mut out = String::with_capacity(s.len() * 2);
+	for &b in s.as_bytes() {
+		if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+			out.push(b as char);
+		} else {
+			let _ = write!(out, "%{b:02X}");
+		}
+	}
+	out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn agent_forbidden_schemes_are_refused() {
-        assert!(is_agent_forbidden_scheme("javascript:alert(1)"));
-        assert!(is_agent_forbidden_scheme("JavaScript:alert(1)"));
-        assert!(is_agent_forbidden_scheme("  javascript:alert(1)"));
-        assert!(is_agent_forbidden_scheme("data:text/html,<h1>x</h1>"));
-        assert!(is_agent_forbidden_scheme("blob:https://x/y"));
-        assert!(is_agent_forbidden_scheme("file:///etc/hosts"));
-        assert!(is_agent_forbidden_scheme(
-            "webkit-extension://abc/options.html"
-        ));
-        // The URL parser strips these before reading the scheme, so we must too.
-        assert!(is_agent_forbidden_scheme("java\tscript:alert(1)"));
-        assert!(is_agent_forbidden_scheme("java\nscript:alert(1)"));
-    }
+	#[test]
+	fn agent_forbidden_schemes_are_refused() {
+		assert!(is_agent_forbidden_scheme("javascript:alert(1)"));
+		assert!(is_agent_forbidden_scheme("JavaScript:alert(1)"));
+		assert!(is_agent_forbidden_scheme("  javascript:alert(1)"));
+		assert!(is_agent_forbidden_scheme("data:text/html,<h1>x</h1>"));
+		assert!(is_agent_forbidden_scheme("blob:https://x/y"));
+		assert!(is_agent_forbidden_scheme("file:///etc/hosts"));
+		assert!(is_agent_forbidden_scheme("webkit-extension://abc/options.html"));
+		// The URL parser strips these before reading the scheme, so we must too.
+		assert!(is_agent_forbidden_scheme("java\tscript:alert(1)"));
+		assert!(is_agent_forbidden_scheme("java\nscript:alert(1)"));
+	}
 
-    #[test]
-    fn ordinary_urls_are_allowed() {
-        assert!(!is_agent_forbidden_scheme("https://example.com"));
-        assert!(!is_agent_forbidden_scheme("http://localhost:3434/mcp"));
-        assert!(!is_agent_forbidden_scheme("about:blank"));
-        assert!(!is_agent_forbidden_scheme("mailto:a@b.c"));
-        assert!(!is_agent_forbidden_scheme("example.com/javascript:x"));
-        assert!(!is_agent_forbidden_scheme("no-scheme-here"));
-        // A bare search term is not a URL, even when it reads like a scheme.
-        assert!(!is_agent_forbidden_scheme("javascript"));
-        assert!(!is_agent_forbidden_scheme("data"));
-    }
+	#[test]
+	fn ordinary_urls_are_allowed() {
+		assert!(!is_agent_forbidden_scheme("https://example.com"));
+		assert!(!is_agent_forbidden_scheme("http://localhost:3434/mcp"));
+		assert!(!is_agent_forbidden_scheme("about:blank"));
+		assert!(!is_agent_forbidden_scheme("mailto:a@b.c"));
+		assert!(!is_agent_forbidden_scheme("example.com/javascript:x"));
+		assert!(!is_agent_forbidden_scheme("no-scheme-here"));
+		// A bare search term is not a URL, even when it reads like a scheme.
+		assert!(!is_agent_forbidden_scheme("javascript"));
+		assert!(!is_agent_forbidden_scheme("data"));
+	}
 
-    const SEARCH: &str = "https://search.test/?q={}";
+	const SEARCH: &str = "https://search.test/?q={}";
 
-    #[test]
-    fn a_host_with_a_port_is_not_a_scheme() {
-        assert_eq!(
-            resolve_url("localhost:5180/blog", SEARCH),
-            "http://localhost:5180/blog"
-        );
-        assert_eq!(
-            resolve_url("example.com:8080/x?y#z", SEARCH),
-            "https://example.com:8080/x?y#z"
-        );
-        assert_eq!(
-            resolve_url("192.168.1.1:8080", SEARCH),
-            "https://192.168.1.1:8080"
-        );
-    }
+	#[test]
+	fn a_host_with_a_port_is_not_a_scheme() {
+		assert_eq!(resolve_url("localhost:5180/blog", SEARCH), "http://localhost:5180/blog");
+		assert_eq!(
+			resolve_url("example.com:8080/x?y#z", SEARCH),
+			"https://example.com:8080/x?y#z"
+		);
+		assert_eq!(resolve_url("192.168.1.1:8080", SEARCH), "https://192.168.1.1:8080");
+	}
 
-    #[test]
-    fn localhost_gets_plain_http() {
-        assert_eq!(resolve_url("localhost", SEARCH), "http://localhost");
-        assert_eq!(
-            resolve_url("localhost:3000", SEARCH),
-            "http://localhost:3000"
-        );
-        assert_eq!(resolve_url("example.com", SEARCH), "https://example.com");
-    }
+	#[test]
+	fn localhost_gets_plain_http() {
+		assert_eq!(resolve_url("localhost", SEARCH), "http://localhost");
+		assert_eq!(resolve_url("localhost:3000", SEARCH), "http://localhost:3000");
+		assert_eq!(resolve_url("example.com", SEARCH), "https://example.com");
+	}
 
-    #[test]
-    fn real_schemes_pass_through() {
-        for url in [
-            "https://example.com",
-            "about:blank",
-            "mailto:a@b.c",
-            "tel:5551234",
-            "com.example.app:/oauth",
-        ] {
-            assert_eq!(resolve_url(url, SEARCH), url);
-        }
-    }
+	#[test]
+	fn real_schemes_pass_through() {
+		for url in [
+			"https://example.com",
+			"about:blank",
+			"mailto:a@b.c",
+			"tel:5551234",
+			"com.example.app:/oauth",
+		] {
+			assert_eq!(resolve_url(url, SEARCH), url);
+		}
+	}
 
-    #[test]
-    fn extension_pages_load_in_the_browser() {
-        assert!(!is_external_scheme("webkit-extension://abc/options.html"));
-        assert!(is_external_scheme("tg://resolve?domain=x"));
-    }
+	#[test]
+	fn extension_pages_load_in_the_browser() {
+		assert!(!is_external_scheme("webkit-extension://abc/options.html"));
+		assert!(is_external_scheme("tg://resolve?domain=x"));
+	}
 
-    #[test]
-    fn anything_else_is_a_search() {
-        assert_eq!(
-            resolve_url("rust ownership", SEARCH),
-            "https://search.test/?q=rust%20ownership"
-        );
-    }
+	#[test]
+	fn anything_else_is_a_search() {
+		assert_eq!(
+			resolve_url("rust ownership", SEARCH),
+			"https://search.test/?q=rust%20ownership"
+		);
+	}
 }

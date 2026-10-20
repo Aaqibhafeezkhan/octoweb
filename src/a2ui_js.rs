@@ -531,54 +531,50 @@ pub const CORE: &str = r##"
 /// skips; CI runners have it.
 #[cfg(test)]
 pub(crate) fn run_node(name: &str, source: &str, flags: &[&str]) -> Option<std::process::Output> {
-    // Two tests can check the same surface concurrently (e.g. the sidebar is
-    // covered here and by sidebar_html's own gate); a per-invocation suffix
-    // keeps one run's cleanup from deleting another run's script mid-flight.
-    static CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("octoweb-js-{}-{name}-{call}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let path = dir.join(format!("{name}.js"));
-    std::fs::write(&path, source).expect("write script");
-    let out = match std::process::Command::new("node")
-        .args(flags)
-        .arg(&path)
-        .output()
-    {
-        Ok(out) => Some(out),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Skipping keeps `cargo test` usable on a machine without node, but
-            // a skip in CI is a gate that passes without checking anything.
-            assert!(
-                std::env::var_os("OCTOWEB_REQUIRE_NODE").is_none(),
-                "OCTOWEB_REQUIRE_NODE is set but node is not installed — \
+	// Two tests can check the same surface concurrently (e.g. the sidebar is
+	// covered here and by sidebar_html's own gate); a per-invocation suffix
+	// keeps one run's cleanup from deleting another run's script mid-flight.
+	static CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let call = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	let dir = std::env::temp_dir().join(format!("octoweb-js-{}-{name}-{call}", std::process::id()));
+	std::fs::create_dir_all(&dir).expect("temp dir");
+	let path = dir.join(format!("{name}.js"));
+	std::fs::write(&path, source).expect("write script");
+	let out = match std::process::Command::new("node").args(flags).arg(&path).output() {
+		Ok(out) => Some(out),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			// Skipping keeps `cargo test` usable on a machine without node, but
+			// a skip in CI is a gate that passes without checking anything.
+			assert!(
+				std::env::var_os("OCTOWEB_REQUIRE_NODE").is_none(),
+				"OCTOWEB_REQUIRE_NODE is set but node is not installed — \
                  the JS syntax gate would pass vacuously"
-            );
-            eprintln!("skipping {name}: node is not installed");
-            None
-        }
-        Err(e) => panic!("failed to run node: {e}"),
-    };
-    let _ = std::fs::remove_dir_all(&dir);
-    out
+			);
+			eprintln!("skipping {name}: node is not installed");
+			None
+		}
+		Err(e) => panic!("failed to run node: {e}"),
+	};
+	let _ = std::fs::remove_dir_all(&dir);
+	out
 }
 
 #[cfg(test)]
 mod tests {
-    /// Runs `CORE` under node with an assertion harness covering every catalog
-    /// function, the interpolation grammar and the binding rules.
-    #[test]
-    fn core_js_behaves_per_spec() {
-        let harness = include_str!("a2ui_core_test.js");
-        let source = format!("{}\n{harness}", super::CORE);
-        let Some(out) = super::run_node("a2ui_core", &source, &[]) else {
-            return;
-        };
-        assert!(
-            out.status.success(),
-            "a2ui core assertions failed:\n{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr),
-        );
-    }
+	/// Runs `CORE` under node with an assertion harness covering every catalog
+	/// function, the interpolation grammar and the binding rules.
+	#[test]
+	fn core_js_behaves_per_spec() {
+		let harness = include_str!("a2ui_core_test.js");
+		let source = format!("{}\n{harness}", super::CORE);
+		let Some(out) = super::run_node("a2ui_core", &source, &[]) else {
+			return;
+		};
+		assert!(
+			out.status.success(),
+			"a2ui core assertions failed:\n{}{}",
+			String::from_utf8_lossy(&out.stdout),
+			String::from_utf8_lossy(&out.stderr),
+		);
+	}
 }

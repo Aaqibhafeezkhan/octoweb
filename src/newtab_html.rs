@@ -8,16 +8,16 @@
 ///   { type: "quickslot_save_url", slot: 0-9, url: string }
 ///   { type: "quickslot_remove", slot: 0-9 }
 pub fn html(slots_json: &str, later_json: &str) -> String {
-    let keybindings_json = crate::keybindings::Keymap::load().ui_json().to_string();
-    let safe_slots_json = slots_json
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026");
-    let safe_later_json = later_json
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026");
-    format!(
+	let keybindings_json = crate::keybindings::Keymap::load().ui_json().to_string();
+	let safe_slots_json = slots_json
+		.replace('<', "\\u003c")
+		.replace('>', "\\u003e")
+		.replace('&', "\\u0026");
+	let safe_later_json = later_json
+		.replace('<', "\\u003c")
+		.replace('>', "\\u003e")
+		.replace('&', "\\u0026");
+	format!(
         r#"<!DOCTYPE html>
 <html>
 <head>

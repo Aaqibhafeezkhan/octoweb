@@ -4,7 +4,7 @@
 ///
 /// Tahoe liquid glass design — light/dark adaptive via the shared theme tokens.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">

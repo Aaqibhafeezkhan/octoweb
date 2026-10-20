@@ -21,7 +21,7 @@
 ///   { type: "copy_text", text: "…" } — copy title or URL to clipboard
 ///   { type: "ext_action", id, x, y, w, h } — extension button clicked (its rect anchors the popup)
 pub fn html() -> String {
-    let template = r#"<!DOCTYPE html>
+	let template = r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -1303,14 +1303,14 @@ pub fn html() -> String {
 </script>
 </body>
 </html>"#;
-    template
-        .replace("/*@@THEME@@*/", crate::theme::CSS)
-        .replace("@@ICON_DOWNLOAD@@", crate::icons::DOWNLOAD)
-        .replace("@@ICON_CLOCK@@", crate::icons::CLOCK)
-        .replace("@@ICON_ACTIVITY@@", crate::icons::ACTIVITY)
-        .replace("@@ICON_CPU@@", crate::icons::CPU)
-        .replace("@@ICON_OCTOPUS_BRAND@@", crate::icons::OCTOPUS_BRAND)
-        .replace("@@ICON_LOCK@@", crate::icons::LOCK)
-        .replace("@@ICON_SHIELD_ALERT@@", crate::icons::SHIELD_ALERT)
-        .replace("@@ICON_LAYERS@@", crate::icons::LAYERS)
+	template
+		.replace("/*@@THEME@@*/", crate::theme::CSS)
+		.replace("@@ICON_DOWNLOAD@@", crate::icons::DOWNLOAD)
+		.replace("@@ICON_CLOCK@@", crate::icons::CLOCK)
+		.replace("@@ICON_ACTIVITY@@", crate::icons::ACTIVITY)
+		.replace("@@ICON_CPU@@", crate::icons::CPU)
+		.replace("@@ICON_OCTOPUS_BRAND@@", crate::icons::OCTOPUS_BRAND)
+		.replace("@@ICON_LOCK@@", crate::icons::LOCK)
+		.replace("@@ICON_SHIELD_ALERT@@", crate::icons::SHIELD_ALERT)
+		.replace("@@ICON_LAYERS@@", crate::icons::LAYERS)
 }

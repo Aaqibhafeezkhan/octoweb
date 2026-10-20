@@ -2,7 +2,7 @@
 /// Shown during page load, animated fill then fade out.
 /// Light/dark adaptive via prefers-color-scheme.
 pub fn html() -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -110,5 +110,5 @@ pub fn html() -> String {
 </script>
 </body>
 </html>"#
-        .replace("/*@@THEME@@*/", crate::theme::CSS)
+		.replace("/*@@THEME@@*/", crate::theme::CSS)
 }

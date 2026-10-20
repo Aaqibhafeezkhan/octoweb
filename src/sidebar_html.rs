@@ -48,9 +48,9 @@
 ///   { type: "account_dashboard" }                        — open the Octomind usage page
 ///   { type: "account_expanded", expanded }               — remember the account card state
 pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
-    let prompt_history_js = crate::prompt_history_js::prompt_history_js();
-    let keybindings_json = crate::keybindings::Keymap::load().ui_json().to_string();
-    r#"<!DOCTYPE html>
+	let prompt_history_js = crate::prompt_history_js::prompt_history_js();
+	let keybindings_json = crate::keybindings::Keymap::load().ui_json().to_string();
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -7795,31 +7795,31 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// The sidebar is one long inline script assembled from several Rust
-    /// consts. A syntax error anywhere in it kills the whole panel at runtime
-    /// with nothing in the build to warn you, so parse it here instead.
-    #[test]
-    fn the_inline_script_parses() {
-        let html = super::html(50, false);
-        let open = html.find("<script>").expect("inline script");
-        let start = open + "<script>".len();
-        let end = start + html[start..].find("</script>").expect("script close");
-        let Some(out) = crate::a2ui_js::run_node("sidebar", &html[start..end], &["--check"]) else {
-            return;
-        };
-        assert!(
-            out.status.success(),
-            "sidebar script does not parse:\n{}",
-            String::from_utf8_lossy(&out.stderr),
-        );
-    }
+	/// The sidebar is one long inline script assembled from several Rust
+	/// consts. A syntax error anywhere in it kills the whole panel at runtime
+	/// with nothing in the build to warn you, so parse it here instead.
+	#[test]
+	fn the_inline_script_parses() {
+		let html = super::html(50, false);
+		let open = html.find("<script>").expect("inline script");
+		let start = open + "<script>".len();
+		let end = start + html[start..].find("</script>").expect("script close");
+		let Some(out) = crate::a2ui_js::run_node("sidebar", &html[start..end], &["--check"]) else {
+			return;
+		};
+		assert!(
+			out.status.success(),
+			"sidebar script does not parse:\n{}",
+			String::from_utf8_lossy(&out.stderr),
+		);
+	}
 
-    /// The A2UI core is spliced in by marker; a renamed marker would silently
-    /// ship a sidebar with no renderer in it.
-    #[test]
-    fn the_a2ui_core_is_injected() {
-        let html = super::html(50, false);
-        assert!(!html.contains("/* A2UI_CORE_JS */"), "marker not replaced");
-        assert!(html.contains("function a2uiResolveValue"), "core missing");
-    }
+	/// The A2UI core is spliced in by marker; a renamed marker would silently
+	/// ship a sidebar with no renderer in it.
+	#[test]
+	fn the_a2ui_core_is_injected() {
+		let html = super::html(50, false);
+		assert!(!html.contains("/* A2UI_CORE_JS */"), "marker not replaced");
+		assert!(html.contains("function a2uiResolveValue"), "core missing");
+	}
 }

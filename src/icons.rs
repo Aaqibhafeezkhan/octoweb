@@ -25,115 +25,115 @@ const SUFFIX: &str = "</svg>";
 
 /// `download` — transfer-size indicator (replaces ⬇).
 pub const DOWNLOAD: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>"#,
-    r#"<polyline points="7 10 12 15 17 10"/>"#,
-    r#"<line x1="12" y1="15" x2="12" y2="3"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>"#,
+	r#"<polyline points="7 10 12 15 17 10"/>"#,
+	r#"<line x1="12" y1="15" x2="12" y2="3"/>"#,
+	"</svg>"
 );
 
 /// `clock` — page-load-time indicator (replaces ⏱).
 pub const CLOCK: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<circle cx="12" cy="12" r="10"/>"#,
-    r#"<polyline points="12 6 12 12 16 14"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<circle cx="12" cy="12" r="10"/>"#,
+	r#"<polyline points="12 6 12 12 16 14"/>"#,
+	"</svg>"
 );
 
 /// `activity` — CPU-usage indicator (replaces ⚡). Pulse waveform.
 pub const ACTIVITY: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>"#,
+	"</svg>"
 );
 
 /// `cpu` — memory/RSS indicator (replaces ◉).
 pub const CPU: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<rect x="4" y="4" width="16" height="16" rx="2"/>"#,
-    r#"<rect x="9" y="9" width="6" height="6"/>"#,
-    r#"<line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>"#,
-    r#"<line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>"#,
-    r#"<line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/>"#,
-    r#"<line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<rect x="4" y="4" width="16" height="16" rx="2"/>"#,
+	r#"<rect x="9" y="9" width="6" height="6"/>"#,
+	r#"<line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>"#,
+	r#"<line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>"#,
+	r#"<line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/>"#,
+	r#"<line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/>"#,
+	"</svg>"
 );
 
 /// `check-circle-2` — success toast icon.
 pub const CHECK_CIRCLE: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<circle cx="12" cy="12" r="10"/>"#,
-    r#"<polyline points="8 12 11 15 16 9"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<circle cx="12" cy="12" r="10"/>"#,
+	r#"<polyline points="8 12 11 15 16 9"/>"#,
+	"</svg>"
 );
 
 /// `x-circle` — error toast icon.
 pub const X_CIRCLE: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<circle cx="12" cy="12" r="10"/>"#,
-    r#"<line x1="15" y1="9" x2="9" y2="15"/>"#,
-    r#"<line x1="9" y1="9" x2="15" y2="15"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<circle cx="12" cy="12" r="10"/>"#,
+	r#"<line x1="15" y1="9" x2="9" y2="15"/>"#,
+	r#"<line x1="9" y1="9" x2="15" y2="15"/>"#,
+	"</svg>"
 );
 
 /// `check` — inline checkmark.
 pub const CHECK: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<polyline points="4 12 10 18 20 6"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<polyline points="4 12 10 18 20 6"/>"#,
+	"</svg>"
 );
 
 /// `pencil` — URL edit affordance in the address bar.
 pub const PENCIL: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<path d="M12 20h9"/>"#,
-    r#"<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M12 20h9"/>"#,
+	r#"<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/>"#,
+	"</svg>"
 );
 
 /// `plus` — empty quickslot affordance / "add" hint.
 pub const PLUS: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<line x1="12" y1="5" x2="12" y2="19"/>"#,
-    r#"<line x1="5" y1="12" x2="19" y2="12"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<line x1="12" y1="5" x2="12" y2="19"/>"#,
+	r#"<line x1="5" y1="12" x2="19" y2="12"/>"#,
+	"</svg>"
 );
 
 /// `lock` — secure-site indicator (replaces 🔒).
 pub const LOCK: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<rect x="5" y="11" width="14" height="10" rx="2"/>"#,
-    r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<rect x="5" y="11" width="14" height="10" rx="2"/>"#,
+	r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
+	"</svg>"
 );
 
 /// `layers` — workspace switcher toolbar button.
 pub const LAYERS: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/>"#,
-    r#"<path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/>"#,
-    r#"<path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/>"#,
+	r#"<path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/>"#,
+	r#"<path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>"#,
+	"</svg>"
 );
 
 /// `trash-2` — delete-workspace affordance in the workspace switcher.
 pub const TRASH: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<path d="M10 11v6"/>"#,
-    r#"<path d="M14 11v6"/>"#,
-    r#"<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>"#,
-    r#"<path d="M3 6h18"/>"#,
-    r#"<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M10 11v6"/>"#,
+	r#"<path d="M14 11v6"/>"#,
+	r#"<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>"#,
+	r#"<path d="M3 6h18"/>"#,
+	r#"<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>"#,
+	"</svg>"
 );
 
 /// `shield-alert` — insecure-site indicator (replaces ⚠️).
 pub const SHIELD_ALERT: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
-    r#"<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/>"#,
-    r#"<line x1="12" y1="8" x2="12" y2="13"/>"#,
-    r#"<circle cx="12" cy="16" r="0.6" fill="currentColor"/>"#,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/>"#,
+	r#"<line x1="12" y1="8" x2="12" y2="13"/>"#,
+	r#"<circle cx="12" cy="16" r="0.6" fill="currentColor"/>"#,
+	"</svg>"
 );
 
 // ── Brand mark ─────────────────────────────────────────────────────────────
@@ -146,10 +146,10 @@ pub const SHIELD_ALERT: &str = concat!(
 /// `currentColor` (set `color: var(--brand)` on the container); the eyes stay
 /// octomind cyan.
 pub const OCTOPUS_BRAND: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480" shape-rendering="crispEdges">"#,
-    r#"<path fill="currentColor" d="M384 48H96V96H384V48Z M408 96H72V192H408V96Z M408 192H72V240H408V192Z M384 240H96V288H384V240Z M120 288H72V384H120V288Z M216 288H168V384H216V288Z M312 288H264V384H312V288Z M408 288H360V384H408V288Z M96 384H72V432H96V384Z M192 384H168V432H192V384Z M288 384H264V432H288V384Z M384 384H360V432H384V384Z"/>"#,
-    r##"<path fill="#22D3EE" d="M192 144H144V192H192V144Z M336 144H288V192H336V144Z"/>"##,
-    "</svg>"
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 480" shape-rendering="crispEdges">"#,
+	r#"<path fill="currentColor" d="M384 48H96V96H384V48Z M408 96H72V192H408V96Z M408 192H72V240H408V192Z M384 240H96V288H384V240Z M120 288H72V384H120V288Z M216 288H168V384H216V288Z M312 288H264V384H312V288Z M408 288H360V384H408V288Z M96 384H72V432H96V384Z M192 384H168V432H192V384Z M288 384H264V432H288V384Z M384 384H360V432H384V384Z"/>"#,
+	r##"<path fill="#22D3EE" d="M192 144H144V192H192V144Z M336 144H288V192H336V144Z"/>"##,
+	"</svg>"
 );
 
 // Tiny silencer for the lint that prefix/suffix consts are unused — they

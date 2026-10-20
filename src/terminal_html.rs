@@ -29,7 +29,7 @@ const UNICODE11_ADDON_JS: &str = include_str!("../assets/lib/xterm-addon-unicode
 /// `shell_theme_json` is `terminal::shell_theme`, or `null` to use only the
 /// built-in palettes. `option_as_meta` is `Config::terminal_option_as_meta`.
 pub fn html(keybindings_json: &str, shell_theme_json: &str, option_as_meta: bool) -> String {
-    r#"<!DOCTYPE html>
+	r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
