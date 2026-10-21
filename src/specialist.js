@@ -1,10 +1,27 @@
+  // The report card's disclosure chevron: a run is a row like it, opened on click.
+  const REPORT_CHEVRON = '<span class="specialist-report-chevron"><svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M2.5 1l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+
+  // What the run is doing now: its latest tool or line of text, else its id.
+  function runActivity(run) {
+    for (let i = run.events.length - 1; i >= 0; i--) {
+      const event = run.events[i];
+      if (event.kind === 'tool_use') return event.tool;
+      if (event.kind === 'assistant' || event.kind === 'thinking') {
+        const line = event.content.split(/\r?\n/).find(l => l.trim());
+        if (line) return line.trim();
+      }
+    }
+    return run.run_id;
+  }
+
   function runHeader(view) {
     const run = view.run;
     view.details.classList.toggle('failed', run.status === 'failed' || run.error !== null);
     const who = run.role === null ? 'Specialist' : run.role;
-    view.summary.innerHTML = '<span class="specialist-report-who">' + escapeHtml(who) + '</span>' +
+    view.summary.innerHTML = REPORT_CHEVRON + '<span class="specialist-report-who">' + escapeHtml(who) + '</span>' +
       '<span class="specialist-report-title">run · <span class="specialist-report-status">' + escapeHtml(run.status + (!run.complete && run.error === null ? ' · recovering' : '')) + '</span></span>' +
-      '<span class="specialist-report-preview">' + escapeHtml(run.run_id) + '</span>';
+      '<span class="specialist-report-preview">' + escapeHtml(runActivity(run)) + '</span>';
+    view.summary.title = run.run_id;
     view.trimmed.textContent = run.truncated ? 'Earlier steps trimmed.' : '';
     view.error.textContent = run.error === null ? '' : run.error;
   }
@@ -111,12 +128,12 @@
   // their own text segment or tool row, preserving other DOM and disclosure state.
   function renderRun(s, run) {
     const previous = s.runViews.get(run.run_id);
-    if (previous) previous.wrap.remove();
     const wrap = document.createElement('div');
     wrap.className = 'msg agent specialist specialist-report';
     const details = document.createElement('details');
     details.className = 'specialist-report-details';
-    details.open = previous ? previous.details.open : true;
+    // Collapsed like a report: the transcript is there on click, not in the feed.
+    details.open = previous ? previous.details.open : false;
     const summary = document.createElement('summary');
     summary.className = 'specialist-report-summary';
     const body = document.createElement('div');
@@ -128,7 +145,14 @@
     error.className = 'tool-detail-title';
     body.appendChild(trimmed); body.appendChild(content); body.appendChild(error);
     details.appendChild(summary); details.appendChild(body); wrap.appendChild(details);
-    mountMsg(s, wrap);
+    // A replayed run keeps its place in the conversation.
+    if (previous && previous.wrap.parentNode) {
+      wrap.dataset.logIndex = previous.wrap.dataset.logIndex;
+      previous.wrap.replaceWith(wrap);
+    } else {
+      if (previous) previous.wrap.remove();
+      mountMsg(s, wrap);
+    }
     const view = { run, wrap, details, summary, content, trimmed, error, entries: [], tools: new Map(), usage: null };
     s.runViews.set(run.run_id, view);
     run.events.forEach(event => appendRunEntry(view, event));

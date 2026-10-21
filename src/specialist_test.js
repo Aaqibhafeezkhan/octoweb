@@ -15,6 +15,7 @@ function specialistFixture(html, source) {
         },
       };
     }
+    get parentNode() { return this.parent || null; }
     appendChild(child) { this.children.push(child); child.parent = this; }
     remove() { this.parent.children.splice(this.parent.children.indexOf(this), 1); this.parent = null; }
     replaceChildren() { this.children = []; }
@@ -69,11 +70,13 @@ function checkSpecialist(html, source) {
   assert.match(view.summary.innerHTML, /developer:&lt;general&gt;/);
   assert.match(view.summary.innerHTML, /tap-general-abcdef/);
   assert.match(view.summary.innerHTML, /running/);
-  view.details.open = false;
+  assert.match(view.summary.innerHTML, /specialist-report-chevron/);
+  assert.equal(view.details.open, false, 'a run starts collapsed, like a report');
   delta({ kind: 'prompt', content: '<input>' });
   delta({ kind: 'thinking', content: '<thought>' });
   delta({ kind: 'assistant', content: 'child <reply>' });
   delta({ kind: 'tool_use', tool: 'read', tool_id: 'same', params: { path: '<file>' } });
+  assert.match(view.summary.innerHTML, /specialist-report-preview">read</);
   assert.equal(view.details.open, false);
   assert.match(view.content.querySelector('.specialist-report-content').innerHTML, /child &lt;reply&gt;/);
   assert.equal(view.content.querySelector('.specialist-report-input-text').textContent, '<input>');
@@ -98,6 +101,13 @@ function checkSpecialist(html, source) {
   for (const [key, value] of Object.entries(parent)) assert.equal(s[key], value, 'parent ' + key + ' changed');
   context.window.__setRun(1, { ...run, run_id: 'tap-other-123456', role: null });
   assert.equal(s.runViews.size, 2); assert.equal(s.log.length, 2);
+  // Replay re-renders a run where it was, not below newer messages.
+  const first = s.runViews.get(run.run_id).wrap;
+  context.window.__setRun(1, run);
+  assert.equal(s.container.children.length, 2);
+  assert.notEqual(s.container.children[0], first);
+  assert.equal(s.container.children[0], s.runViews.get(run.run_id).wrap);
+  assert.equal(s.log.length, 2);
   s.runViews.clear(); s.container.replaceChildren(); context.renderRun(s, run);
   assert.equal(s.container.children.length, 1);
   assert.match(s.runViews.get(run.run_id).summary.innerHTML, /failed/);
