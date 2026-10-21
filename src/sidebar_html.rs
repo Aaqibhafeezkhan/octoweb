@@ -3309,6 +3309,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
       toolDetails: [],
       toolRows: {},
       tapRunPrompts: new Map(),
+      runViews: new Map(),
       // count of tools still running — keeps the live feed visible when a
       // tool starts after text already began streaming.
       runningTools: 0,
@@ -3971,6 +3972,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     active.thinking.innerHTML = '';
     active.currentAgentBubble = null;
     active.currentAgentRaw = '';
+    active.runViews.clear();
     active.isThinking = false;
     active.runningTools = 0;
     // Clearing the session restarts the agent on Rust side — drop busy and any
@@ -4005,6 +4007,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     s.currentAgentRaw = '';
     s.availableCommands = [];
     s.log = [];
+    s.runViews.clear();
     s.renderedFrom = 0;
     s.moreRow = null; // was just removed with the rest of the container
     if (csOpen) runChatSearch();
@@ -5350,6 +5353,8 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     appendSpecialistMsg(s, text);
   };
 
+  /* SPECIALIST_JS */
+
   window.__appendImage = function(sid, mimeType, b64data) {
     const s = sessions.get(sid);
     if (!s) return;
@@ -5460,18 +5465,18 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
     return group;
   }
 
-  function buildGroupItem(t) {
+  function buildGroupItem(t, live = false) {
     const failed = t.status === 'failed';
     const completed = t.status === 'completed';
     const item = document.createElement('div');
     item.className = 'tool-item';
     const row = document.createElement('div');
-    row.className = 'tool-row ' + (failed ? 'failed' : 'done');
+    row.className = 'tool-row ' + (failed ? 'failed' : live && t.status === 'running' ? 'running' : 'done');
     row.innerHTML =
       '<span class="tool-kind ' + (KIND_ICONS[t.kind] ? t.kind : 'other') + '">' + kindIcon(t.kind) + '</span>' +
       '<span class="tool-title">' + escapeHtml(t.title) + '</span>' +
       // A tool still 'running' at turn end was interrupted — no duration, no mark.
-      '<span class="tool-time">' + (completed || failed ? fmtDuration(t.duration || 0) : '—') + '</span>' +
+      '<span class="tool-time">' + ((completed || failed) && t.duration != null ? fmtDuration(t.duration) : '—') + '</span>' +
       (failed ? '<span class="tool-fail">' + ICON_X_CIRCLE + '</span>'
               : completed ? '<span class="tool-check">' + ICON_CHECK + '</span>' : '');
     const detail = document.createElement('div');
@@ -5690,6 +5695,8 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
       appendMessage(s, role, text);
     } else if (role === 'specialist') {
       appendSpecialistMsg(s, text);
+    } else if (role === 'run') {
+      renderRun(s, m.run);
     } else if (role === 'agent') {
       const bubble = startAgentBubble(s);
       if (!bubble) return;
@@ -5721,6 +5728,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
   // reload, re-entering a workspace) would otherwise stack a duplicate copy
   // of the whole conversation on top of the first.
   function resetSessionDom(s) {
+    s.runViews.clear();
     for (const entry of Array.from(a2uiBlocks)) {
       const fid = entry[0], b = entry[1];
       if (b.sid !== s.sid) continue;
@@ -5859,13 +5867,14 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
   let csTimer = null;
 
   const CS_ROLE_LABEL = {
-    user: 'You', agent: 'Octopus', error: 'Error', specialist: 'Specialist', ui: 'Surface',
+    user: 'You', agent: 'Octopus', error: 'Error', specialist: 'Specialist', run: 'Specialist', ui: 'Surface',
   };
 
   // What a record contributes to the index. A2UI records carry their content
   // in components rather than `text` (which is just the call id).
   function logRecordText(m) {
     if (!m) return '';
+    if (m.role === 'run') return m.run.events.filter(event => typeof event.content === 'string').map(event => event.content).join('\n');
     if (m.role === 'ui') {
       const out = [];
       const envelopes = (m.a2ui && Array.isArray(m.a2ui.messages)) ? m.a2ui.messages : [];
@@ -7779,6 +7788,7 @@ pub fn html(max_ai_prompt_history: usize, account_expanded: bool) -> String {
 </body>
 </html>"#.replace("/*@@THEME@@*/", crate::theme::CSS)
         .replace("/* A2UI_CORE_JS */", crate::a2ui_js::CORE)
+        .replace("/* SPECIALIST_JS */", include_str!("specialist.js"))
         .replace("/* PROMPT_HISTORY_JS */", prompt_history_js)
         .replace("/* KEYBINDINGS_JSON */", &keybindings_json)
         .replace("/* MAX_SESSIONS */", &crate::MAX_SESSIONS.to_string())
@@ -7811,6 +7821,42 @@ mod tests {
 			out.status.success(),
 			"sidebar script does not parse:\n{}",
 			String::from_utf8_lossy(&out.stderr),
+		);
+	}
+
+	#[test]
+	fn specialist_cards_keep_activity_and_parent_state_separate() {
+		let source = format!(
+			"{}\ncheckSpecialist({}, {});",
+			include_str!("specialist_test.js"),
+			serde_json::to_string(&super::html(50, false)).unwrap(),
+			serde_json::to_string(include_str!("specialist.js")).unwrap(),
+		);
+		let Some(out) = crate::a2ui_js::run_node("specialist", &source, &[]) else {
+			return;
+		};
+		assert!(
+			out.status.success(),
+			"specialist UI failed:\n{}",
+			String::from_utf8_lossy(&out.stderr)
+		);
+	}
+
+	#[test]
+	fn specialist_deltas_trim_and_evict_without_rebuilding() {
+		let source = format!(
+			"{}\ncheckSpecialistDeltas({}, {});",
+			include_str!("specialist_test.js"),
+			serde_json::to_string(&super::html(50, false)).unwrap(),
+			serde_json::to_string(include_str!("specialist.js")).unwrap()
+		);
+		let Some(out) = crate::a2ui_js::run_node("specialist_deltas", &source, &[]) else {
+			return;
+		};
+		assert!(
+			out.status.success(),
+			"specialist deltas failed:\n{}",
+			String::from_utf8_lossy(&out.stderr)
 		);
 	}
 

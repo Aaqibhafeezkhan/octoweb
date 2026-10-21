@@ -17,6 +17,8 @@
 //! Turns the agent starts by itself — a specialist's reply, a schedule —
 //! stream on the same connection between client turns and end with `Done`.
 
+use crate::specialist;
+use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -34,6 +36,8 @@ pub enum AgentEvent {
 	Connected(String),
 	/// A text chunk from the agent's response (streaming).
 	Chunk(String),
+	/// A delegated specialist transcript; never part of the parent response.
+	Run(specialist::Update),
 	/// A message injected into the session by the agent runtime — a specialist
 	/// (tap-run) reply, schedule, webhook, etc., prefixed with its source label.
 	/// Rendered as its own bubble, never merged into the streamed response.
@@ -152,6 +156,7 @@ enum Request {
 	Prompt(PromptMessage),
 	Cancel,
 	Command(String),
+	RecoverRuns(specialist::Cache),
 	/// Unload the session from the server, then disconnect.
 	Close,
 }
@@ -211,6 +216,10 @@ impl AgentHandle {
 	/// session task has exited.
 	pub fn send_prompt(&self, text: String, images: Vec<(String, String)>) -> bool {
 		self.tx.send(Request::Prompt(PromptMessage { text, images })).is_ok()
+	}
+
+	pub fn recover_runs(&self, runs: specialist::Cache) -> bool {
+		self.tx.send(Request::RecoverRuns(runs)).is_ok()
 	}
 
 	/// Stop the running turn. It ends with `AgentEvent::Cancelled`.
@@ -423,9 +432,9 @@ const USAGE_REFRESH: Duration = Duration::from_secs(60);
 type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// One session's connection state.
-struct Session<'a> {
+struct Session<'a, S> {
 	events: &'a Events,
-	sink: futures::stream::SplitSink<WsStream, Message>,
+	sink: S,
 	session_id: String,
 	next_id: u64,
 	/// Sent, awaiting their ack, by request id.
@@ -436,6 +445,8 @@ struct Session<'a> {
 	/// The server echoes a request's id on the cost that closes its turn
 	/// (`session_control_v1`), so turn ends are matched, not inferred.
 	tagged_costs: bool,
+	run_events: bool,
+	runs: specialist::Streams,
 	/// Prompts waiting for the running one to finish, or for a busy retry.
 	queue: VecDeque<PromptMessage>,
 	busy_retries: u32,
@@ -500,6 +511,8 @@ async fn serve_session(
 		current: None,
 		current_id: None,
 		tagged_costs: false,
+		run_events: false,
+		runs: specialist::Streams::default(),
 		queue: VecDeque::new(),
 		busy_retries: 0,
 		busy_retry_at: None,
@@ -512,6 +525,9 @@ async fn serve_session(
 	};
 
 	session.bind(&mut stream, cwd, &spec.role).await?;
+	if spec.one_shot {
+		session.recover_runs(specialist::Cache::default()).await?;
+	}
 	events.send(AgentEvent::Connected(session_id.clone()));
 	events.send(AgentEvent::AvailableCommands(available_commands()));
 
@@ -557,7 +573,10 @@ enum Ending {
 	Closed,
 }
 
-impl Session<'_> {
+impl<S> Session<'_, S>
+where
+	S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
 	fn request_id(&mut self, prefix: &str) -> String {
 		self.next_id += 1;
 		format!("{prefix}{}", self.next_id)
@@ -572,7 +591,7 @@ impl Session<'_> {
 	/// server says it is ready.
 	async fn bind(
 		&mut self,
-		stream: &mut futures::stream::SplitStream<WsStream>,
+		stream: &mut (impl futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
 		cwd: &std::path::Path,
 		role: &str,
 	) -> anyhow::Result<()> {
@@ -607,10 +626,14 @@ impl Session<'_> {
 					);
 				}
 				Some("ack") if value["request_id"] == "bind" => {
+					self.run_events = value["capabilities"]
+						.as_array()
+						.is_some_and(|caps| caps.iter().any(|c| c == "run_events_v1"));
 					self.tagged_costs = value["capabilities"]
 						.as_array()
 						.is_some_and(|caps| caps.iter().any(|c| c == "session_control_v1"));
 				}
+				Some("run_event") => self.on_frame(value).await?,
 				// The greeting.
 				_ => {}
 			}
@@ -635,13 +658,13 @@ impl Session<'_> {
 						self.send_next_prompt().await?;
 					}
 					Some(Request::Command(command)) => self.send_probe(&command).await?,
+					Some(Request::RecoverRuns(runs)) => self.recover_runs(runs).await?,
 					Some(Request::Cancel) => self.cancel().await?,
 					Some(Request::Close) => return Ok(Ending::Closed),
 					None => return Ok(Ending::Dropped),
 				},
 				frame = stream.next() => match frame {
 					Some(Ok(Message::Text(text))) => {
-						self.last_frame = Instant::now();
 						match serde_json::from_str::<serde_json::Value>(&text) {
 							Ok(value) => self.on_frame(value).await?,
 							Err(e) => tracing::debug!(error = %e, "unparseable octomind frame"),
@@ -798,8 +821,56 @@ impl Session<'_> {
 		self.asking_user.clear();
 	}
 
+	async fn recover_runs(&mut self, runs: specialist::Cache) -> anyhow::Result<()> {
+		let updates = self.runs.recover(runs);
+		if self.run_events {
+			for update in updates {
+				self.events.send(AgentEvent::Run(update));
+			}
+		}
+		self.request_run_logs().await
+	}
+
+	async fn request_run_logs(&mut self) -> anyhow::Result<()> {
+		if !self.run_events {
+			return Ok(());
+		}
+		for run_id in self.runs.requests() {
+			let request_id = self.request_id("run-log-");
+			self.send_frame(serde_json::json!({
+				"type": "run_log", "session_id": self.session_id,
+				"run_id": run_id, "request_id": request_id,
+			}))
+			.await?;
+			self.runs.request(&run_id, request_id);
+		}
+		Ok(())
+	}
+
 	async fn on_frame(&mut self, value: serde_json::Value) -> anyhow::Result<()> {
 		let kind = value["type"].as_str().unwrap_or_default();
+		// Run traffic is out of band, including replay acknowledgements. It
+		// must not consume any parent turn bookkeeping, even swallow_cost.
+		if matches!(kind, "run_event" | "run_log") {
+			anyhow::ensure!(self.run_events, "received {kind} without run_events_v1");
+			let run = if kind == "run_event" {
+				let frame: specialist::Frame = serde_json::from_value(value).context("invalid run_event")?;
+				anyhow::ensure!(frame.session_id == self.session_id, "run_event session_id mismatch");
+				self.runs.event(frame)
+			} else {
+				let log: specialist::Log = serde_json::from_value(value).context("invalid run_log")?;
+				anyhow::ensure!(log.session_id == self.session_id, "run_log session_id mismatch");
+				self.runs.log(log)?
+			};
+			for update in run {
+				self.events.send(AgentEvent::Run(update));
+			}
+			return self.request_run_logs().await;
+		}
+		if kind == "ack" && value["message_type"] == "run_log" {
+			return Ok(());
+		}
+		self.last_frame = Instant::now();
 		// A failed turn's trailing cost comes right behind its error, before
 		// anything else; a cost after any other frame belongs to something else.
 		if kind != "cost" {
@@ -1233,10 +1304,18 @@ mod tests {
 
 	/// Greeting, bind and the connect-time `/usage` probe. Returns the bind.
 	async fn accept_session(ws: &mut ServerWs) -> serde_json::Value {
+		accept_session_with_capabilities(ws, &[]).await
+	}
+
+	async fn accept_session_with_capabilities(ws: &mut ServerWs, capabilities: &[&str]) -> serde_json::Value {
 		send(ws, serde_json::json!({"type": "status", "message": "Connected"})).await;
 		let bind = recv(ws).await;
 		assert_eq!(bind["type"], "session", "{bind}");
-		ack(ws, &bind).await;
+		send(
+			ws,
+			serde_json::json!({"type":"ack", "request_id":"bind", "message_type":"session", "capabilities":capabilities}),
+		)
+		.await;
 		let sid = bind["session_id"].clone();
 		send(
 			ws,
@@ -1264,8 +1343,15 @@ mod tests {
 	}
 
 	fn start(endpoint: crate::octomind_server::Endpoint, spec: AgentSpec) -> Client {
+		start_with_runs(endpoint, spec, specialist::Cache::default())
+	}
+
+	fn start_with_runs(endpoint: crate::octomind_server::Endpoint, spec: AgentSpec, runs: specialist::Cache) -> Client {
 		let (event_tx, events) = mpsc::unbounded_channel();
 		let (requests, request_rx) = mpsc::unbounded_channel();
+		if !spec.one_shot {
+			requests.send(Request::RecoverRuns(runs)).unwrap();
+		}
 		let done = tokio::spawn(async move {
 			let events = Events {
 				tx: event_tx,
@@ -1293,7 +1379,12 @@ mod tests {
 					.await
 					.expect("event in time")
 					.expect("session alive");
-				if !matches!(event, AgentEvent::AvailableCommands(_) | AgentEvent::Account { .. }) {
+				if !matches!(
+					event,
+					AgentEvent::AvailableCommands(_)
+						| AgentEvent::Account { .. }
+						| AgentEvent::Run(specialist::Update::Recovering { .. })
+				) {
 					return event;
 				}
 			}
@@ -1309,6 +1400,278 @@ mod tests {
 
 	fn chat_spec() -> AgentSpec {
 		AgentSpec::chat("octoweb:assistant", Some("sess-1".into()), "default", None)
+	}
+
+	fn run_frame(seq: u64, event: serde_json::Value) -> serde_json::Value {
+		serde_json::json!({"type":"run_event", "session_id":"sess-1", "run_id":"tap-general-abcdef", "role":"developer:general", "seq":seq, "event":event})
+	}
+
+	fn running_runs() -> specialist::Cache {
+		let mut streams = specialist::Streams::default();
+		streams.recover(specialist::Cache::default());
+		let mut cache = specialist::Cache::default();
+		for (seq, event) in [
+			(1, serde_json::json!({"kind":"status","status":"running"})),
+			(2, serde_json::json!({"kind":"assistant","content":"saved "})),
+		] {
+			for update in streams.event(serde_json::from_value(run_frame(seq, event)).unwrap()) {
+				cache.apply(&update);
+			}
+		}
+		cache
+	}
+
+	#[tokio::test]
+	async fn terminal_before_bind_ready_recovers_the_full_saved_transcript() {
+		let (tx, mut rx) = mpsc::unbounded_channel();
+		let events = Events {
+			tx,
+			wake: Arc::new(|| {}),
+		};
+		let (mut session, mut sent) = session_fixture(&events);
+		let mut cached = running_runs();
+		let frames = [
+			serde_json::json!({"type":"ack","request_id":"bind","capabilities":["run_events_v1"]}),
+			run_frame(5, serde_json::json!({"kind":"status","status":"done"})),
+			serde_json::json!({"type":"status","session_id":"sess-1","message":"ready"}),
+		];
+		let mut incoming = futures::stream::iter(frames.into_iter().map(|frame| Ok(Message::text(frame.to_string()))));
+		session
+			.bind(&mut incoming, std::path::Path::new("/tmp"), "octoweb:assistant")
+			.await
+			.unwrap();
+		assert!(rx.try_recv().is_err(), "partial bind transcript escaped");
+		assert!(matches!(sent.try_recv().unwrap(), Message::Text(_))); // bind
+		assert!(sent.try_recv().is_err());
+		assert_eq!(cached.values().next().unwrap().seq, 2);
+		session.recover_runs(cached.clone()).await.unwrap();
+		assert!(matches!(
+			rx.try_recv().unwrap(),
+			AgentEvent::Run(specialist::Update::Recovering { .. })
+		));
+		let Message::Text(request) = sent.try_recv().unwrap() else {
+			panic!("run_log")
+		};
+		let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+		assert_eq!(request["type"], "run_log");
+		session.on_frame(serde_json::json!({"type":"run_log","session_id":"sess-1","run_id":"tap-general-abcdef","role":"developer:general","status":"done","seq":5,"truncated":false,"events":[{"kind":"assistant","content":"saved and recovered"},{"kind":"status","status":"done"}],"request_id":request["request_id"]})).await.unwrap();
+		let AgentEvent::Run(update) = rx.try_recv().unwrap() else {
+			panic!("recovered transcript")
+		};
+		cached.apply(&update);
+		let run = cached.values().next().unwrap();
+		assert_eq!(run.seq, 5);
+		assert_eq!(run.status, specialist::Status::Done);
+		assert_eq!(
+			run.events[0],
+			specialist::Event::Assistant {
+				content: "saved and recovered".into()
+			}
+		);
+		assert!(run.complete);
+		assert!(rx.try_recv().is_err());
+	}
+
+	fn session_fixture(
+		events: &Events,
+	) -> (
+		Session<'_, impl futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin>,
+		futures::channel::mpsc::UnboundedReceiver<Message>,
+	) {
+		let (sent, frames) = futures::channel::mpsc::unbounded::<Message>();
+		let sink = sent.sink_map_err(|_| tokio_tungstenite::tungstenite::Error::ConnectionClosed);
+		let deadline = Instant::now() + CANCEL_GRACE;
+		let session = Session {
+			events,
+			sink,
+			session_id: "sess-1".into(),
+			next_id: 0,
+			pending: HashMap::from([("pending".into(), Sent::Probe)]),
+			current: Some(Sent::UserCommand {
+				text: "parent".into(),
+				ends_on_cost: true,
+			}),
+			current_id: Some("parent-id".into()),
+			tagged_costs: true,
+			run_events: true,
+			runs: specialist::Streams::default(),
+			queue: VecDeque::new(),
+			busy_retries: 2,
+			busy_retry_at: Some(deadline),
+			busy_since: Some(deadline),
+			injected_open: true,
+			swallow_cost: true,
+			cancel_deadline: Some(deadline),
+			last_frame: deadline,
+			asking_user: HashSet::from(["ask".into()]),
+		};
+		(session, frames)
+	}
+
+	#[tokio::test]
+	async fn run_frames_and_replay_never_change_parent_turn_state() {
+		let (tx, mut rx) = mpsc::unbounded_channel();
+		let events = Events {
+			tx,
+			wake: Arc::new(|| {}),
+		};
+		let (mut session, mut frames) = session_fixture(&events);
+		let deadline = session.cancel_deadline.unwrap();
+		session.recover_runs(specialist::Cache::default()).await.unwrap();
+		let mut cache = specialist::Cache::default();
+		let payloads = [
+			serde_json::json!({"kind":"prompt","content":"task"}),
+			serde_json::json!({"kind":"assistant","content":"child"}),
+			serde_json::json!({"kind":"thinking","content":"reason"}),
+			serde_json::json!({"kind":"tool_use","tool":"render_ui","tool_id":"child-ask","params":{}}),
+			serde_json::json!({"kind":"tool_result","tool_id":"ask","content":"result","success":true}),
+			serde_json::json!({"kind":"usage","cost":0.1,"input_tokens":10,"output_tokens":20}),
+			serde_json::json!({"kind":"status","status":"failed","error":"child failed"}),
+		];
+		for (i, event) in payloads.into_iter().enumerate() {
+			session
+				.on_frame(run_frame(u64::try_from(i).unwrap() + 1, event))
+				.await
+				.unwrap();
+			let AgentEvent::Run(update) = rx.try_recv().unwrap() else {
+				panic!("run mapped into parent event")
+			};
+			cache.apply(&update);
+			if i == 6 {
+				cache.apply(&specialist::Update::Error {
+					run_id: "tap-general-abcdef".into(),
+					error: "missing activity".into(),
+				});
+				session.recover_runs(cache.clone()).await.unwrap();
+				assert!(matches!(
+					rx.try_recv().unwrap(),
+					AgentEvent::Run(specialist::Update::Recovering { .. })
+				));
+				let Message::Text(request) = frames.try_recv().unwrap() else {
+					panic!("run_log request")
+				};
+				let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+				session
+					.on_frame(
+						serde_json::json!({"type":"ack","message_type":"run_log","request_id":request["request_id"]}),
+					)
+					.await
+					.unwrap();
+				session.on_frame(serde_json::json!({"type":"run_log","session_id":"sess-1","run_id":"tap-general-abcdef","status":"unknown","seq":0,"truncated":false,"events":[],"error":"run not found","request_id":request["request_id"]})).await.unwrap();
+				assert!(matches!(
+					rx.try_recv().unwrap(),
+					AgentEvent::Run(specialist::Update::Error { .. })
+				));
+			}
+
+			assert!(
+				matches!(&session.current, Some(Sent::UserCommand { text, ends_on_cost: true }) if text == "parent")
+			);
+			assert_eq!(session.current_id.as_deref(), Some("parent-id"));
+			assert!(matches!(session.pending.get("pending"), Some(Sent::Probe)));
+			assert_eq!(session.cancel_deadline, Some(deadline));
+			assert_eq!(session.asking_user, HashSet::from(["ask".into()]));
+			assert!(session.swallow_cost);
+			assert!(session.injected_open);
+			assert_eq!(session.busy_retries, 2);
+			assert_eq!(session.busy_retry_at, Some(deadline));
+			assert_eq!(session.busy_since, Some(deadline));
+			assert_eq!(session.last_frame, deadline);
+			assert!(session.queue.is_empty());
+		}
+		// Between turns there is still no parent turn to open or finish.
+		session.runs = specialist::Streams::default();
+		session.recover_runs(specialist::Cache::default()).await.unwrap();
+		session.current = None;
+		session.current_id = None;
+		session.cancel_deadline = None;
+		session.injected_open = false;
+		session.swallow_cost = false;
+		session.asking_user.clear();
+		session
+			.on_frame(run_frame(1, serde_json::json!({"kind":"status","status":"running"})))
+			.await
+			.unwrap();
+		assert!(session.current.is_none() && session.current_id.is_none());
+		assert!(session.cancel_deadline.is_none() && session.asking_user.is_empty());
+		assert!(!session.injected_open && !session.swallow_cost);
+		let AgentEvent::Run(update) = rx.try_recv().unwrap() else {
+			panic!("expected independent run")
+		};
+		let mut runs = specialist::Cache::default();
+		runs.apply(&update);
+		assert!(frames.try_recv().is_err(), "run traffic sent a parent request");
+		session.run_events = false;
+		session.recover_runs(runs.clone()).await.unwrap();
+		assert!(frames.try_recv().is_err(), "recovery sent without capability");
+		let error = session
+			.on_frame(run_frame(
+				9,
+				serde_json::json!({"kind":"assistant","content":"unsupported"}),
+			))
+			.await
+			.unwrap_err();
+		assert_eq!(error.to_string(), "received run_event without run_events_v1");
+		session.run_events = true;
+		session.request_run_logs().await.unwrap();
+		let Message::Text(text) = frames.try_recv().unwrap() else {
+			panic!("expected run_log")
+		};
+		let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+		assert_eq!(frame["type"], "run_log");
+		assert_eq!(frame["run_id"], "tap-general-abcdef");
+		assert_eq!(session.pending.len(), 1);
+		assert!(session.current.is_none() && session.current_id.is_none());
+	}
+
+	#[tokio::test]
+	async fn bind_capability_gates_replay_and_streams_runs_between_parent_turns() {
+		for supported in [false, true] {
+			let endpoint = mock_server(move |mut ws| async move {
+				let caps: &[&str] = if supported { &["run_events_v1"] } else { &[] };
+				accept_session_with_capabilities(&mut ws, caps).await;
+				if supported {
+					let replay = recv(&mut ws).await;
+					assert_eq!(replay["type"], "run_log");
+					ack(&mut ws, &replay).await;
+					send(&mut ws, run_frame(2, serde_json::json!({"kind":"assistant","content":"duplicate"}))).await;
+					send(&mut ws, run_frame(3, serde_json::json!({"kind":"assistant","content":" live"}))).await;
+					send(&mut ws, serde_json::json!({"type":"run_log","session_id":"sess-1","run_id":"tap-general-abcdef","role":"developer:general","status":"running","source":"live","seq":2,"truncated":false,"events":[{"kind":"assistant","content":"snapshot"}],"request_id":replay["request_id"]})).await;
+				}
+				let message = recv(&mut ws).await;
+				assert_eq!(message["type"], "message");
+				ack(&mut ws, &message).await;
+				send(&mut ws, serde_json::json!({"type":"assistant","content":"parent"})).await;
+				send(&mut ws, cost("sess-1", serde_json::json!({}))).await;
+				if supported {
+					send(&mut ws, run_frame(4, serde_json::json!({"kind":"status","status":"done"}))).await;
+				}
+				let _ = ws.next().await;
+			}).await;
+			let mut client = start_with_runs(endpoint, chat_spec(), running_runs());
+			assert!(matches!(client.next().await, AgentEvent::Connected(_)));
+			client.prompt("parent prompt");
+			if supported {
+				let AgentEvent::Run(specialist::Update::Snapshot { run }) = client.next().await else {
+					panic!("expected run replay")
+				};
+				assert_eq!(run.seq, 3);
+				assert_eq!(
+					run.events,
+					VecDeque::from([specialist::Event::Assistant {
+						content: "snapshot live".into()
+					}])
+				);
+			}
+			assert!(matches!(client.next().await, AgentEvent::Chunk(text) if text == "parent"));
+			assert!(matches!(client.next().await, AgentEvent::Done));
+			if supported {
+				assert!(
+					matches!(client.next().await, AgentEvent::Run(specialist::Update::Delta { delta }) if delta.status == specialist::Status::Done)
+				);
+			}
+			client.quiet().await;
+		}
 	}
 
 	#[tokio::test]

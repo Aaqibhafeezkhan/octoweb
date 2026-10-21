@@ -57,6 +57,7 @@ mod shortcuts_html;
 mod sidebar_html;
 mod site_proxy;
 mod snapshot_js;
+mod specialist;
 mod ssh_tunnel;
 mod tab_nav;
 mod tab_stats;
@@ -527,6 +528,8 @@ pub(crate) struct AcpSession {
 	/// `AgentEvent::Chunk` and flushed into `messages` on Done / Cancelled /
 	/// Error so the persisted log only contains finalized turns.
 	agent_buf: String,
+	/// Run transcripts survive sidebar remounts and seed reconnect replay.
+	specialist_runs: specialist::Cache,
 	/// Tool runs of the in-flight turn. Mirrors what the live feed shows;
 	/// flushed into the agent message alongside `agent_buf` so the steps
 	/// group survives restarts.
@@ -2626,6 +2629,7 @@ fn main() {
 						acp_session_id: snap.acp_session_id,
 						messages: snap.messages,
 						agent_buf: String::new(),
+						specialist_runs: specialist::Cache::default(),
 						tool_buf: Vec::new(),
 						tool_starts: HashMap::new(),
 						tool_since_text: false,
@@ -2668,6 +2672,7 @@ fn main() {
 					acp_session_id: None,
 					messages: Vec::new(),
 					agent_buf: String::new(),
+					specialist_runs: specialist::Cache::default(),
 					tool_buf: Vec::new(),
 					tool_starts: HashMap::new(),
 					tool_since_text: false,
@@ -4290,6 +4295,7 @@ fn main() {
         ($s:expr) => {{
             let s = $s;
             let sid = s.id;
+            let _ = sidebar_wv.evaluate_script(&specialist_script(sid, &s.specialist_runs));
             if s.prompt_in_flight {
                 let elapsed_ms = s.turn_started.map(|t| t.elapsed().as_millis()).unwrap_or(0);
                 let _ = sidebar_wv.evaluate_script(&format!(
@@ -5054,6 +5060,11 @@ fn main() {
                         let mut should_persist = false;
                         if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
                             s.retry_count = 0;
+                            if let Some(handle) = &s.handle {
+                                if !handle.recover_runs(s.specialist_runs.clone()) {
+                                    tracing::error!("could not recover specialists: session disconnected");
+                                }
+                            }
                             // A new (or cleared) session: keep its id so every
                             // reconnect and cold start binds the same octomind
                             // session and its conversation context.
@@ -5067,6 +5078,14 @@ fn main() {
                         ));
                         if should_persist {
                             persist_acp_history(&workspace_manager.at(ws_idx).id, &workspace_manager.at(ws_idx).acp_sessions, workspace_manager.at(ws_idx).acp_active_session_id, cfg.max_acp_session_messages);
+                        }
+                    }
+                    agent::AgentEvent::Run(update) => {
+                        if let Some(s) = workspace_manager.at_mut(ws_idx).acp_sessions.iter_mut().find(|s| s.id == sid) {
+                            let evicted = s.specialist_runs.apply(&update);
+                            if on_screen {
+                                let _ = sidebar_wv.evaluate_script(&specialist_update_script(sid, &update, &evicted));
+                            }
                         }
                     }
                     agent::AgentEvent::Chunk(chunk) => {
@@ -7249,6 +7268,7 @@ fn main() {
                     acp_session_id: None,
                     messages: Vec::new(),
                     agent_buf: String::new(),
+                    specialist_runs: specialist::Cache::default(),
                     tool_buf: Vec::new(),
                     tool_starts: HashMap::new(),
                     tool_since_text: false,
@@ -8686,6 +8706,7 @@ fn main() {
                     .ok();
                     // Switching agents discards the prior conversation context.
                     s.messages.clear();
+                    s.specialist_runs.clear();
                     s.agent_buf.clear();
                     s.tool_buf.clear();
                     s.tool_starts.clear();
@@ -8727,6 +8748,7 @@ fn main() {
                     .ok();
                     // User asked for a fresh chat — drop the persisted log too.
                     s.messages.clear();
+                    s.specialist_runs.clear();
                     s.agent_buf.clear();
                     s.tool_buf.clear();
                     s.tool_starts.clear();
@@ -8776,6 +8798,7 @@ fn main() {
                         acp_session_id: None,
                         messages: Vec::new(),
                         agent_buf: String::new(),
+                        specialist_runs: specialist::Cache::default(),
                         tool_buf: Vec::new(),
                         tool_starts: HashMap::new(),
                         tool_since_text: false,
@@ -12699,6 +12722,19 @@ fn settle_after_nav(wv: &WebView, tab_id: usize, tabs: Arc<Mutex<TabManager>>, r
 	});
 }
 
+fn specialist_script(sid: u64, runs: &specialist::Cache) -> String {
+	let json = serde_json::to_string(&runs.values().collect::<Vec<_>>())
+		.expect("specialist transcripts are JSON serializable");
+	let escaped = webview_utils::escape_js_template(&json);
+	format!("window.__replayRuns && window.__replayRuns({sid},JSON.parse(`{escaped}`))")
+}
+
+fn specialist_update_script(sid: u64, update: &specialist::Update, evicted: &[String]) -> String {
+	let json = serde_json::to_string(&(update, evicted)).expect("specialist updates are JSON serializable");
+	let escaped = webview_utils::escape_js_template(&json);
+	format!("window.__updateRun && window.__updateRun({sid},...JSON.parse(`{escaped}`))")
+}
+
 #[cfg(test)]
 mod navigation_state_tests {
 	use super::*;
@@ -12745,6 +12781,7 @@ mod injected_turn_tests {
 			acp_session_id: None,
 			messages: Vec::new(),
 			agent_buf: String::new(),
+			specialist_runs: specialist::Cache::default(),
 			tool_buf: Vec::new(),
 			tool_starts: HashMap::new(),
 			tool_since_text: false,
@@ -12839,6 +12876,7 @@ mod a2ui_tests {
 			acp_session_id: None,
 			messages: Vec::new(),
 			agent_buf: String::new(),
+			specialist_runs: specialist::Cache::default(),
 			tool_buf: Vec::new(),
 			tool_starts: HashMap::new(),
 			tool_since_text: false,
