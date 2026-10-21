@@ -1,6 +1,6 @@
 /// Titlebar address bar — child of browser_win, lives in the native titlebar zone.
 ///
-/// Shows: favicon | title (top) / url (bottom) | stats | 🐙 AI toggle
+/// Shows: favicon | title (top) / url (bottom) | site permissions | stats | 🐙 AI toggle
 /// Transparent background — the native macOS titlebar provides the glass effect.
 /// Traffic light buttons are native NSButtons rendered ON TOP by macOS — always clickable.
 ///
@@ -15,11 +15,15 @@
 ///   window.__sysStats(cpuPct, memMb)                          — update CPU%/RSS (null = hide)
 ///   window.__setShortcuts(data)                               — update live shortcut titles
 ///   window.__setExtensionButtons(buttons)                     — extension actions: [{id, label, badge, enabled, icon}]
+///   window.__perms(state)                                     — camera/mic/location chip + prompt (null = hide)
 ///
 /// IPC messages sent to Rust:
 ///   { type: "toggle_sidebar" }       — 🐙 button clicked
 ///   { type: "copy_text", text: "…" } — copy title or URL to clipboard
 ///   { type: "ext_action", id, x, y, w, h } — extension button clicked (its rect anchors the popup)
+///   { type: "perm_action", action }  — permission popover: answer / set / capture / reset
+///   { type: "perm_popover", height } — grow the bar by the popover's height (0 = closed)
+///   { type: "perm_reload" }          — reload the page so a changed permission applies
 pub fn html() -> String {
 	let template = r#"<!DOCTYPE html>
 <html>
@@ -328,17 +332,29 @@ pub fn html() -> String {
     box-shadow: 0 -0.5px 0 var(--hairline);
   }
 
+  /* Lock / shield — the site-info button: opens the permission popover on
+     any website, whether or not the site has asked for anything yet. */
   #lock {
     flex-shrink: 0;
-    width: 12px;
-    height: 12px;
+    width: 20px;
+    height: 20px;
+    margin-right: 1px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-ctl);
+    background: transparent;
     display: none;
     align-items: center;
     justify-content: center;
     line-height: 0;
+    cursor: pointer;
+    transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
   }
   #lock.visible { display: inline-flex; }
-  #lock svg { width: 100%; height: 100%; }
+  #lock:hover  { background: var(--fill-hover); }
+  #lock:active { background: var(--fill-press); transform: scale(0.92); }
+  #lock[aria-expanded="true"] { background: var(--fill-press); }
+  #lock svg { width: 12px; height: 12px; }
   #lock.secure   { color: var(--lock-secure); }
   #lock.insecure { color: var(--lock-insecure); }
 
@@ -410,6 +426,170 @@ pub fn html() -> String {
   @media (max-width: 999px) {
     #stats-chip { display: none !important; }
   }
+
+  /* ── Site permissions: chip + popover ──────────────────────────────
+     Stays visible at every width: it is a privacy indicator, not a stat. */
+  #perm-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: var(--ctl-min);
+    padding: 0 7px;
+    margin-left: 8px;
+    border: none;
+    border-radius: var(--r-capsule);
+    background: var(--fill);
+    color: var(--label-2);
+    font: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+                transform var(--t-fast) var(--ease);
+  }
+  #perm-chip.hidden { display: none; }
+  #perm-chip:hover  { background: var(--fill-hover); color: var(--label); }
+  #perm-chip:active { transform: scale(0.95); }
+  #perm-chip[aria-expanded="true"] { background: var(--fill-press); color: var(--label); }
+  /* Camera or microphone on: recording red, never ambiguous. */
+  #perm-chip.live { background: color-mix(in srgb, var(--err) 14%, transparent); color: var(--err); }
+  #perm-chip.live:hover { background: color-mix(in srgb, var(--err) 22%, transparent); }
+  /* A site is waiting for an answer. */
+  #perm-chip.asking {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+    animation: perm-ask 1.6s var(--ease) infinite;
+  }
+  @keyframes perm-ask { 50% { background: color-mix(in srgb, var(--accent) 30%, transparent); } }
+  .perm-icon {
+    width: 12px;
+    height: 12px;
+    line-height: 0;
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+  .perm-icon svg { width: 100%; height: 100%; }
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: live-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes live-pulse { 50% { opacity: 0.3; } }
+
+  #perm-pop {
+    position: absolute;
+    z-index: 210;
+    width: 304px;
+    padding: 12px 14px;
+    display: none;
+    font-size: var(--fs-body);
+    color: var(--label);
+  }
+  #perm-pop.show {
+    display: block;
+    animation: suggest-pop var(--t-pop) var(--spring);
+  }
+  .pp-head { display: flex; align-items: center; gap: 8px; }
+  .pp-head .perm-icon { width: 15px; height: 15px; color: var(--accent); }
+  .pp-title { flex: 1; min-width: 0; }
+  .pp-host {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: -0.1px;
+  }
+  .pp-sub { font-size: var(--fs-caption); color: var(--label-2); margin-top: 1px; }
+  .pp-close {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: var(--r-capsule);
+    background: transparent;
+    color: var(--label-2);
+    cursor: pointer;
+    line-height: 0;
+  }
+  .pp-close:hover { background: var(--fill-hover); color: var(--label); }
+  .pp-close svg { width: 10px; height: 10px; }
+  .pp-ask { line-height: 1.4; margin: 10px 0 12px; }
+  .pp-actions { display: flex; justify-content: flex-end; gap: 6px; }
+  .pp-btn {
+    min-height: 26px;
+    padding: 0 12px;
+    border: none;
+    border-radius: var(--r-ctl);
+    background: var(--fill);
+    color: var(--label);
+    font: inherit;
+    cursor: pointer;
+    transition: background var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+  }
+  .pp-btn:hover  { background: var(--fill-hover); }
+  .pp-btn:active { background: var(--fill-press); transform: scale(0.97); }
+  .pp-btn.primary { background: var(--accent); color: var(--on-accent); }
+  .pp-btn.primary:hover { background: color-mix(in srgb, var(--accent) 86%, #000); }
+  .pp-btn.danger { color: var(--err); }
+  .pp-rows { margin-top: 8px; }
+  .pp-row {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    align-items: center;
+    gap: 6px 10px;
+    padding: 8px 0;
+    box-shadow: 0 -0.5px 0 var(--hairline);
+  }
+  .pp-row .perm-icon { width: 15px; height: 15px; color: var(--label-2); }
+  .pp-row.live .perm-icon, .pp-row.live .pp-state { color: var(--err); }
+  .pp-state { font-size: var(--fs-caption); color: var(--label-2); margin-top: 1px; }
+  .pp-live { grid-column: 2 / -1; display: flex; gap: 6px; }
+  .pp-live .pp-btn { min-height: 22px; padding: 0 10px; font-size: var(--fs-caption); }
+  .seg {
+    display: inline-flex;
+    padding: 2px;
+    border-radius: var(--r-ctl);
+    background: var(--fill);
+  }
+  .seg button {
+    border: none;
+    background: transparent;
+    font: inherit;
+    font-size: var(--fs-caption);
+    color: var(--label-2);
+    padding: 3px 8px;
+    border-radius: calc(var(--r-ctl) - 2px);
+    cursor: pointer;
+  }
+  .seg button:hover { color: var(--label); }
+  .seg button[aria-pressed="true"] {
+    background: var(--card);
+    color: var(--label);
+    box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.18);
+  }
+  .pp-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 10px;
+    box-shadow: 0 -0.5px 0 var(--hairline);
+  }
+  .pp-link {
+    border: none;
+    background: none;
+    padding: 2px 0;
+    color: var(--label-2);
+    font: inherit;
+    font-size: var(--fs-caption);
+    cursor: pointer;
+  }
+  .pp-link:hover { color: var(--label); text-decoration: underline; }
+  .pp-note { font-size: var(--fs-caption); color: var(--label-2); }
 
   /* ── 🐙 AI toggle button + utility buttons (spotlight, close tab) ── */
   .bar-btn {
@@ -522,8 +702,8 @@ pub fn html() -> String {
       </div>
       <span id="sep">·</span>
       <div id="url-row">
+        <button id="lock" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="perm-pop" title="Site info and permissions"></button>
         <button id="url-copy" type="button" title="Edit address">
-          <span id="lock"></span>
           <span id="url"></span>
         </button>
         <button id="url-copy-btn" class="copy-btn" type="button" aria-label="Copy address" title="Copy address">
@@ -537,6 +717,7 @@ pub fn html() -> String {
       </div>
     </div>
   </div>
+  <button id="perm-chip" class="hidden" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="perm-pop"></button>
   <div id="stats-chip" class="hidden" aria-label="Page and system diagnostics">
     <span class="stat hidden" id="size-chip" title="Page transfer size"><span class="sys-icon">@@ICON_DOWNLOAD@@</span><span class="stat-val" id="size"></span></span>
     <span class="stat hidden" id="time-chip" title="Page load time"><span class="sys-icon">@@ICON_CLOCK@@</span><span class="stat-val" id="time"></span></span>
@@ -578,6 +759,7 @@ pub fn html() -> String {
   </button>
 </div>
 <div id="url-suggest" class="glass-panel" role="listbox"></div>
+<div id="perm-pop" class="glass-panel" role="dialog" aria-label="Site permissions"></div>
 <div id="copy-status" class="visually-hidden" aria-live="polite"></div>
 <script>
 (function() {
@@ -705,6 +887,8 @@ pub fn html() -> String {
     if (url && url !== 'about:blank') {
       lockEl.innerHTML = secure ? ICON_LOCK : ICON_SHIELD;
       lockEl.className = (secure ? 'secure' : 'insecure') + ' visible';
+      lockEl.title = (secure ? 'Connection is secure' : 'Connection is not secure') + ' · site permissions';
+      lockEl.setAttribute('aria-label', lockEl.title);
     } else {
       lockEl.innerHTML = '';
       lockEl.className = '';
@@ -739,6 +923,8 @@ pub fn html() -> String {
     updateLaterBtn();
     updateLock(url, secure);
     updateStats(sizeBytes, timeMs);
+    // A navigation or reload applies any changed site permission.
+    permNeedsReload = false;
   };
 
   window.__setTitle = function(title) {
@@ -1008,6 +1194,7 @@ pub fn html() -> String {
 
   function enterEdit() {
     if (editing) return;
+    closePermPop();
     editing = true;
     urlRow.classList.add('editing');
     urlInput.value = currentUrl || '';
@@ -1187,6 +1374,360 @@ pub fn html() -> String {
     }
   };
 
+  // ── Site permissions (camera / microphone / location) ───────────────────
+  // Rust pushes the active page's state via __perms (null = not a website):
+  // {origin, host, items: [{kind, decision, live, refused}], prompt: {id, kinds}|null}.
+  // The chip shows what the site uses, may use, or was refused; the popover
+  // answers a waiting request or changes the remembered decision. The bar
+  // webview grows by the popover's height while it is open (perm_popover).
+  var permChip = document.getElementById('perm-chip');
+  var permPop  = document.getElementById('perm-pop');
+  var permState = null;
+  var permOpen = false;
+  var permMode = 'manage';     // 'prompt' | 'manage'
+  var permShownPrompt = 0;     // id of the last request that opened the popover
+  var permNeedsReload = false; // a changed decision the page has not picked up
+  var permSentHeight = 0;
+  var permAnchor = permChip;   // what opened the popover: the chip or the lock
+
+  var PERM_KINDS = ['camera', 'microphone', 'location'];
+  var PERM = {
+    camera:     { name: 'Camera',     on: '@@ICON_VIDEO@@',   off: '@@ICON_VIDEO_OFF@@' },
+    microphone: { name: 'Microphone', on: '@@ICON_MIC@@',     off: '@@ICON_MIC_OFF@@' },
+    location:   { name: 'Location',   on: '@@ICON_MAP_PIN@@', off: '@@ICON_MAP_PIN_OFF@@' }
+  };
+  var ICON_X = '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+
+  function permSend(action) {
+    window.ipc.postMessage(JSON.stringify({ type: 'perm_action', action: action }));
+  }
+
+  function permItem(kind) {
+    return permState ? permState.items.find(function(i) { return i.kind === kind; }) : null;
+  }
+
+  // Something worth showing: in use, remembered, or refused on this page.
+  function permRelevant(it) {
+    return !!(it && (it.live || it.decision || it.refused));
+  }
+
+  function permOff(it) {
+    return it.live === 'muted' || it.system_denied || (!it.live && (it.decision === 'block' || it.refused));
+  }
+
+  function permStateText(it) {
+    if (it.live === 'active') return 'In use';
+    if (it.live === 'muted') return 'Paused';
+    if (it.system_denied) return 'Allowed, but off in macOS Settings';
+    if (it.decision === 'allow') return 'Allowed';
+    if (it.decision === 'block') return 'Blocked';
+    if (it.refused) return 'Blocked on this page';
+    return 'Ask each time';
+  }
+
+  function permKindsText(kinds) {
+    var names = kinds.map(function(k) { return PERM[k].name.toLowerCase(); });
+    if (names.length < 2) return names[0] || '';
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
+
+  function permIcon(kind, off) {
+    var span = document.createElement('span');
+    span.className = 'perm-icon';
+    span.innerHTML = off ? PERM[kind].off : PERM[kind].on;
+    return span;
+  }
+
+  function renderPermChip() {
+    var s = permState;
+    var asking = !!(s && s.prompt);
+    var kinds = s ? PERM_KINDS.filter(function(k) {
+      return permRelevant(permItem(k)) || (asking && s.prompt.kinds.indexOf(k) >= 0);
+    }) : [];
+    if (!s || !kinds.length) {
+      permChip.classList.add('hidden');
+      if (!s) closePermPop();
+      return;
+    }
+    var live = kinds.some(function(k) { return permItem(k).live === 'active'; });
+    permChip.replaceChildren();
+    kinds.forEach(function(k) {
+      var it = permItem(k);
+      permChip.appendChild(permIcon(k, !(asking && s.prompt.kinds.indexOf(k) >= 0) && permOff(it)));
+    });
+    if (live) {
+      var dot = document.createElement('span');
+      dot.className = 'live-dot';
+      permChip.appendChild(dot);
+    }
+    permChip.classList.toggle('live', live && !asking);
+    permChip.classList.toggle('asking', asking);
+    permChip.classList.remove('hidden');
+    var label = asking
+      ? s.host + ' wants to use your ' + permKindsText(s.prompt.kinds)
+      : kinds.map(function(k) { return PERM[k].name + ': ' + permStateText(permItem(k)).toLowerCase(); }).join(' · ');
+    permChip.title = label || 'Site permissions';
+    permChip.setAttribute('aria-label', 'Site permissions — ' + (label || s.host));
+  }
+
+  function permButton(text, cls, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.textContent = text;
+    b.addEventListener('click', function(e) { e.stopPropagation(); onClick(); });
+    return b;
+  }
+
+  function permHead(kinds, sub) {
+    var head = document.createElement('div');
+    head.className = 'pp-head';
+    kinds.forEach(function(k) { head.appendChild(permIcon(k, false)); });
+    var title = document.createElement('div');
+    title.className = 'pp-title';
+    var host = document.createElement('div');
+    host.className = 'pp-host';
+    host.textContent = permState.host;
+    title.appendChild(host);
+    if (sub) {
+      var subEl = document.createElement('div');
+      subEl.className = 'pp-sub';
+      subEl.textContent = sub;
+      title.appendChild(subEl);
+    }
+    head.appendChild(title);
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'pp-close';
+    close.innerHTML = ICON_X;
+    head.appendChild(close);
+    return { el: head, close: close };
+  }
+
+  function renderPermPrompt() {
+    var p = permState.prompt;
+    var head = permHead(p.kinds, '');
+    // Dismissing refuses this request only; the site may ask again.
+    head.close.title = 'Not now';
+    head.close.setAttribute('aria-label', 'Not now');
+    head.close.addEventListener('click', function(e) {
+      e.stopPropagation();
+      permSend({ op: 'answer', allow: false, remember: false });
+      closePermPop();
+    });
+    var ask = document.createElement('div');
+    ask.className = 'pp-ask';
+    ask.textContent = 'wants to use your ' + permKindsText(p.kinds) + '.';
+    var actions = document.createElement('div');
+    actions.className = 'pp-actions';
+    actions.append(
+      permButton('Block', 'pp-btn', function() {
+        permSend({ op: 'answer', allow: false, remember: true });
+        closePermPop();
+      }),
+      permButton('Allow', 'pp-btn primary', function() {
+        permSend({ op: 'answer', allow: true, remember: true });
+        closePermPop();
+      })
+    );
+    permPop.append(head.el, ask, actions);
+  }
+
+  function renderPermManage() {
+    var secure = /^https:/i.test(currentUrl);
+    var head = permHead([], secure ? 'Connection is secure' : 'Connection is not secure');
+    head.close.title = 'Close';
+    head.close.setAttribute('aria-label', 'Close');
+    head.close.addEventListener('click', function(e) { e.stopPropagation(); closePermPop(); });
+    var rows = document.createElement('div');
+    rows.className = 'pp-rows';
+    PERM_KINDS.forEach(function(k) {
+      var it = permItem(k);
+      var row = document.createElement('div');
+      row.className = 'pp-row' + (it.live === 'active' ? ' live' : '');
+      var text = document.createElement('div');
+      var name = document.createElement('div');
+      name.textContent = PERM[k].name;
+      var state = document.createElement('div');
+      state.className = 'pp-state';
+      state.textContent = permStateText(it);
+      text.append(name, state);
+
+      var seg = document.createElement('div');
+      seg.className = 'seg';
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', PERM[k].name);
+      [['Ask', null], ['Allow', 'allow'], ['Block', 'block']].forEach(function(opt) {
+        var b = permButton(opt[0], '', function() {
+          if ((it.decision || null) === opt[1]) return;
+          permSend({ op: 'set', kind: k, decision: opt[1] });
+          // Blocking live capture stops it at once; anything else takes
+          // effect when the page asks again.
+          if (!(opt[1] === 'block' && it.live)) permNeedsReload = true;
+        });
+        b.setAttribute('aria-pressed', String((it.decision || null) === opt[1]));
+        seg.appendChild(b);
+      });
+      row.append(permIcon(k, permOff(it)), text, seg);
+
+      if (it.live) {
+        var live = document.createElement('div');
+        live.className = 'pp-live';
+        var paused = it.live === 'muted';
+        live.append(
+          permButton(paused ? 'Resume' : 'Pause', 'pp-btn', function() {
+            permSend({ op: 'capture', kind: k, state: paused ? 'active' : 'muted' });
+          }),
+          permButton('Stop', 'pp-btn danger', function() {
+            permSend({ op: 'capture', kind: k, state: 'none' });
+          })
+        );
+        row.appendChild(live);
+      }
+      if (it.system_denied) {
+        var sys = document.createElement('div');
+        sys.className = 'pp-live';
+        sys.appendChild(permButton('Open macOS Settings', 'pp-btn', function() {
+          window.ipc.postMessage(JSON.stringify({ type: 'perm_system_settings' }));
+          closePermPop();
+        }));
+        row.appendChild(sys);
+      }
+      rows.appendChild(row);
+    });
+
+    var foot = document.createElement('div');
+    foot.className = 'pp-foot';
+    var hasAny = PERM_KINDS.some(function(k) { return !!permItem(k).decision; });
+    if (hasAny) {
+      foot.appendChild(permButton('Reset permissions', 'pp-link', function() {
+        permSend({ op: 'reset' });
+        permNeedsReload = true;
+      }));
+    } else {
+      var note = document.createElement('span');
+      note.className = 'pp-note';
+      note.textContent = 'The site asks before using these.';
+      foot.appendChild(note);
+    }
+    if (permNeedsReload) {
+      foot.appendChild(permButton('Reload to apply', 'pp-btn primary', function() {
+        window.ipc.postMessage(JSON.stringify({ type: 'perm_reload' }));
+        closePermPop();
+      }));
+    }
+    permPop.append(head.el, rows, foot);
+  }
+
+  // Left-aligned under the lock when opened from it (or once the chip has
+  // gone); otherwise right-aligned under the chip.
+  function positionPermPop() {
+    var w = permPop.offsetWidth;
+    var r, left;
+    if (permAnchor === lockEl || permChip.classList.contains('hidden')) {
+      r = lockEl.getBoundingClientRect();
+      left = Math.min(r.left - 6, window.innerWidth - w - 8);
+    } else {
+      r = permChip.getBoundingClientRect();
+      left = Math.min(r.right - w, window.innerWidth - w - 8);
+    }
+    permPop.style.left = Math.round(Math.max(8, left)) + 'px';
+    permPop.style.top = Math.round(r.bottom + 6) + 'px';
+  }
+
+  function sendPermHeight(h) {
+    if (h === permSentHeight) return;
+    permSentHeight = h;
+    window.ipc.postMessage(JSON.stringify({ type: 'perm_popover', height: h }));
+  }
+
+  function renderPermPop() {
+    if (!permOpen || !permState) return;
+    if (permMode === 'prompt' && !permState.prompt) permMode = 'manage';
+    permPop.replaceChildren();
+    if (permMode === 'prompt') renderPermPrompt(); else renderPermManage();
+    positionPermPop();
+    var r = permPop.getBoundingClientRect();
+    sendPermHeight(Math.ceil(r.bottom + 14) - 32);
+  }
+
+  function openPermPop(mode, anchor) {
+    if (!permState) return;
+    if (editing) exitEdit();
+    permMode = mode;
+    permAnchor = anchor || permChip;
+    permOpen = true;
+    permPop.classList.add('show');
+    permAnchor.setAttribute('aria-expanded', 'true');
+    renderPermPop();
+  }
+
+  function closePermPop() {
+    if (!permOpen) return;
+    permOpen = false;
+    permPop.classList.remove('show');
+    permPop.replaceChildren();
+    permChip.setAttribute('aria-expanded', 'false');
+    lockEl.setAttribute('aria-expanded', 'false');
+    sendPermHeight(0);
+    renderPermChip();
+  }
+
+  window.__perms = function(state) {
+    var prevOrigin = permState && permState.origin;
+    permState = state && state.origin ? state : null;
+    if (permOpen && permState && permState.origin !== prevOrigin) closePermPop();
+    renderPermChip();
+    if (!permState) return;
+    var p = permState.prompt;
+    // A new request opens the popover — without taking keyboard focus from
+    // the page; one that arrives mid URL-edit waits on the pulsing chip.
+    if (p && p.id !== permShownPrompt && !editing) {
+      permShownPrompt = p.id;
+      openPermPop('prompt');
+    } else if (permOpen) {
+      if (permMode === 'prompt' && !p) closePermPop(); else renderPermPop();
+    }
+  };
+
+  // A second click on the same anchor closes; the other anchor re-opens.
+  function togglePermPop(anchor) {
+    if (permOpen && permAnchor === anchor) { closePermPop(); return; }
+    closePermPop();
+    openPermPop(permState && permState.prompt ? 'prompt' : 'manage', anchor);
+    var first = permPop.querySelector('.pp-btn.primary, .seg button, .pp-btn');
+    if (first) first.focus();
+  }
+
+  permChip.addEventListener('click', function(e) {
+    e.stopPropagation();
+    togglePermPop(permChip);
+  });
+
+  // The lock sits inside the address row, whose click starts URL editing.
+  lockEl.addEventListener('click', function(e) {
+    e.stopPropagation();
+    togglePermPop(lockEl);
+  });
+
+  // Clicks in the grown, transparent part of the bar close the popover; an
+  // unanswered request stays on the pulsing chip.
+  document.addEventListener('mousedown', function(e) {
+    if (!permOpen) return;
+    if (permPop.contains(e.target) || permChip.contains(e.target) || lockEl.contains(e.target)) return;
+    closePermPop();
+  });
+
+  document.addEventListener('keydown', function(e) {
+    if (permOpen && e.key === 'Escape') {
+      e.preventDefault();
+      closePermPop();
+      permAnchor.focus();
+    }
+  });
+
+  window.addEventListener('resize', function() { if (permOpen) positionPermPop(); });
+
   // 🐙 AI toggle button
   document.getElementById('ai-btn').addEventListener('click', function() {
     window.ipc.postMessage(JSON.stringify({ type: 'toggle_sidebar' }));
@@ -1295,7 +1836,7 @@ pub fn html() -> String {
   // don't move the window on the slightest mouse jitter.
   document.getElementById('bar').addEventListener('mousedown', function(e) {
     if (e.button !== 0) return;
-    if (e.target.closest('#ai-btn, .bar-btn, #title-row, #url-row, #url-input, #url-suggest')) return;
+    if (e.target.closest('#ai-btn, .bar-btn, #title-row, #url-row, #url-input, #url-suggest, #perm-chip, #perm-pop')) return;
     if (editing) return;
     window.ipc.postMessage(JSON.stringify({ type: 'begin_window_drag' }));
   });
@@ -1313,4 +1854,10 @@ pub fn html() -> String {
 		.replace("@@ICON_LOCK@@", crate::icons::LOCK)
 		.replace("@@ICON_SHIELD_ALERT@@", crate::icons::SHIELD_ALERT)
 		.replace("@@ICON_LAYERS@@", crate::icons::LAYERS)
+		.replace("@@ICON_VIDEO@@", crate::icons::VIDEO)
+		.replace("@@ICON_VIDEO_OFF@@", crate::icons::VIDEO_OFF)
+		.replace("@@ICON_MIC@@", crate::icons::MIC)
+		.replace("@@ICON_MIC_OFF@@", crate::icons::MIC_OFF)
+		.replace("@@ICON_MAP_PIN@@", crate::icons::MAP_PIN)
+		.replace("@@ICON_MAP_PIN_OFF@@", crate::icons::MAP_PIN_OFF)
 }

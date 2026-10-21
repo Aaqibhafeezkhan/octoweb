@@ -18,6 +18,8 @@ main.rs                      ← App entry, event loop, WebView pool, keyboard (
    ├── webview_utils.rs      ← Injected JS scripts, favicon cache lookup, overlay data
    ├── macos.rs              ← macOS-specific: dock icon, Edit menu, MRU list, external URLs
    ├── nav_error_patch.rs    ← WKWebView navigation error callbacks (ObjC runtime patch)
+   ├── site_permissions.rs   ← Camera/mic/location: per-origin decisions, held prompts, live capture pause/stop
+   ├── geolocation.rs        ← CoreLocation → WebKit geolocation provider (WKWebView on macOS has none)
    ├── content_rules.rs      ← WKContentRuleList (ad/tracker blocking)
    ├── crash_report.rs       ← WebContent process termination tracking
    ├── cold_open.rs          ← First-run setup, URL scheme handler (kAEGetURL)

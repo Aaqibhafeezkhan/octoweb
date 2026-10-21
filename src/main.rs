@@ -18,6 +18,7 @@ mod extension_objc;
 mod extension_store;
 mod extensions;
 mod find_bar_html;
+mod geolocation;
 mod hibernation;
 mod hold_reorder_js;
 mod icons;
@@ -55,6 +56,7 @@ mod sanitize;
 mod settings_html;
 mod shortcuts_html;
 mod sidebar_html;
+mod site_permissions;
 mod site_proxy;
 mod snapshot_js;
 mod specialist;
@@ -103,7 +105,10 @@ enum AppEvent {
 	PushAddressHistory,                    // address bar requested history snapshot for URL autocomplete
 	UrlEditExpand(bool),                   // address bar entered/left edit mode — grow the bar webview so the
 	// suggestion dropdown isn't clipped by the 32 px titlebar height.
-	UrlEditRequest, // Cmd+E — trigger URL edit on the address bar (no shift)
+	SitePermissions(usize), // (wv_ptr) — a page asked for camera/microphone/location
+	SitePermissionAction(site_permissions::Action), // address-bar permission popover changed something
+	SitePermissionPopover(u32), // permission popover height in logical px (0 = closed)
+	UrlEditRequest,         // Cmd+E — trigger URL edit on the address bar (no shift)
 	SwitchTab(usize),
 	CloseTab(usize),
 	PrevTab,                 // Ctrl+P — switch to previous tab in MRU order
@@ -748,6 +753,12 @@ fn main() {
 	}
 	cold_open::install(); // hook application:openURLs: for warm launch
 	let proxy = event_loop.create_proxy();
+	site_permissions::set_notify({
+		let p = proxy.clone();
+		move |wv_ptr| {
+			let _ = p.send_event(AppEvent::SitePermissions(wv_ptr));
+		}
+	});
 	// Before the first tab WebView: a tab gets the extension controller in
 	// its configuration at creation and can never gain it afterwards.
 	extensions::init({
@@ -1263,7 +1274,8 @@ fn main() {
 			content_rules::apply_to_webview(wv_ptr);
 			webview_utils::remove_ipc_global(wv_ptr);
 			webview_utils::expose_window_frame(wv_ptr);
-			webview_utils::allow_geolocation_prompt(wv_ptr);
+			site_permissions::install(wv_ptr);
+			geolocation::install(wv_ptr);
 			site_proxy::inject_from_webview(wv_ptr);
 			extensions::hook_context_menu(wv_ptr);
 			site_proxy::register(wv_ptr, proxy_rule.map(|rule| rule.id), move |url| {
@@ -2160,6 +2172,26 @@ fn main() {
 						}
 						Some("later_toggle") => {
 							let _ = p.send_event(AppEvent::LaterToggle);
+						}
+						Some("perm_action") => {
+							match serde_json::from_value::<site_permissions::Action>(v["action"].clone()) {
+								Ok(action) => {
+									let _ = p.send_event(AppEvent::SitePermissionAction(action));
+								}
+								Err(e) => tracing::warn!(error = %e, "bad site permission action"),
+							}
+						}
+						Some("perm_popover") => {
+							let h = v["height"].as_f64().unwrap_or(0.0).clamp(0.0, 600.0) as u32;
+							let _ = p.send_event(AppEvent::SitePermissionPopover(h));
+						}
+						Some("perm_reload") => {
+							let _ = p.send_event(AppEvent::Reload(false));
+						}
+						Some("perm_system_settings") => {
+							macos::open_external_url(
+								"x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices",
+							);
 						}
 						Some("navigate") => {
 							// Submitted URL/query from the address bar edit field.
@@ -3095,6 +3127,12 @@ fn main() {
 	// to full window height so the autocomplete dropdown and backdrop can
 	// paint outside the 32 px titlebar strip without being clipped.
 	let mut address_bar_editing = false;
+	// Site permission popover height in logical px (0 = closed). The bar grows
+	// by the larger of this and the URL-edit dropdown room.
+	let mut perm_popover_h: u32 = 0;
+	// Last permission state pushed to the address bar — only changes are sent.
+	let mut site_perm_pushed = String::new();
+	let mut site_perm_check_at = std::time::Instant::now();
 	let mut overlay_focus_target = PanelFocusTarget::ActiveTab;
 	let mut settings_focus_target = PanelFocusTarget::ActiveTab;
 	let mut shortcuts_focus_target = PanelFocusTarget::ActiveTab;
@@ -4050,6 +4088,40 @@ fn main() {
 		};
 	}
 
+	/// Push the active page's camera/microphone/location state to the address
+	/// bar when it differs from what the bar already shows.
+	macro_rules! push_site_permissions {
+		() => {{
+			let json = workspace_manager
+				.active()
+				.webviews
+				.get(&active_wv_id)
+				.map(|wv| site_permissions::state_json(objc2::rc::Retained::as_ptr(&wv.webview()) as usize))
+				.unwrap_or_else(|| "null".to_string());
+			if json != site_perm_pushed {
+				let _ = address_bar_wv.evaluate_script(&format!("window.__perms && window.__perms({json})"));
+				site_perm_pushed = json;
+			}
+		}};
+	}
+
+	/// Address bar height: the titlebar strip plus room for whichever dropdown
+	/// (URL suggestions, permission popover) is open.
+	macro_rules! address_bar_bounds {
+		() => {{
+			let scale = browser_win.scale_factor();
+			let edit_extra: f64 = if address_bar_editing { 340.0 } else { 0.0 };
+			let extra = edit_extra.max(f64::from(perm_popover_h));
+			wry::Rect {
+				position: tao::dpi::PhysicalPosition::new(0u32, 0u32).into(),
+				size: tao::dpi::PhysicalSize::new(
+					browser_win.inner_size().width,
+					address_bar_h + (extra * scale) as u32,
+				)
+				.into(),
+			}
+		}};
+	}
 	/// Update address bar and window title with the given URL, title, and cached page stats.
 	macro_rules! update_address_bar_url {
 		($url:expr) => {{
@@ -4084,6 +4156,8 @@ fn main() {
 			} else {
 				let _ = address_bar_wv.evaluate_script("window.__setFavicon && window.__setFavicon(``)");
 			}
+			drop(fc);
+			push_site_permissions!();
 		}};
 	}
 
@@ -4676,10 +4750,15 @@ fn main() {
             }
         }
 
+        let now = std::time::Instant::now();
+        // ── Live camera/microphone state of the active page (pushed on change) ──
+        if now >= site_perm_check_at {
+            site_perm_check_at = now + std::time::Duration::from_secs(1);
+            push_site_permissions!();
+        }
         // ── Sample active tab's WebContent process stats ─────────────────
         // Store in atomics for custom protocol polling (avoids evaluate_script leak).
         // JS polls via fetch('octoweb-sys://stats') — no WKWebView JS context leak.
-        let now = std::time::Instant::now();
         if now >= sys_stats_next_at {
             let media_active = media_playing_tabs.contains(&active_wv_id);
             let interval = if media_active { 5 } else { 2 };
@@ -4889,6 +4968,12 @@ fn main() {
                     )
                 };
                 for victim_id in victims {
+                    // A tab with the camera or microphone on is in a call.
+                    if workspace_manager.active().webviews.get(&victim_id).is_some_and(|wv| {
+                        site_permissions::is_capturing(objc2::rc::Retained::as_ptr(&wv.webview()) as usize)
+                    }) {
+                        continue;
+                    }
                     // Save URL so switch_visible_tab! can restore later
                     let url = workspace_manager.active().tabs.lock().unwrap()
                         .tabs()
@@ -4904,6 +4989,7 @@ fn main() {
                         let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                         nav_error_patch::unregister(wv_ptr);
                         site_proxy::unregister(wv_ptr);
+                        site_permissions::forget(wv_ptr);
                         nav_error_patch::unregister_termination(wv_ptr);
                         dialog_patch::unregister(wv_ptr);
                     }
@@ -4960,6 +5046,11 @@ fn main() {
                 )
             };
             for victim_id in victims {
+                if workspace_manager.active().webviews.get(&victim_id).is_some_and(|wv| {
+                    site_permissions::is_capturing(objc2::rc::Retained::as_ptr(&wv.webview()) as usize)
+                }) {
+                    continue;
+                }
                 let url = workspace_manager.active().tabs.lock().unwrap()
                     .tabs()
                     .iter()
@@ -4973,6 +5064,7 @@ fn main() {
                     let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                     nav_error_patch::unregister(wv_ptr);
                     site_proxy::unregister(wv_ptr);
+                    site_permissions::forget(wv_ptr);
                     nav_error_patch::unregister_termination(wv_ptr);
                     dialog_patch::unregister(wv_ptr);
                 }
@@ -6938,17 +7030,24 @@ fn main() {
             Event::UserEvent(AppEvent::UrlEditExpand(expanded)) => {
                 address_bar_editing = expanded;
                 address_edit_hotkey_visible.store(expanded, Ordering::Relaxed);
-                let sz = browser_win.inner_size();
-                let scale = browser_win.scale_factor();
-                let expanded_extra: u32 = if expanded {
-                    (340.0 * scale) as u32
-                } else {
-                    0
-                };
-                let _ = address_bar_wv.set_bounds(wry::Rect {
-                    position: tao::dpi::PhysicalPosition::new(0u32, 0u32).into(),
-                    size: tao::dpi::PhysicalSize::new(sz.width, address_bar_h + expanded_extra).into(),
-                });
+                let _ = address_bar_wv.set_bounds(address_bar_bounds!());
+            }
+
+            // ── Site permissions (camera / microphone / location) ─────────────
+            // A page asked: refresh the bar if it is the active tab (a background
+            // tab's prompt shows when the user switches to it).
+            Event::UserEvent(AppEvent::SitePermissions(_wv_ptr)) => {
+                push_site_permissions!();
+            }
+            Event::UserEvent(AppEvent::SitePermissionAction(action)) => {
+                if let Some(wv) = workspace_manager.active().webviews.get(&active_wv_id) {
+                    site_permissions::apply(objc2::rc::Retained::as_ptr(&wv.webview()) as usize, action);
+                }
+                push_site_permissions!();
+            }
+            Event::UserEvent(AppEvent::SitePermissionPopover(h)) => {
+                perm_popover_h = h;
+                let _ = address_bar_wv.set_bounds(address_bar_bounds!());
             }
 
             // ── Cmd+E: trigger URL edit (same as clicking the pencil) ─────────
@@ -7469,6 +7568,7 @@ fn main() {
                     let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                     nav_error_patch::unregister(wv_ptr);
                     site_proxy::unregister(wv_ptr);
+                    site_permissions::forget(wv_ptr);
                     nav_error_patch::unregister_termination(wv_ptr);
                     dialog_patch::unregister(wv_ptr);
                 }
@@ -7911,6 +8011,7 @@ fn main() {
                             let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                             nav_error_patch::unregister(wv_ptr);
                             site_proxy::unregister(wv_ptr);
+                            site_permissions::forget(wv_ptr);
                             nav_error_patch::unregister_termination(wv_ptr);
                         }
                         workspace_manager.active_mut().webviews.remove(&orphan);
@@ -7983,6 +8084,7 @@ fn main() {
                             let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                             nav_error_patch::unregister(wv_ptr);
                             site_proxy::unregister(wv_ptr);
+                            site_permissions::forget(wv_ptr);
                             nav_error_patch::unregister_termination(wv_ptr);
                         }
                         workspace_manager.active_mut().webviews.remove(&orphan);
@@ -8141,6 +8243,7 @@ fn main() {
                         let wv_ptr = objc2::rc::Retained::as_ptr(&wv.webview()) as usize;
                         nav_error_patch::unregister(wv_ptr);
                         site_proxy::unregister(wv_ptr);
+                        site_permissions::forget(wv_ptr);
                         nav_error_patch::unregister_termination(wv_ptr);
                         dialog_patch::unregister(wv_ptr);
                     }
@@ -11329,19 +11432,9 @@ fn main() {
                         });
                     }
                     layout_terminal!();
-                    // Resize address bar to full width. While the user is in URL
-                    // edit mode the bar is grown by ~340 px so the autocomplete
-                    // dropdown stays visible below the 32 px titlebar strip.
-                    let bar_h = if address_bar_editing {
-                        let scale = browser_win.scale_factor();
-                        address_bar_h + (340.0 * scale) as u32
-                    } else {
-                        address_bar_h
-                    };
-                    let _ = address_bar_wv.set_bounds(wry::Rect {
-                        position: tao::dpi::PhysicalPosition::new(0u32, 0u32).into(),
-                        size: tao::dpi::PhysicalSize::new(sz.width, bar_h).into(),
-                    });
+                    // Resize address bar to full width, keeping room for an open
+                    // URL-suggestion dropdown or permission popover.
+                    let _ = address_bar_wv.set_bounds(address_bar_bounds!());
                     // Reposition notification toast at top-right
                     let _ = notification_wv.set_bounds(wry::Rect {
                         position: tao::dpi::PhysicalPosition::new(

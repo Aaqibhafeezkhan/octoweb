@@ -136,6 +136,63 @@ pub const SHIELD_ALERT: &str = concat!(
 	"</svg>"
 );
 
+/// `video` — camera site permission.
+pub const VIDEO: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/>"#,
+	r#"<rect x="2" y="6" width="14" height="12" rx="2"/>"#,
+	"</svg>"
+);
+
+/// `video-off` — camera blocked or paused.
+pub const VIDEO_OFF: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196"/>"#,
+	r#"<path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2"/>"#,
+	r#"<path d="m2 2 20 20"/>"#,
+	"</svg>"
+);
+
+/// `mic` — microphone site permission.
+pub const MIC: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>"#,
+	r#"<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>"#,
+	r#"<line x1="12" x2="12" y1="19" y2="22"/>"#,
+	"</svg>"
+);
+
+/// `mic-off` — microphone blocked or muted.
+pub const MIC_OFF: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<line x1="2" x2="22" y1="2" y2="22"/>"#,
+	r#"<path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/>"#,
+	r#"<path d="M5 10v2a7 7 0 0 0 12 5"/>"#,
+	r#"<path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/>"#,
+	r#"<path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>"#,
+	r#"<line x1="12" x2="12" y1="19" y2="22"/>"#,
+	"</svg>"
+);
+
+/// `map-pin` — location site permission.
+pub const MAP_PIN: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/>"#,
+	r#"<circle cx="12" cy="10" r="3"/>"#,
+	"</svg>"
+);
+
+/// `map-pin-off` — location blocked.
+pub const MAP_PIN_OFF: &str = concat!(
+	r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">"#,
+	r#"<path d="M12.75 7.09a3 3 0 0 1 2.16 2.16"/>"#,
+	r#"<path d="M17.072 17.072c-1.634 2.17-3.527 3.912-4.471 4.727a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 1.432-4.568"/>"#,
+	r#"<path d="m2 2 20 20"/>"#,
+	r#"<path d="M8.475 2.818A8 8 0 0 1 20 10c0 1.183-.31 2.377-.81 3.533"/>"#,
+	r#"<path d="M9.13 9.13a3 3 0 0 0 3.74 3.74"/>"#,
+	"</svg>"
+);
+
 // ── Brand mark ─────────────────────────────────────────────────────────────
 //
 // Brand mark: the octomind pixel octopus, shared with the CLI and the app

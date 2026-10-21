@@ -159,63 +159,6 @@ extern "C-unwind" fn window_frame(
 	}
 }
 
-/// Let pages ask for the user's location.
-///
-/// WebKit on macOS denies `navigator.geolocation` outright unless the UI
-/// delegate has the private
-/// `_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:`,
-/// which wry's lacks. Answering `WKPermissionDecisionPrompt` makes WebKit show
-/// its own "Allow … to use your current location?" sheet; macOS then asks once
-/// for the app's Location Services access (`NSLocationUsageDescription`).
-pub fn allow_geolocation_prompt(wv_ptr: usize) {
-	use objc2::runtime::{AnyClass, AnyObject, Sel};
-	use objc2::{msg_send, sel};
-
-	unsafe {
-		let wv = wv_ptr as *mut AnyObject;
-		let delegate: *mut AnyObject = msg_send![wv, UIDelegate];
-		let class: *const AnyClass = msg_send![delegate, class];
-		let added = objc2::ffi::class_addMethod(
-			class as *mut _,
-			sel!(_webView:requestGeolocationPermissionForOrigin:initiatedByFrame:decisionHandler:),
-			std::mem::transmute::<
-				extern "C-unwind" fn(
-					*mut AnyObject,
-					Sel,
-					*mut AnyObject,
-					*mut AnyObject,
-					*mut AnyObject,
-					*mut AnyObject,
-				),
-				unsafe extern "C-unwind" fn(),
-			>(geolocation_permission),
-			c"v@:@@@@".as_ptr(),
-		);
-		// Same as `expose_window_frame`: WebKit snapshots the delegate's
-		// methods when it is set.
-		if added.as_bool() {
-			let _: () = msg_send![wv, setUIDelegate: delegate];
-		}
-	}
-}
-
-extern "C-unwind" fn geolocation_permission(
-	_delegate: *mut objc2::runtime::AnyObject,
-	_sel: objc2::runtime::Sel,
-	_webview: *mut objc2::runtime::AnyObject,
-	_origin: *mut objc2::runtime::AnyObject,
-	_frame: *mut objc2::runtime::AnyObject,
-	decision_handler: *mut objc2::runtime::AnyObject,
-) {
-	// WKPermissionDecisionPrompt
-	const PROMPT: isize = 0;
-	tracing::debug!("geolocation permission requested");
-	unsafe {
-		let block = decision_handler as *const block2::Block<dyn Fn(isize)>;
-		(*block).call((PROMPT,));
-	}
-}
-
 /// Single JS script injected into every tab page at document-start.
 ///
 /// Merges all five former scripts into one IIFE so JavaScriptCore compiles
