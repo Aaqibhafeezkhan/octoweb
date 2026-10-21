@@ -1263,6 +1263,7 @@ fn main() {
 			content_rules::apply_to_webview(wv_ptr);
 			webview_utils::remove_ipc_global(wv_ptr);
 			webview_utils::expose_window_frame(wv_ptr);
+			webview_utils::allow_geolocation_prompt(wv_ptr);
 			site_proxy::inject_from_webview(wv_ptr);
 			extensions::hook_context_menu(wv_ptr);
 			site_proxy::register(wv_ptr, proxy_rule.map(|rule| rule.id), move |url| {
