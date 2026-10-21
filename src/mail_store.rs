@@ -1101,8 +1101,18 @@ impl Store {
 		self.set_sender(account, addr, "gate", gate);
 	}
 
+	/// `images` is an INTEGER column: read as text it fails on every sender
+	/// with a row, so it has its own query.
 	pub fn images_allowed(&self, account: &str, addr: &str) -> bool {
-		self.sender(account, addr, "images").is_some_and(|v| v == "1")
+		self.conn
+			.query_row(
+				"SELECT images FROM senders WHERE account = ?1 AND addr = ?2",
+				params![account, addr],
+				|r| r.get::<_, i64>(0),
+			)
+			.optional()
+			.expect("sender images")
+			.is_some_and(|v| v == 1)
 	}
 
 	pub fn allow_images(&self, account: &str, addr: &str) {
@@ -1611,6 +1621,16 @@ mod tests {
 		let v = s.inbox(&[acct(true)], 100);
 		assert!(v.new_senders.is_empty());
 		assert_eq!(v.important.len(), 1);
+	}
+
+	#[test]
+	fn images_allowed_reads_senders_with_a_row() {
+		let s = Store::in_memory();
+		assert!(!s.images_allowed("a", "anna@y"));
+		s.set_gate("a", "anna@y", Some("accepted"));
+		assert!(!s.images_allowed("a", "anna@y"));
+		s.allow_images("a", "anna@y");
+		assert!(s.images_allowed("a", "anna@y"));
 	}
 
 	#[test]
