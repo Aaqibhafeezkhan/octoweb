@@ -114,6 +114,9 @@ pub fn is_external_scheme(url: &str) -> bool {
 	{
 		return false;
 	}
+	if is_host_port(scheme, &url[idx + 1..]) {
+		return false;
+	}
 	// Schemes the browser handles natively — everything else is external.
 	!matches!(
 		scheme.to_ascii_lowercase().as_str(),
@@ -225,6 +228,29 @@ mod tests {
 			"com.example.app:/oauth",
 		] {
 			assert_eq!(resolve_url(url, SEARCH), url);
+		}
+	}
+
+	#[test]
+	fn host_ports_are_not_external_schemes() {
+		for url in [
+			"localhost:3000",
+			"127.0.0.1:8080/x",
+			"example.com:8080?q=1",
+		] {
+			assert!(!is_external_scheme(url), "{url}");
+		}
+	}
+
+	#[test]
+	fn external_schemes_remain_external() {
+		for url in [
+			"tg://resolve?domain=x",
+			"tel:5551234",
+			"mailto:a@b.c",
+			"com.example.app:/oauth",
+		] {
+			assert!(is_external_scheme(url), "{url}");
 		}
 	}
 
