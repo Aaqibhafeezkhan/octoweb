@@ -553,6 +553,10 @@ pub fn mru_push(mru: &mut Vec<usize>, id: usize) {
 /// Without a menu bar, macOS has no `selectAll:` / `copy:` / `paste:` /
 /// `cut:` / `undo:` / `redo:` actions registered, so those key equivalents
 /// are silently swallowed and never reach the web view's text inputs.
+///
+/// When the updater runs (`updates::start`, called first), an app menu with
+/// "Check for Updates…" comes before Edit. macOS shows the first menu under
+/// the app's name, so without it the Edit items sit there.
 pub fn setup_edit_menu() {
 	use objc2::sel;
 	use objc2_app_kit::{NSApplication, NSMenu, NSMenuItem};
@@ -566,6 +570,14 @@ pub fn setup_edit_menu() {
 
 		// Top-level menu bar.
 		let menubar = NSMenu::new(mtm);
+
+		if let Some(update_item) = crate::updates::menu_item(mtm) {
+			let app_menu = NSMenu::new(mtm);
+			app_menu.addItem(&update_item);
+			let app_item = NSMenuItem::new(mtm);
+			app_item.setSubmenu(Some(&app_menu));
+			menubar.addItem(&app_item);
+		}
 
 		// ── Edit menu ────────────────────────────────────────────────────
 		let edit_menu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str("Edit"));

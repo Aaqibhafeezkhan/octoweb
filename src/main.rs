@@ -66,6 +66,7 @@ mod tab_stats;
 mod terminal;
 mod terminal_html;
 mod theme;
+mod updates;
 mod url;
 mod webview_utils;
 mod workspace;
@@ -192,6 +193,7 @@ enum AppEvent {
 	DismissNotification,       // user clicked X on notification toast
 	ToggleSettings,            // ⌘, — toggle settings modal
 	HideSettings,              // JS Esc / backdrop click in settings modal
+	CheckForUpdates,           // settings "Check for Updates…" — Sparkle's window
 	UpdateConfig(String, String), // (key, value) — config field changed in settings UI
 	ProxyStatus([u8; 16], ssh_tunnel::Status), // SSH tunnel proxy changed state
 	ToggleWorkspaces,          // ⌘⇧O — toggle workspace switcher popover
@@ -1700,6 +1702,13 @@ fn main() {
 						Some("settings_close") => {
 							sw.set_visible(false);
 							let _ = p.send_event(AppEvent::HideSettings);
+						}
+						// The modal floats above every window, so it closes before
+						// Sparkle's window opens.
+						Some("check_updates") => {
+							sw.set_visible(false);
+							let _ = p.send_event(AppEvent::HideSettings);
+							let _ = p.send_event(AppEvent::CheckForUpdates);
 						}
 						Some("settings_update") => {
 							if let (Some(key), Some(val)) = (v["key"].as_str(), v["value"].as_str()) {
@@ -5117,6 +5126,8 @@ fn main() {
         // Set dock icon and app menu once — must happen after tao has initialized NSApplication.
         if !icon_set {
             macos::set_app_icon();
+            // Before the menu, which gets "Check for Updates…" once it runs.
+            updates::start();
             macos::setup_edit_menu();
             macos::disable_automatic_termination();
             icon_set = true;
@@ -7113,6 +7124,7 @@ fn main() {
                         ));
                     }
                     let _ = settings_wv.evaluate_script(&extensions::settings_script(&workspace_manager));
+                    let _ = settings_wv.evaluate_script(&updates::settings_script());
                     settings_win.set_visible(true);
                     settings_win.set_focus();
                     settings_visible = true;
@@ -7124,6 +7136,7 @@ fn main() {
                 keybind_capturing.store(false, Ordering::Relaxed);
                 restore_panel_focus!(settings_focus_target);
             }
+            Event::UserEvent(AppEvent::CheckForUpdates) => updates::check_now(),
 
             // ── Browser extensions: settings/toolbar commands and WebKit requests ─
             Event::UserEvent(AppEvent::Extension(ev)) => {
@@ -7795,6 +7808,9 @@ fn main() {
                     "mail_ai_summaries" => cfg.mail_ai_summaries = val == "true",
                     "sounds" => cfg.sounds = val == "true",
                     "mail_brief_morning" => cfg.mail_brief_morning = val == "true",
+                    // Sparkle's own settings, kept in its user defaults.
+                    "update_checks" => updates::set_automatic_checks(val == "true"),
+                    "update_downloads" => updates::set_automatic_downloads(val == "true"),
                     "proxies" => match serde_json::from_str::<Vec<config::ProxyRule>>(&val) {
                         Ok(mut rules) => {
                             for rule in &mut rules {

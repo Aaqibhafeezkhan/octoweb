@@ -422,6 +422,8 @@ brew install --cask muvon/tap/octoweb
 
 **Direct download:** grab the archive for your Mac — Apple Silicon or Intel — from [GitHub Releases](https://github.com/muvon/octoweb/releases), unpack it, and drop `Octoweb.app` into `/Applications`.
 
+**Updates:** the DMG from [octoweb.xyz](https://octoweb.xyz) checks for a new version once a day, downloads it in the background and installs it when you quit. Turn either off in Settings → General → Updates. Homebrew installs update with `brew upgrade`. Details: [docs/auto-updates.md](docs/auto-updates.md).
+
 **Build from source** (requires Rust toolchain and Xcode Command Line Tools):
 
 ```bash
@@ -433,6 +435,9 @@ cd octoweb
 
 # Release build (requires Developer ID cert)
 ./build.sh
+
+# Publish a release as a Sparkle update (owner only, see docs/auto-updates.md)
+./release.sh
 
 # Run
 open dist/Octoweb.app

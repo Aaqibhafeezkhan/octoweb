@@ -44,6 +44,27 @@ VERSION=$(defaults read "$ASSETS_DIR/Info.plist" CFBundleShortVersionString 2>/d
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 DMG_PATH="$OUT_DIR/$DMG_NAME"
 
+# Sparkle compares CFBundleVersion, so it must grow with every release. It is
+# derived from the version: 0.18.1 → 1801, 1.2.0 → 10200. Minor and patch stay
+# below 100. Releases before Sparkle report 1 (DMG) or the CI run number (tar.gz),
+# both below 1801.
+IFS=. read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION"
+V_MINOR=${V_MINOR:-0}
+V_PATCH=${V_PATCH:-0}
+if (( V_MINOR > 99 || V_PATCH > 99 )); then
+  echo "✖ Version $VERSION: minor and patch must be below 100 for the build number"
+  exit 1
+fi
+BUILD_NUMBER=$(( V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH ))
+
+# Sparkle (auto-updates, see docs/auto-updates.md): the official release archive,
+# pinned and checksummed, unpacked once into the cargo target dir. The app loads
+# the framework at runtime; release.sh uses bin/generate_appcast from the same
+# archive (keep SPARKLE_VERSION in step there).
+SPARKLE_VERSION="2.10.0"
+SPARKLE_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
+SPARKLE_DIR="$TARGET_DIR/sparkle/$SPARKLE_VERSION"
+
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 # Unmount any DMG volumes left over from create-dmg (it mounts a r/w staging
 # volume internally and usually unmounts, but failures can strand it).
@@ -91,6 +112,27 @@ else
   echo "▶ Google sign-in: not configured (Gmail uses app passwords or the user's own client)"
 fi
 
+# ── Sparkle (release only: a --dev build never updates itself) ────────────────
+if ! $DEV_BUILD && [ ! -d "$SPARKLE_DIR/Sparkle.framework" ]; then
+  echo "▶ Downloading Sparkle $SPARKLE_VERSION…"
+  # Beside its final place, so the move below is a rename on the same volume.
+  mkdir -p "$(dirname "$SPARKLE_DIR")"
+  SPARKLE_TMP=$(mktemp -d "$(dirname "$SPARKLE_DIR")/.download.XXXXXX")
+  curl -fsSL -o "$SPARKLE_TMP/sparkle.tar.xz" \
+    "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+  if [ "$(shasum -a 256 "$SPARKLE_TMP/sparkle.tar.xz" | cut -d' ' -f1)" != "$SPARKLE_SHA256" ]; then
+    rm -rf "$SPARKLE_TMP"
+    echo "✖ Sparkle-$SPARKLE_VERSION.tar.xz doesn't match its pinned SHA-256"
+    exit 1
+  fi
+  mkdir -p "$SPARKLE_TMP/unpacked"
+  tar -xJf "$SPARKLE_TMP/sparkle.tar.xz" -C "$SPARKLE_TMP/unpacked"
+  # Moved in whole, so an interrupted run never leaves a half-unpacked copy.
+  rm -rf "$SPARKLE_DIR"
+  mv "$SPARKLE_TMP/unpacked" "$SPARKLE_DIR"
+  rm -rf "$SPARKLE_TMP"
+fi
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 if $DEV_BUILD; then
   echo "▶ Building (debug, ad-hoc signing)…"
@@ -111,11 +153,29 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BINARY_SRC"              "$APP_BUNDLE/Contents/MacOS/$BINARY_NAME"
 cp "$ASSETS_DIR/Info.plist"   "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_BUNDLE/Contents/Info.plist"
+# A dev build never updates itself: without a feed the updater stays off.
+if $DEV_BUILD; then
+  /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$APP_BUNDLE/Contents/Info.plist"
+elif [ -z "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null)" ]; then
+  echo "⚠ SUPublicEDKey is empty: this build never checks for updates (docs/auto-updates.md)"
+fi
 cp "$ASSETS_DIR/icon.icns"    "$APP_BUNDLE/Contents/Resources/icon.icns"
 # Octomind tap: the octoweb: agents and the octoweb capability. Registered as a
 # local tap at startup, which symlinks straight in here — so shipping a new app
 # ships new agents, and they can never drift from the MCP tools they call.
 cp -R "$SCRIPT_DIR/tap"       "$APP_BUNDLE/Contents/Resources/tap"
+# Sparkle, loaded by the app at runtime from Contents/Frameworks (src/updates.rs).
+if ! $DEV_BUILD; then
+  mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+  cp -R "$SPARKLE_DIR/Sparkle.framework" "$APP_BUNDLE/Contents/Frameworks/"
+  # The app starts without it, so a missing framework would ship a release
+  # that never updates. Stop here instead.
+  if [ ! -f "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle" ]; then
+    echo "✖ Sparkle.framework is missing from $APP_NAME.app: delete $SPARKLE_DIR and build again"
+    exit 1
+  fi
+fi
 
 # ── Sign ──────────────────────────────────────────────────────────────────────
 if $DEV_BUILD; then
@@ -126,6 +186,16 @@ if $DEV_BUILD; then
     "$APP_BUNDLE"
 else
   echo "▶ Signing with Developer ID…"
+  # Sparkle first, inside-out, as its docs prescribe: the XPC services, the
+  # installer, the updater app, then the framework. Downloader keeps its own
+  # entitlements. All with hardened runtime, which notarization requires.
+  SPARKLE_FW="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime "$SPARKLE_FW/Versions/B/XPCServices/Installer.xpc"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime --preserve-metadata=entitlements \
+    "$SPARKLE_FW/Versions/B/XPCServices/Downloader.xpc"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime "$SPARKLE_FW/Versions/B/Autoupdate"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime "$SPARKLE_FW/Versions/B/Updater.app"
+  codesign --force --sign "$SIGN_IDENTITY" --options runtime "$SPARKLE_FW"
   # Single codesign on the bundle — signs the main executable in place
   # with entitlements and hardened runtime. A second codesign on the
   # bundle without --entitlements would strip them, so we do not re-sign.
@@ -183,7 +253,7 @@ if ! $DEV_BUILD && ! $SKIP_DMG; then
 fi
 
 echo ""
-echo "✅ App: $APP_BUNDLE (v$VERSION)"
+echo "✅ App: $APP_BUNDLE (v$VERSION, build $BUILD_NUMBER)"
 echo ""
 echo "To run:      open $APP_BUNDLE"
 echo "To install:  cp -r $APP_BUNDLE /Applications/"

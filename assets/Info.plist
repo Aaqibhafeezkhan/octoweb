@@ -12,7 +12,7 @@
     <string>io.muvon.octoweb</string>
 
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>1801</string>
 
     <key>CFBundleShortVersionString</key>
     <string>0.18.1</string>
@@ -131,5 +131,20 @@
             </array>
         </dict>
     </array>
+
+    <!-- Sparkle updates, see docs/auto-updates.md. build.sh sets CFBundleVersion from
+         CFBundleShortVersionString and drops SUFeedURL from dev builds. SUPublicEDKey
+         is the public half of the octoweb signing key (generate_keys, account octoweb);
+         while it is empty the app never checks for updates and release.sh refuses to run. -->
+    <key>SUFeedURL</key>
+    <string>https://octoweb.xyz/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>SmuRVxrzqJsX63j2++c3+0BLgzFoPhJmUoNEdOC7Vhw=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>

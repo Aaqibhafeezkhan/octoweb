@@ -1,6 +1,6 @@
 /// Returns the HTML for the settings modal (⌘,).
 /// Frosted-glass panel with form controls for all Config fields.
-/// IPC messages: settings_close, settings_update.
+/// IPC messages: settings_close, settings_update, check_updates.
 pub fn html() -> String {
 	r#"<!DOCTYPE html>
 <html>
@@ -627,6 +627,31 @@ pub fn html() -> String {
         <input type="number" id="learning_interval_min" data-key="learning_interval_min" min="5" step="5">
       </div>
     </div>
+
+    <div class="section">
+      <div class="section-title">Updates</div>
+      <div class="row with-hint updates-on">
+        <div class="row-label-stack">
+          <label class="row-label" id="update_checks_label" for="update_checks">Check for updates daily</label>
+          <span class="row-hint">Asks octoweb.xyz once a day whether a new version is out. The request carries the app's version and nothing else.</span>
+        </div>
+        <button class="toggle" id="update_checks" data-key="update_checks" role="switch" aria-checked="false" aria-labelledby="update_checks_label"></button>
+      </div>
+      <div class="row with-hint updates-on">
+        <div class="row-label-stack">
+          <label class="row-label" id="update_downloads_label" for="update_downloads">Download updates automatically</label>
+          <span class="row-hint">A downloaded update installs the next time you quit Octoweb.</span>
+        </div>
+        <button class="toggle" id="update_downloads" data-key="update_downloads" role="switch" aria-checked="false" aria-labelledby="update_downloads_label"></button>
+      </div>
+      <div class="row with-hint">
+        <div class="row-label-stack">
+          <span class="row-label" id="update-version">Octoweb</span>
+          <span class="row-hint" id="update-hint"></span>
+        </div>
+        <button class="kb-reset-all updates-on" id="update-check">Check for Updates…</button>
+      </div>
+    </div>
     </div><!-- /tab-general -->
 
     <div id="tab-keybindings" class="tab-pane">
@@ -829,6 +854,26 @@ pub fn html() -> String {
     showAppearance('terminal-appearance-seg', cfg.terminal_appearance);
     requestAnimationFrame(function() { document.getElementById('close-btn').focus(); });
   };
+
+  // ── Updates ───────────────────────────────────────────────────────────
+  // Sparkle keeps these in its own user defaults, so Rust sends them apart
+  // from the config. A --dev build, or one without the signing key, has none.
+  window.__setUpdates = function(u) {
+    document.querySelectorAll('.updates-on').forEach(function(el) { el.style.display = u.available ? '' : 'none'; });
+    document.getElementById('update-version').textContent = 'Octoweb ' + u.version;
+    document.getElementById('update-hint').textContent = u.available
+      ? 'Each update is checked against Octoweb\'s signing key before it installs.'
+      : 'Updates are off in this build.';
+    if (!u.available) return;
+    [['update_checks', u.checks], ['update_downloads', u.downloads]].forEach(function(p) {
+      var el = document.getElementById(p[0]);
+      el.classList.toggle('on', p[1]);
+      el.setAttribute('aria-checked', p[1] ? 'true' : 'false');
+    });
+  };
+  document.getElementById('update-check').addEventListener('click', function() {
+    ipc({ type: 'check_updates' });
+  });
 
   // ── Appearance ────────────────────────────────────────────────────────
   // Rust applies it app-wide: every window and page switches at once, this

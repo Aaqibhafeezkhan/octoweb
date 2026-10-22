@@ -16,7 +16,8 @@ main.rs                      ← App entry, event loop, WebView pool, keyboard (
    │
    ├── url.rs                ← URL resolution (user input → navigable URL)
    ├── webview_utils.rs      ← Injected JS scripts, favicon cache lookup, overlay data
-   ├── macos.rs              ← macOS-specific: dock icon, Edit menu, MRU list, external URLs
+   ├── macos.rs              ← macOS-specific: dock icon, app/Edit menu, MRU list, external URLs
+   ├── updates.rs            ← Sparkle auto-updates: framework loaded at runtime, delegate, settings (docs/auto-updates.md)
    ├── nav_error_patch.rs    ← WKWebView navigation error callbacks (ObjC runtime patch)
    ├── site_permissions.rs   ← Camera/mic/location: per-origin decisions, held prompts, live capture pause/stop
    ├── geolocation.rs        ← CoreLocation → WebKit geolocation provider (WKWebView on macOS has none)
@@ -165,7 +166,8 @@ History stored per-context: `prompt_history.json` (editor), `ai_prompt_history.j
 | Injected JS scripts | `webview_utils.rs` → `FAVICON_FETCH_SCRIPT`, `MEDIA_TRACK_SCRIPT` |
 | Overlay data builder | `webview_utils.rs` → `build_items_json()` |
 | macOS dock icon | `macos.rs` → `set_app_icon()` |
-| macOS Edit menu | `macos.rs` → `setup_edit_menu()` |
+| macOS menu bar (app + Edit) | `macos.rs` → `setup_edit_menu()` |
+| Auto-updates (Sparkle) | `updates.rs` → `start()`, `menu_item()`, `settings_script()`; release: `release.sh`, `docs/auto-updates.md` |
 | MRU tab ordering | `macos.rs` → `mru_push()` |
 | Nav error handling | `nav_error_patch.rs` → `register()`, `inject_from_webview()` |
 | Keyboard shortcuts | `main.rs` → CGEventTap block (`K_KEYCODE`, etc.) |
@@ -296,6 +298,7 @@ Run with `RUST_LOG=debug cargo run` to see all debug-level tracing output.
 | Learning not running | Check `proactive_learning` config, `RUST_LOG=info` for "starting proactive learning" |
 | Nav error (blank page) | `nav_error_patch.rs` → `inject_from_webview()` |
 | WebView crash | `crash_report.rs` → `WebContentTerminated` event |
+| Updates off / not offered | `RUST_LOG=octoweb::updates=debug`; `docs/auto-updates.md` → Troubleshooting |
 | No log output | Set `RUST_LOG=debug` or `RUST_LOG=trace` env var |
 
 ## Module Organization Rules
@@ -309,7 +312,8 @@ Run with `RUST_LOG=debug cargo run` to see all debug-level tracing output.
 |--------|------|-------------|
 | `url.rs` | URL parsing, scheme detection, search URL | Navigation logic |
 | `webview_utils.rs` | Injected JS, favicon lookup, overlay data | WebView creation |
-| `macos.rs` | Dock icon, Edit menu, MRU list | Window management |
+| `macos.rs` | Dock icon, menu bar, MRU list | Window management |
+| `updates.rs` | Sparkle loading, updater delegate, update settings | Release publishing (`release.sh`) |
 | `config.rs` | Disk persistence (config, session, favicons, prompt history) | In-memory caches |
 | `browser.rs` | Tab state, history, visit counts | WebView instances |
 | `mcp.rs` | MCP protocol, tool definitions, `send_command` helper | Command execution (in main.rs) |
