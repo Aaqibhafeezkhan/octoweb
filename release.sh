@@ -4,7 +4,9 @@
 # CDN, and write the new appcast into the website checkout.
 # Usage:
 #   ./release.sh               — build with ./build.sh --sign, then publish
-#   ./release.sh --skip-build  — publish the notarized DMG already in dist/
+#   ./release.sh --skip-build  — publish the notarized DMG already in dist/, e.g. the one
+#                                CI attached to the draft release for the tag:
+#                                gh release download <version> --repo Muvon/octoweb --pattern '*.dmg' --dir dist
 #   ./release.sh --dry-run     — sign and write the appcast to a temp folder; upload nothing
 # Environment:
 #   OCTOWEB_R2_BUCKET    R2 bucket behind cdn.octoweb.xyz (required unless --dry-run)
@@ -139,3 +141,5 @@ echo "Next:"
 echo "  1. Cloudflare Pages → octoweb → Settings → Environment variables: VERSION=$VERSION (the /download redirect)"
 echo "  2. Commit static/appcast.xml in octoweb-web and push to master: the Deploy workflow publishes it"
 echo "  3. Check: curl -s $SITE_URL/appcast.xml | grep $VERSION"
+echo "  4. Publish the GitHub release $VERSION (draft from CI): notify-tap.yml bumps the Homebrew cask from this CDN DMG."
+echo "     No GitHub release? gh workflow run notify-tap.yml --repo Muvon/octoweb -f version=$VERSION"

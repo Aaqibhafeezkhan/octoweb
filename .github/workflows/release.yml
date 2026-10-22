@@ -3,160 +3,118 @@ name: Release
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+*'  # Matches semver tags like 0.1.0, 1.0.0, etc.
+      - '[0-9]+.[0-9]+.[0-9]+'  # 0.19.0, 1.0.0 — no "v" prefix
 
 env:
   APP_NAME: Octoweb
-  BUNDLE_ID: io.muvon.octoweb
-  BINARY_NAME: octoweb
   SIGN_IDENTITY: "Developer ID Application: MUVON COMPANY LIMITED (34TUP8A7GK)"
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: macos-15
-            arch: aarch64
-            artifact_name: "Octoweb-${{ github.ref_name }}-aarch64-apple-darwin"
-          - platform: macos-15-intel
-            arch: x86_64
-            artifact_name: "Octoweb-${{ github.ref_name }}-x86_64-apple-darwin"
-
-    runs-on: ${{ matrix.platform }}
-
+    runs-on: macos-15
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+
+      # The release commit bumps Cargo.toml and Info.plist together. acp.rs
+      # reports CARGO_PKG_VERSION as the MCP serverInfo the agent sees, so a tag
+      # that disagrees with Cargo.toml would ship an app whose own identity
+      # disagrees with its label.
+      - name: Check version consistency
+        run: |
+          CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$VERSION" != "$CARGO_VER" ]; then
+            echo "::error::version mismatch — tag=$VERSION Cargo.toml=$CARGO_VER"
+            exit 1
+          fi
+
+      # CFBundleVersion is derived from the version by build.sh (Sparkle compares it).
+      - name: Update Info.plist version
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" assets/Info.plist
 
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Check version consistency
-        run: |
-          TAG="${{ github.ref_name }}"
-          CARGO_VER=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          PLIST_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" assets/Info.plist)
-          # acp.rs reports CARGO_PKG_VERSION as the MCP serverInfo the agent sees,
-          # and the bundle takes its version from the tag — a mismatch ships an app
-          # whose own identity disagrees with its label.
-          if [ "$TAG" != "$CARGO_VER" ] || [ "$TAG" != "$PLIST_VER" ]; then
-            echo "::error::version mismatch — tag=$TAG Cargo.toml=$CARGO_VER Info.plist=$PLIST_VER"
-            exit 1
-          fi
-
-      - name: Build release
-        run: |
-          cargo build --release --locked
+      # Import Developer ID certificate
+      - name: Import signing certificate
         env:
-          CARGO_BUILD_JOBS: 4
-
-      - name: Build app bundle
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
         run: |
-          # Create .app bundle structure
-          APP_BUNDLE="${{ runner.temp }}/${{ env.APP_NAME }}.app"
-          mkdir -p "$APP_BUNDLE/Contents/MacOS"
-          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD=$(uuidgen)
 
-          # Copy binary
-          cp "target/release/${{ env.BINARY_NAME }}" "$APP_BUNDLE/Contents/MacOS/${{ env.BINARY_NAME }}"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Copy assets
-          cp "assets/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-          cp "assets/icon.icns" "$APP_BUNDLE/Contents/Resources/icon.icns"
+          echo "$DEVELOPER_ID_P12" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 \
+            -k "$KEYCHAIN_PATH" \
+            -P "$DEVELOPER_ID_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-          # Octomind tap — the octoweb: agents and the octoweb capability.
-          # Without it macos::bundled_tap_dir() only warns and octoweb:assistant
-          # never resolves, so a released build has an AI sidebar with no tools.
-          # build.sh does this; this workflow did not, so every release shipped broken.
-          cp -R "tap" "$APP_BUNDLE/Contents/Resources/tap"
-
-          # Update Info.plist with version
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ github.ref_name }}" "$APP_BUNDLE/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" "$APP_BUNDLE/Contents/Info.plist"
-
-          # Sign (if cert available). The skip is deliberate but must be visible:
-          # an unsigned build hits Gatekeeper on every user's first launch, and
-          # this step used to pass silently green with the secret unset.
-          if [ -z "${{ secrets.CERTIFICATE_FOR_MACOS }}" ]; then
-            echo "::warning::CERTIFICATE_FOR_MACOS is not set — shipping an UNSIGNED, un-notarized bundle"
-          fi
-          if [ -n "${{ secrets.CERTIFICATE_FOR_MACOS }}" ]; then
-            echo "${{ secrets.CERTIFICATE_FOR_MACOS }}" | base64 --decode -o certificate.p12
-            echo "${{ secrets.CERTIFICATE_PASSWORD }}" | \
-              xargs security import certificate.p12 -P
-            rm certificate.p12
-
-            codesign --force --sign "${{ env.SIGN_IDENTITY }}" \
-              --entitlements "assets/entitlements.plist" \
-              --options runtime \
-              "$APP_BUNDLE/Contents/MacOS/${{ env.BINARY_NAME }}"
-
-            codesign --force --sign "${{ env.SIGN_IDENTITY }}" \
-              "$APP_BUNDLE"
-          fi
-
-      - name: Verify app bundle
+      # Store notarization credentials (profile name matches build.sh)
+      - name: Setup notarization
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: "34TUP8A7GK"
         run: |
-          APP_BUNDLE="${{ runner.temp }}/${{ env.APP_NAME }}.app"
-          fail() { echo "::error::$1"; exit 1; }
+          xcrun notarytool store-credentials "Muvon-Notarize" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD"
 
-          [ -x "$APP_BUNDLE/Contents/MacOS/${{ env.BINARY_NAME }}" ] || fail "binary missing or not executable"
-          [ -f "$APP_BUNDLE/Contents/Resources/tap/capabilities/octoweb/octoweb.toml" ] \
-            || fail "Resources/tap is missing — the AI sidebar would ship with no browser tools"
-          [ -d "$APP_BUNDLE/Contents/Resources/tap/agents/octoweb" ] || fail "tap agents missing"
+      # build.sh also needs jq (cargo metadata) and downloads Sparkle itself.
+      - name: Install create-dmg and jq
+        run: brew install create-dmg jq
 
-          if [ -n "${{ secrets.CERTIFICATE_FOR_MACOS }}" ]; then
-            codesign --verify --deep --strict "$APP_BUNDLE" || fail "signature does not verify"
-            codesign -d --entitlements - "$APP_BUNDLE/Contents/MacOS/${{ env.BINARY_NAME }}" \
-              | grep -q . || fail "binary carries no entitlements"
-          fi
-          echo "bundle verified"
+      # Build, embed Sparkle, sign, DMG, notarize, staple — all via build.sh.
+      # The Google sign-in client is compiled in when its secrets are set;
+      # without them Gmail falls back to app passwords, as in a local build
+      # without the Keychain items.
+      - name: Build and sign
+        env:
+          OCTOWEB_GOOGLE_CLIENT_ID: ${{ secrets.OCTOWEB_GOOGLE_CLIENT_ID }}
+          OCTOWEB_GOOGLE_CLIENT_SECRET: ${{ secrets.OCTOWEB_GOOGLE_CLIENT_SECRET }}
+        run: ./build.sh --sign
 
-      - name: Create archive
+      - name: Verify notarization
         run: |
-          ARCHIVE_NAME="${{ matrix.artifact_name }}.tar.gz"
-          tar -czf "$ARCHIVE_NAME" -C "${{ runner.temp }}" "${{ env.APP_NAME }}.app"
-          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_ENV
+          spctl --assess --type open --context context:primary-signature "dist/$APP_NAME.app" 2>&1 || true
+          codesign --verify --deep --strict "dist/$APP_NAME.app"
+          # Without the tap, octoweb:assistant never resolves and the AI sidebar has no tools.
+          test -f "dist/$APP_NAME.app/Contents/Resources/tap/capabilities/octoweb/octoweb.toml"
 
-      - name: Compute checksum
+      # Checksum
+      - name: Generate checksum
         run: |
-          echo "${{ matrix.artifact_name }}.tar.gz sha256:"
-          shasum -a 256 "${{ env.ARCHIVE_NAME }}"
+          cd dist
+          shasum -a 256 "$APP_NAME-$VERSION.dmg" > "$APP_NAME-$VERSION.dmg.sha256"
+          cat "$APP_NAME-$VERSION.dmg.sha256"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      # Create draft release with DMG. Homebrew-tap update is intentionally
+      # NOT triggered here — it lives in notify-tap.yml and fires on
+      # `release: published`, after ./release.sh --skip-build has signed this
+      # DMG for Sparkle and uploaded it to cdn.octoweb.xyz.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: release-${{ matrix.arch }}
-          path: ${{ env.ARCHIVE_NAME }}
-          if-no-files-found: error
-
-  release:
-    name: Create Release
-    needs: build
-    permissions:
-      contents: write
-    uses: muvon/ci-workflow/.github/workflows/release.yml@master
-    with:
-      artifacts: 'release-*'
-      draft: false
-
-  notify-homebrew:
-    name: Notify Homebrew Tap
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch update to homebrew-tap
-        run: |
-          if [ -z "${{ secrets.TAP_GITHUB_TOKEN }}" ]; then
-            echo "::error::TAP_GITHUB_TOKEN secret is not set"
-            exit 1
-          fi
-          curl --fail-with-body -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ secrets.TAP_GITHUB_TOKEN }}" \
-            https://api.github.com/repos/muvon/homebrew-tap/dispatches \
-            -d "{\"event_type\":\"octoweb-release\",\"client_payload\":{\"version\":\"${{ needs.release.outputs.version }}\"}}"
+          name: Octoweb ${{ env.VERSION }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/Octoweb-${{ env.VERSION }}.dmg
+            dist/Octoweb-${{ env.VERSION }}.dmg.sha256

@@ -13,7 +13,7 @@ Octoweb updates itself with [Sparkle 2](https://sparkle-project.org). It checks 
 | Update files | `https://cdn.octoweb.xyz/<major>/Octoweb-<version>.dmg` (R2). The website's `/download` is a Pages Function (`octoweb-web/functions/download/index.ts`) that redirects to the same file for the Pages env var `VERSION` |
 | Publishing | `release.sh` |
 
-**Loaded, not linked.** The binary does not link Sparkle. At startup `updates::start()` reads `SUFeedURL` and `SUPublicEDKey` from the bundle. When both are set it loads `Contents/Frameworks/Sparkle.framework` with `NSBundle` and looks its classes up by name. A `cargo run` binary, CI's bare executable and the CI tar.gz have no framework, so they start as before with the updater off. The log says why: `updates off: …`.
+**Loaded, not linked.** The binary does not link Sparkle. At startup `updates::start()` reads `SUFeedURL` and `SUPublicEDKey` from the bundle. When both are set it loads `Contents/Frameworks/Sparkle.framework` with `NSBundle` and looks its classes up by name. A `cargo run` binary, CI's test builds and the tar.gz archives of 0.18.1 and earlier have no framework, so they start as before with the updater off. The log says why: `updates off: …`.
 
 **Schedule.** Sparkle stores the time of its last check and checks again once a day has passed. `SUEnableAutomaticChecks` is on in Info.plist, so Sparkle never asks the user for permission on the second launch. The updater starts with `-[SPUUpdater startUpdater:]` rather than the controller's `startUpdater`: a broken feed or key is logged, not shown to the user in an alert.
 
@@ -86,20 +86,24 @@ Do these steps once, on the Mac you release from. **The octoweb key already exis
 
 ## Publishing a release
 
-1. Bump the version in `Cargo.toml` and `assets/Info.plist` (they must match) and write its `CHANGELOG.md` section: Sparkle shows that section, as Markdown, in the update window.
-2. Run `./release.sh`. Use `--skip-build` if the notarized DMG for this version is already in `dist/`. The script:
-   - checks the public key, that `Cargo.toml` and Info.plist agree, the bucket and the web checkout, and refuses a version already in the appcast or already on the CDN;
-   - runs `./build.sh --sign` (build, embed and sign Sparkle, sign, DMG, notarize, staple) and checks the staple;
+1. Bump the version in `Cargo.toml` and `assets/Info.plist` (they must match), write its `CHANGELOG.md` section (Sparkle shows that section, as Markdown, in the update window), commit, and push the tag (`0.19.0`, no `v`). CI (`.github/workflows/release.yml`) checks the tag against `Cargo.toml`, builds with `./build.sh --sign` (build, embed and sign Sparkle, sign, DMG, notarize, staple) and attaches the DMG to a **draft** GitHub release.
+2. Fetch CI's DMG and publish it: `git pull`, `gh release download <version> --repo Muvon/octoweb --pattern '*.dmg' --dir dist`, then `./release.sh --skip-build`. (Without CI: plain `./release.sh` builds locally first.) The script:
+   - checks the public key, that `Cargo.toml` and Info.plist agree, the bucket and the web checkout, and refuses a version already in the appcast or already on the CDN (a shipped DMG is never replaced);
+   - without `--skip-build`, runs `./build.sh --sign`; either way it checks the staple;
    - copies the DMG, the live `octoweb-web/static/appcast.xml` and this version's `CHANGELOG.md` section to a temp folder;
    - runs `generate_appcast`. It signs the DMG with the key from 1Password, adds the new item and keeps the two before it (`generate_appcast` keeps three versions by default). From 1.0.0 on, every item gets `--major-version` (the major's first build number, `major × 10000`), so Sparkle asks before moving a copy from an older major. 0.x releases pass none;
    - uploads the DMG to `<bucket>/<major>/Octoweb-<version>.dmg`, then checks that the CDN serves the same number of bytes;
    - only then writes the new appcast to `octoweb-web/static/appcast.xml`.
+
+   `generate_appcast` comes from the Sparkle archive `build.sh` unpacks, so the release Mac needs one local release build (`./build.sh --no-dmg`) before the first `--skip-build`.
 3. In Cloudflare Pages → octoweb → Settings → Environment variables, set `VERSION` to the new version. The `/download` redirect uses it.
 4. Commit `static/appcast.xml` in octoweb-web and push to master. The Deploy workflow publishes it, and the update goes live with the site.
 5. Check that it's live: `curl -s https://octoweb.xyz/appcast.xml | grep <version>`. In an installed older version, use Check for Updates….
-6. The tag and the GitHub release work as before: the Release workflow builds the tar.gz archives the Homebrew cask installs (see below).
+6. Publish the draft GitHub release. That fires `notify-tap.yml`, and the tap's `update-octoweb.yml` bumps the cask from the CDN DMG — the same file Sparkle signed. No GitHub release? `gh workflow run notify-tap.yml --repo Muvon/octoweb -f version=<version>`.
 
-The DMG must never be re-uploaded after its appcast is published. The appcast carries its signature and length, and a different file fails verification on every Mac.
+Never upload any DMG by hand: only `release.sh` uploads, and only the file it just signed.
+
+The DMG must never be re-uploaded after signing. The appcast carries its signature and length, and a different file fails verification on every Mac.
 
 ## When a release goes wrong
 
@@ -110,25 +114,26 @@ The DMG must never be re-uploaded after its appcast is published. The appcast ca
 
 - **Octoweb's update log:** run the app from Terminal, `RUST_LOG=octoweb::updates=debug /Applications/Octoweb.app/Contents/MacOS/octoweb`. Look for `updater started`, `updates off: …`, `update downloaded; installs when Octoweb quits` and `update aborted`.
 - **Sparkle's own log:** `/usr/bin/log show --predicate 'subsystem == "org.sparkle-project.Sparkle"' --info --last 1d`
-- **"Updates are off in this build":** a `--dev` build, a CI tar.gz (no framework), or `SUPublicEDKey` was empty when the app was built.
+- **"Updates are off in this build":** a `--dev` build, a tar.gz from 0.18.1 or earlier (no framework), or `SUPublicEDKey` was empty when the app was built.
 - **"Sparkle.framework is not in the app bundle":** the bundle wasn't made by `build.sh` without `--dev`.
 - **Signature error on the client:** the DMG on the CDN isn't the one that was signed, or the app was built with a different public key.
 - **The download in `build.sh` fails its checksum:** the archive on GitHub isn't the pinned one. Don't update the hash without checking why; a version bump changes both `SPARKLE_VERSION` and `SPARKLE_SHA256` in `build.sh`, and `SPARKLE_VERSION` in `release.sh`.
 
 ## Homebrew cask
 
-The cask (`muvon/homebrew-tap`, `Casks/octoweb.rb`) installs the Release workflow's tar.gz for each architecture. Those archives have no Sparkle.framework, so brew installs never update themselves and `brew upgrade` stays their update path. Leave `auto_updates` out of the cask while that is so: `auto_updates true` makes `brew upgrade` skip the app, and nothing would update it.
+The cask (`muvon/homebrew-tap`, `Casks/octoweb.rb`) installs the DMG `release.sh` uploads, `https://cdn.octoweb.xyz/#{version.major}/Octoweb-#{version}.dmg`, with `depends_on arch: :arm64`. Publishing the GitHub release fires `notify-tap.yml`, and the tap's `update-octoweb.yml` downloads that DMG, computes its `sha256` and bumps the cask. The cask declares `auto_updates true`, so `brew upgrade` leaves alone a copy Sparkle has already updated.
 
-To let brew installs update through Sparkle, the cask needs to:
-- install the DMG `release.sh` uploads: `url "https://cdn.octoweb.xyz/#{version.major}/Octoweb-#{version}.dmg"` with that file's `sha256`;
-- declare `auto_updates true`, so `brew upgrade` leaves alone a copy Sparkle has already updated;
-- declare `depends_on arch: :arm64` and drop the `on_intel` block: the DMG is Apple Silicon only;
-- be bumped after `release.sh` has uploaded the DMG. Today the Release workflow's `notify-homebrew` job dispatches the tap update as soon as the GitHub release exists, which can be before the DMG is on the CDN.
+The flip side: `brew upgrade` skips auto-updating casks, so a brew install of 0.18.1 or earlier (the old tar.gz, no Sparkle) is never moved to the DMG on its own. Those users run `brew upgrade --cask --greedy octoweb` once; every release after that updates through Sparkle.
 
 ## CI
 
-Sparkle publishing runs locally, through `release.sh`, because it needs the EdDSA key, notarization, the R2 upload and a commit to octoweb-web. The Release workflow is unchanged: its tar.gz builds carry `SUFeedURL` but no framework, so their updater stays off. For CI to produce Sparkle-ready builds it would need to:
-- download and verify the pinned Sparkle archive, embed the framework and sign it inside-out as `build.sh` does;
-- set `CFBundleVersion` with the `build.sh` formula instead of `github.run_number`; otherwise Sparkle offers the same version again as an update;
-- notarize and staple, which it doesn't do today;
-- sign with the EdDSA key (a secret such as a 1Password service account token), upload to R2 (a Cloudflare API token) and commit the appcast to octoweb-web.
+`.github/workflows/release.yml` runs on a tag push, on `macos-15` (arm64): it checks the tag against `Cargo.toml`, sets `CFBundleShortVersionString` from the tag, runs `./build.sh --sign` and attaches `Octoweb-<version>.dmg` and its `.sha256` to a draft release. It needs these repository secrets:
+
+| Secret | For |
+|---|---|
+| `DEVELOPER_ID_P12`, `DEVELOPER_ID_PASSWORD` | the Developer ID Application certificate (base64 .p12) and its password |
+| `APPLE_ID`, `APPLE_APP_PASSWORD` | `notarytool`, stored as the `Muvon-Notarize` profile `build.sh` uses |
+| `OCTOWEB_GOOGLE_CLIENT_ID`, `OCTOWEB_GOOGLE_CLIENT_SECRET` | optional: the Google sign-in client for Gmail, compiled in like a local build's Keychain items |
+| `TAP_GITHUB_TOKEN` | `notify-tap.yml`: the repository dispatch to `muvon/homebrew-tap` |
+
+Sparkle publishing stays local, in `release.sh`, because it needs the EdDSA key from 1Password, the R2 upload and a commit to octoweb-web.
