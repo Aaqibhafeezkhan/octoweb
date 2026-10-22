@@ -233,11 +233,7 @@ mod tests {
 
 	#[test]
 	fn host_ports_are_not_external_schemes() {
-		for url in [
-			"localhost:3000",
-			"127.0.0.1:8080/x",
-			"example.com:8080?q=1",
-		] {
+		for url in ["localhost:3000", "127.0.0.1:8080/x", "example.com:8080?q=1"] {
 			assert!(!is_external_scheme(url), "{url}");
 		}
 	}
