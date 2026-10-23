@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.19.0] - 2026-10-23
+
+### 📋 Release Summary
+
+Added Sparkle-based automatic updates, site permission controls, geolocation prompts, specialist streaming/recovery, sender avatars, bare-address linkification, cross-account and AI-assisted mail search, and grouped new-mail notifications. Fixed specialist placement, mail/UI state and rendering, routing/workspaces, agent turns, server authentication and detection, escaping, sidebar styling, ACP replies, and validation. Host:port navigation works; ACP sessions use shared WebSocket agents, and daily briefs go through the mail reader.
+
+### ✨ New Features & Enhancements
+
+- **updates**: add Sparkle-based automatic updates `485d3fb2`
+- **site-permissions**: add site permission controls `89f8c112`
+- **webview**: allow geolocation permission prompts `226ddad4`
+- **specialist**: stream and recover specialist runs `31169f53`
+- **mail**: render branded sender avatars `5216a220`
+- **mail-html**: linkify bare addresses in rendered mail `5b4c921c`
+- **mail**: search archived mail across all accounts `9a22dbfe`
+- **mail**: support AI-assisted mail search `ce13217c`
+- **mail**: group new-mail notifications `5fc560cf`
+
+### 🔧 Improvements & Optimizations
+
+- **release**: automate notarized macOS release builds `9257131c`
+- apply cargo fmt `c06c5b70`
+- format Rust code at 120 columns `4306e2b2`
+- **mcp**: format scope handling code `e0be4cb8`
+- **agent**: replace ACP sessions with shared WebSocket agents `eb445267`
+- **mail**: route daily briefs through mail reader `6d0859a0`
+
+### 🐛 Bug Fixes & Stability
+
+- **specialist**: keep specialist runs collapsed and in place `f2a6707a`
+- **mail-store**: fix image permission lookup for sender rows `17130f2a`
+- **ui**: preserve pending UI prompts and surface state `2c6f4745`
+- **mail-html**: show parsed mail before remote images finish `f111be77`
+- **routing**: route sessions and clean stale env entries `4be65ac3`
+- **webview**: preserve closing tags when escaping templates `7cf9bb73`
+- **agent**: handle turns without tagged cost events `7d1d1549`
+- **agent**: separate background turn completion handling `c08ac694`
+- **agent**: retry busy sessions and cancel stale turns `adb5dacc`
+- **server**: fix orphan detection and debug authentication `1bb8bbbb`
+- **sidebar**: fix markdown code block styling `1beda61b`
+- **mail**: route mail undo through focused message frame `3c368691`
+- **workspace**: isolate ACP workspaces by assistant `55f749ac`
+- **prompt**: escape browser state before prompt insertion `a4705903`
+- **sidebar**: replace routines text icon with svg `d0e4f624`
+- **validation**: report unreferenced components `99577987`
+- **acp**: strip harness tags from injected replies `88f20d71`
+- **ui**: preserve list numbers and reset stale thinking `638050af`
+- **mail**: adapt HTML mail frames to message backgrounds `28dfbaed`
+
+### 🔄 Other Changes
+
+1 maintenance, dependency, and tooling update not listed individually.
+
 ## [0.18.1] - 2026-10-15
 
 ### 📋 Release Summary
