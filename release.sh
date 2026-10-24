@@ -61,8 +61,14 @@ if [ -f "$APPCAST" ] && grep -q "<sparkle:shortVersionString>$VERSION</sparkle:s
 fi
 # A shipped DMG is never replaced: installed copies check it against the
 # signature and length in their appcast. The query string skips any cached 404.
+# With --skip-build, a CDN copy byte-identical to dist/ is an earlier run's
+# upload that stopped before the appcast: this run resumes and skips the upload.
+ALREADY_UPLOADED=false
 if curl -fsSI "$DOWNLOAD_BASE/$DMG_NAME?preflight=$(date +%s)" >/dev/null 2>&1; then
-  fail "$DOWNLOAD_BASE/$DMG_NAME already exists: bump the version in Cargo.toml and assets/Info.plist"
+  $SKIP_BUILD && [ -f "$DMG" ] \
+    && curl -fsS "$DOWNLOAD_BASE/$DMG_NAME?preflight=$(date +%s)" | cmp -s - "$DMG" \
+    || fail "$DOWNLOAD_BASE/$DMG_NAME already exists: bump the version in Cargo.toml and assets/Info.plist"
+  ALREADY_UPLOADED=true
 fi
 if [ -n "${OCTOWEB_SPARKLE_KEY:-}" ] && ! command -v op >/dev/null; then
   fail "OCTOWEB_SPARKLE_KEY is set but the 1Password CLI (op) isn't installed"
@@ -121,9 +127,13 @@ fi
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 # Before the appcast: an appcast pointing at a missing DMG fails every update.
-echo "▶ Uploading $DMG_NAME to $DOWNLOAD_BASE/…"
-$WRANGLER r2 object put "$OCTOWEB_R2_BUCKET/$V_MAJOR/$DMG_NAME" --file "$STAGE/$DMG_NAME" \
-  --content-type application/x-apple-diskimage --remote
+if $ALREADY_UPLOADED; then
+  echo "▶ $DMG_NAME is already on $DOWNLOAD_BASE/, byte for byte: skipping the upload"
+else
+  echo "▶ Uploading $DMG_NAME to $DOWNLOAD_BASE/…"
+  $WRANGLER r2 object put "$OCTOWEB_R2_BUCKET/$V_MAJOR/$DMG_NAME" --file "$STAGE/$DMG_NAME" \
+    --content-type application/x-apple-diskimage --remote
+fi
 
 LOCAL_SIZE=$(stat -f%z "$STAGE/$DMG_NAME")
 REMOTE_SIZE=$(curl -fsSI "$DOWNLOAD_BASE/$DMG_NAME" | awk 'tolower($1) == "content-length:" { print $2 }' | tr -d '\r') \

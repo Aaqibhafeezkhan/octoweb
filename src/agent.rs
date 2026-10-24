@@ -1248,6 +1248,8 @@ mod tests {
 		let addr = listener.local_addr().unwrap();
 		tokio::spawn(async move {
 			let (stream, _) = listener.accept().await.unwrap();
+			// tungstenite's `Callback` fixes this signature, `ErrorResponse` included.
+			#[allow(clippy::result_large_err)]
 			let check = |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
 				let auth = req.headers().get("authorization").and_then(|v| v.to_str().ok());
 				assert_eq!(auth, Some(format!("Bearer {TOKEN}").as_str()));

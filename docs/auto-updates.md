@@ -109,6 +109,7 @@ The DMG must never be re-uploaded after signing. The appcast carries its signatu
 
 - **Stop it spreading.** Revert `static/appcast.xml` in octoweb-web and deploy. Macs that haven't downloaded the update yet won't see it. Sparkle never downgrades, so Macs that already installed it keep it.
 - **Fix forward.** Bump the patch version and release again.
+- **A run stopped after the upload** (the DMG is on the CDN, the appcast has no item for it). Run `./release.sh --skip-build` again with the same DMG in `dist/`. It finds the identical file on the CDN, skips the upload and writes the appcast. A different file at that URL still stops it.
 
 ## Troubleshooting
 

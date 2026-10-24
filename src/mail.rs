@@ -4114,11 +4114,12 @@ mod tests {
 		assert_eq!(replies[1]["searching"], false);
 		assert!(replies[1]["error"].is_null());
 		assert_eq!(replies[1]["hits"][0]["subject"], "Old budget");
-		let store = shared.store();
-		let messages = store.thread("a", "archived@example.com");
-		assert_eq!(messages[0].folder, ARCHIVE);
-		assert!(store.inbox(&shared.refs_for(&["a".into()]), now()).important.is_empty());
-		drop(store);
+		{
+			let store = shared.store();
+			let messages = store.thread("a", "archived@example.com");
+			assert_eq!(messages[0].folder, ARCHIVE);
+			assert!(store.inbox(&shared.refs_for(&["a".into()]), now()).important.is_empty());
+		}
 
 		shared.folders.lock().unwrap().clear();
 		page(
