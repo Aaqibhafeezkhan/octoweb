@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.20.0] - 2026-10-25
+
+### 📋 Release Summary
+
+MCP now supports the 2026-07-28 protocol, with task management and calendar workflows, calendar integration including feeds and ICS invitations, and reopening closed assistant sessions. Page indexing drops postings for replaced or evicted pages, interrupted DMG releases can resume, specialist runs appear within tap tool steps, and tasks are embedded in the notes panel.
+
+### ✨ New Features & Enhancements
+
+- **mcp**: support MCP 2026-07-28 protocol `acaba8f9`
+- **tasks**: add task management and calendar AI workflows `65c33d98`
+- **acp**: reopen closed assistant sessions `a1ac0d6d`
+- **calendar**: support calendar feeds and ICS invitations `b588357f`
+- **calendar**: add calendar integration `481e8e9f`
+
+### 🔧 Improvements & Optimizations
+
+- **page-index**: assert postings of replaced and evicted pages `d0c5c9b9`
+- **sidebar**: embed specialist runs in tap tool steps `eb16375c`
+- **notes**: embed tasks in the notes panel `42cddc4d`
+
+### 🐛 Bug Fixes & Stability
+
+- **page-index**: drop postings of replaced or evicted pages `53a55167`
+- **release**: resume interrupted DMG releases `d303fdb3`
+
 ## [0.19.0] - 2026-10-23
 
 ### 📋 Release Summary
