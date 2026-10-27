@@ -78,8 +78,10 @@ jobs:
             --password "$APPLE_APP_PASSWORD"
 
       # build.sh also needs jq (cargo metadata) and downloads Sparkle itself.
-      - name: Install create-dmg and jq
-        run: brew install create-dmg jq
+      # bash 5: under the runner's /bin/bash 3.2, set -u fails on an empty array
+      # and the EXIT trap turns that failure into exit 0.
+      - name: Install create-dmg, jq and bash
+        run: brew install create-dmg jq bash
 
       # Build, embed Sparkle, sign, DMG, notarize, staple — all via build.sh.
       # The Google sign-in client is compiled in when its secrets are set;
@@ -95,6 +97,7 @@ jobs:
         run: |
           spctl --assess --type open --context context:primary-signature "dist/$APP_NAME.app" 2>&1 || true
           codesign --verify --deep --strict "dist/$APP_NAME.app"
+          xcrun stapler validate "dist/$APP_NAME-$VERSION.dmg"
           # Without the tap, octoweb:assistant never resolves and the AI sidebar has no tools.
           test -f "dist/$APP_NAME.app/Contents/Resources/tap/capabilities/octoweb/octoweb.toml"
 
